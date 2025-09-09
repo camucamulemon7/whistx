@@ -1,0 +1,11 @@
+fastapi==0.112.0
+uvicorn[standard]==0.30.0
+numpy==1.26.4
+webrtcvad==2.0.10
+scipy==1.11.4
+soundfile==0.12.1
+speechbrain==0.5.16
+# Parakeet-CTC (NVIDIA NeMo) 用。環境によってはインストールに時間を要します。
+nemo_toolkit[asr]
+cuda-python>=12.3
+rapidfuzz==3.9.6

@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Whisper Realtime (Mic / Display)</title>
+    <link rel="stylesheet" href="/style.css?v=20250907" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="section">
+          <div class="muted cap">セッション</div>
+          <label class="field hide"><input id="sessionId" value="sess-" /></label>
+          <div class="inputs">
+            <label><input type="radio" name="source" value="mic" checked /> マイク</label>
+            <label><input type="radio" name="source" value="display" /> 画面</label>
+            <label><input type="radio" name="source" value="mix" /> ミックス</label>
+          </div>
+          <div class="row mt8">
+            <button id="startBtn" class="btn primary wide">開始</button>
+            <button id="stopBtn" class="btn wide" disabled>停止</button>
+          </div>
+          <div class="row mt8 small">
+            <button id="themeToggle" class="btn">テーマ切替</button>
+          </div>
+          <div class="row mt8">
+            <div class="cap muted">VAD</div>
+            <div class="status-dot" id="vadDot" title="VAD"></div>
+            <span id="connCount" class="muted small" title="同時接続">0</span>
+            <div class="grow"></div>
+            <div id="status" class="muted">idle</div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="muted cap">オーディオ</div>
+          <div class="levels">
+            <label>ゲイン <input id="gain" type="range" min="0.2" max="4" step="0.05" value="1" /> <span id="gainVal">x1.00</span></label>
+            <div class="level-now" id="levelNow">RMS: -- dBFS</div>
+          </div>
+          <div class="row mt8 small">
+            <label><input id="agc" type="checkbox" checked /> AGC</label>
+            <label><input id="ns" type="checkbox" checked /> Noise</label>
+            <label><input id="ec" type="checkbox" checked /> Echo</label>
+          </div>
+        </div>
+        <div class="section">
+          <div class="muted cap">音声認識</div>
+          <div class="subtle">Parakeet‑CTC · nvidia/parakeet-tdt_ctc-0.6b-ja</div>
+          <details class="fold">
+            <summary>詳細設定</summary>
+            <div class="grid2">
+              <label>言語
+                <select id="language">
+                  <option value="ja" selected>日本語</option>
+                </select>
+              </label>
+              <label>Beam
+                <input id="beamSize" type="number" value="10" min="1" max="20" step="1" />
+              </label>
+              <label>Patience
+                <input id="patience" type="number" value="1.1" min="0.5" max="2.0" step="0.1" />
+              </label>
+            </div>
+          </details>
+        </div>
+        <div class="section">
+          <div class="muted cap">辞書 / ホットワード</div>
+          <textarea id="hotwords" rows="6" placeholder="1行に1語/用語。例:\nOpenAI\nRTX 5090\n生成AI"></textarea>
+          <div class="row mt8">
+            <button id="saveHotwords" class="btn">保存</button>
+            <span id="hotwordsStatus" class="muted"></span>
+          </div>
+        </div>
+        <div class="section">
+          <div class="muted cap">VAD</div>
+          <div class="grid2">
+            <label>Backend
+              <select id="vadBackend">
+                <option value="silero" selected>silero</option>
+                <option value="webrtc">webrtc</option>
+              </select>
+            </label>
+            <label>閾値
+              <input id="sileroThreshold" type="range" min="0.1" max="0.9" step="0.05" value="0.5" />
+            </label>
+            <label><input id="autoVadEnable" type="checkbox" checked /> 自動調整</label>
+            <label>窓(ms)
+              <input id="autoVadWindowMs" type="number" value="3000" min="1000" max="10000" step="500" />
+            </label>
+            <div class="row small">
+              <button id="calibBtn" class="btn">VADキャリブレーション(2秒)</button>
+              <span id="vadStatus" class="muted"></span>
+            </div>
+            <label>無音しきい
+              <input id="utteranceSilenceMs" type="number" value="500" min="200" max="2000" step="50" />
+            </label>
+            <label>強制分割
+              <input id="forceUtteranceMs" type="number" value="9000" min="3000" max="20000" step="500" />
+            </label>
+            <label>重ね(ms)
+              <input id="forceOverlapMs" type="number" value="1200" min="200" max="4000" step="50" />
+            </label>
+            <label>暫定間隔
+              <input id="partialIntervalMs" type="number" value="600" min="200" max="3000" step="50" />
+            </label>
+            <label>ウィンドウ(s)
+              <input id="windowSeconds" type="number" value="8" min="4" max="20" step="1" />
+            </label>
+            <label>話者分離
+              <input id="enableDiarization" type="checkbox" />
+            </label>
+            <label>最小確定(ms)
+              <input id="minFinalMs" type="number" value="400" min="100" max="2000" step="50" />
+            </label>
+          </div>
+          <details class="fold"><summary>VAD詳細</summary>
+            <div class="grid2">
+              <!-- 既存のVADパラメータ群は上のgridを参照。必要ならこちらに移動可 -->
+            </div>
+          </details>
+        </div>
+        <div class="section small">
+          <a id="dlTxt" href="#" download>TXTダウンロード</a>
+          <a id="dlJsonl" href="#" download>JSONLダウンロード</a>
+          <a id="dlSrt" href="#" download>SRTダウンロード</a>
+        </div>
+      </aside>
+      <main class="main">
+        <div class="wave-wrap card">
+          <canvas id="wave" width="900" height="120"></canvas>
+        </div>
+        <div class="caption" id="partial"></div>
+        <div class="transcripts card">
+          <div class="list" id="finalList"></div>
+          <div class="toolbar">
+            <label class="small"><input type="checkbox" id="autoscroll" checked /> 自動スクロール</label>
+            <div class="grow"></div>
+            <button id="copyAll" class="btn" type="button">コピー</button>
+            <button id="clearAll" class="btn" type="button">クリア</button>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script src="/main.js?v=20250907"></script>
+  </body>
+  </html>
