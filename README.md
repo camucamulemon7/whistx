@@ -7,7 +7,7 @@ This is an accuracy‑first real‑time ASR prototype. The current setup uses NV
 
 ## Prerequisites
 - Windows + Chrome (latest stable)
-- NVIDIA A100 80 GB (CUDA environment)
+- NVIDIA GPU (CUDA environment)
 
 ## Setup
 ```bash
@@ -20,52 +20,23 @@ pip install -r requirements.txt
 
 ## Run (Local Python)
 ```bash
-uvicorn server.app:app --host 0.0.0.0 --port 8000
+uvicorn server.app:app --host 0.0.0.0 --port 8005
 ```
 
 After startup, open:
-- http://localhost:8000/  (UI)
-- WS: `ws://localhost:8000/ws/transcribe`
+- http://localhost:8005/  (UI)
+- WS: `ws://localhost:8005/ws/transcribe`
 
 ## Usage
 1) Choose "Microphone" or "Share system audio" → "Start".
 2) Interim results appear in gray; finalized text is appended below.
-3) After stopping, download `TXT`/`JSONL` from the link at the bottom-right.
+3) After stopping, download `txt`/`json` from the link at the bottom-right.
 
 ## Key Parameters
 - See `server/config.py` (VAD/silence thresholds, windows, language, etc.).
 
 ## Notes
 - To capture audio during screen sharing, enable "Share audio" in the share dialog.
-- English support: switch `WHISPER_LANGUAGE="en"` or extend the UI as needed.
-
-### GPU Error Troubleshooting (libcublas.so.12 not found)
-`RuntimeError: Library libcublas.so.12 is not found or cannot be loaded` occurs when the CUDA 12 runtime (cuBLAS) is not installed or detected.
-
-1) Check GPU/WSL
-```bash
-nvidia-smi
-ldconfig -p | grep cublas  # Check for libcublas.so.12
-```
-
-2) Install CUDA 12 Runtime (example for Ubuntu/WSL)
-- Register the NVIDIA CUDA repository and install a 12.x toolkit such as `cuda-toolkit-12-4`.
-- After installation, ensure `/usr/local/cuda/lib64/libcublas.so.12` exists.
-```bash
-sudo apt-get update
-sudo apt-get install -y cuda-toolkit-12-4
-echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
-source ~/.bashrc
-ldconfig -p | grep cublas
-```
-
-3) Temporary Workaround (validate on CPU)
-```bash
-export WHISPER_DEVICE=cpu
-export WHISPER_COMPUTE_TYPE=int8
-uvicorn server.app:app --host 0.0.0.0 --port 8000
-```
-(If GPU initialization fails, it automatically falls back to CPU (int8).)
 
 ## Run with Docker (CUDA‑enabled)
 Prerequisites: NVIDIA driver + NVIDIA Container Toolkit installed, and `docker compose` can access the GPU.
@@ -125,10 +96,5 @@ This project is a sample implementation and follows the licenses of each compone
 - NVIDIA CUDA base images (`nvidia/cuda:*`): Subject to NVIDIA Software License / NVIDIA Deep Learning Container License (pay attention to redistribution/commercial terms).
 - cuDNN (`nvidia-cudnn-cu12`): NVIDIA license (conditions for redistribution/embedding apply).
 - FFmpeg (from distributions): Distribution and linkage may be GPL/LGPL; if included in containers, follow the package’s license.
-
-4) Example Credit Lines (when required)
-- ASR model: “ASR model: NVIDIA Parakeet‑CTC (nvidia/parakeet‑tdt_ctc‑0.6b‑ja)”
-- VAD: “VAD: Silero‑VAD (MIT, © contributors)” / “WebRTC VAD (BSD)”
-- Speaker embedding: “Speaker embedding: SpeechBrain ECAPA (Apache‑2.0)”
 
 Note: License names above are general. Actual conditions may differ by version or derivatives. Always follow the latest statements from the original sources.
