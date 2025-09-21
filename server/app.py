@@ -1,6 +1,9 @@
 import asyncio
 import json
+import re
 import struct
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -21,10 +24,33 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, message=r"invalid val
 app = FastAPI()
 
 
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,95})$")
+
+
+def safe_session_id(raw: Optional[str], *, allow_generate: bool = False) -> Optional[str]:
+    if not isinstance(raw, str):
+        raw = ""
+    raw = raw.strip()
+    if SESSION_ID_RE.fullmatch(raw):
+        return raw
+    if allow_generate:
+        return f"sess-{uuid.uuid4().hex}"
+    return None
+
+
+def resolve_transcript_path(session_id: str, suffix: str) -> Optional[Path]:
+    sid = safe_session_id(session_id, allow_generate=False)
+    if not sid:
+        return None
+    return (config.DATA_DIR / sid).with_suffix(suffix)
+
+
 class SessionFiles:
     def __init__(self, session_id: str):
-        self.session_id = session_id
-        self.base = config.DATA_DIR / session_id
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        token = uuid.uuid4().hex[:4]
+        self.session_id = f"{session_id}_{stamp}_{token}"
+        self.base = config.DATA_DIR / self.session_id
         self.jsonl_path = self.base.with_suffix(".jsonl")
         self.txt_path = self.base.with_suffix(".txt")
         self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
@@ -124,15 +150,28 @@ async def ws_transcribe(ws: WebSocket):
                 data = json.loads(msg["text"])  # start/stop/info
                 mtype = data.get("type")
                 if mtype == "start":
-                    session_id = data.get("sessionId") or "sess"
+                    raw_session = data.get("sessionId")
+                    base_session = safe_session_id(raw_session, allow_generate=True)
+                    while base_session in sessions:
+                        base_session = safe_session_id(None, allow_generate=True)
                     opts = data.get("opts") or {}
-                    files = SessionFiles(session_id)
+                    files = SessionFiles(base_session)
+                    session_id = files.session_id
+                    while session_id in sessions:
+                        files = SessionFiles(base_session)
+                        session_id = files.session_id
                     worker = TranscribeWorker(session_id, send_json, opts)
                     sessions[session_id] = {"worker": worker, "files": files, "ws": ws}
                     asyncio.create_task(worker.run())
                     if ka_task is None:
                         ka_task = asyncio.create_task(keepalive())
-                    await ws.send_json({"type": "info", "message": "started"})
+                    payload = {"type": "info", "message": "ready", "state": "ready", "sessionId": session_id}
+                    backend_name = getattr(worker, 'backend_name', None)
+                    if backend_name:
+                        payload["backend"] = backend_name
+                    if raw_session and raw_session != session_id:
+                        payload["normalized"] = True
+                    await ws.send_json(payload)
                     await broadcast_conn_count()
                 elif mtype == "calibrate":
                     dur = int((data.get("durationMs") or 2000))
@@ -183,16 +222,16 @@ async def ws_transcribe(ws: WebSocket):
 
 @app.get("/api/transcript/{session_id}.txt")
 async def get_txt(session_id: str):
-    p = (config.DATA_DIR / session_id).with_suffix(".txt")
-    if not p.exists():
+    p = resolve_transcript_path(session_id, ".txt")
+    if not p or not p.exists():
         return HTMLResponse(status_code=404, content="not found")
     return FileResponse(str(p), media_type="text/plain")
 
 
 @app.get("/api/transcript/{session_id}.jsonl")
 async def get_jsonl(session_id: str):
-    p = (config.DATA_DIR / session_id).with_suffix(".jsonl")
-    if not p.exists():
+    p = resolve_transcript_path(session_id, ".jsonl")
+    if not p or not p.exists():
         return HTMLResponse(status_code=404, content="not found")
     return FileResponse(str(p), media_type="application/jsonl")
 
@@ -233,8 +272,8 @@ async def set_hotwords(payload: dict):
 
 @app.get("/api/transcript/{session_id}.srt")
 async def get_srt(session_id: str):
-    p = (config.DATA_DIR / session_id).with_suffix(".jsonl")
-    if not p.exists():
+    p = resolve_transcript_path(session_id, ".jsonl")
+    if not p or not p.exists():
         return HTMLResponse(status_code=404, content="not found")
     lines = p.read_text(encoding="utf-8").splitlines()
     out = []

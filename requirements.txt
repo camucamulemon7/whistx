@@ -9,3 +9,4 @@ speechbrain==0.5.16
 nemo_toolkit[asr]
 cuda-python>=12.3
 rapidfuzz==3.9.6
+faster-whisper==1.0.3
