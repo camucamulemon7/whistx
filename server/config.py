@@ -21,7 +21,7 @@ UTTERANCE_SILENCE_MS = int(os.getenv("UTTERANCE_SILENCE_MS", 500))  # これ以�
 VAD_BACKEND = os.getenv("VAD_BACKEND", "silero")  # "silero" | "webrtc"
 # Silero-VAD パラメータ（必要に応じて調整）
 SILERO_THRESHOLD = float(os.getenv("SILERO_THRESHOLD", 0.5))  # 0.1〜0.9 目安
-SILERO_MIN_SILENCE_MS = int(os.getenv("SILERO_MIN_SILENCE_MS", 200))
+SILERO_MIN_SILENCE_MS = int(os.getenv("SILERO_MIN_SILENCE_MS", 500))
 SILERO_MIN_SPEECH_MS = int(os.getenv("SILERO_MIN_SPEECH_MS", 150))
 
 # VAD 自動チューニング
@@ -37,10 +37,16 @@ AUTO_VAD_RMS_HIGH = float(os.getenv("AUTO_VAD_RMS_HIGH", 0.05))  # ~ -26 dBFS �
 AUTO_VAD_TUNE_SILENCE = os.getenv("AUTO_VAD_TUNE_SILENCE", "1") == "1"
 
 # ASR バックエンド
-ASR_BACKEND = os.getenv("ASR_BACKEND", "parakeet")  # "parakeet" | "whisper"
+ASR_BACKEND = os.getenv("ASR_BACKEND", "parakeet")  # "parakeet" | "whisper" | "simulwhisper"
+
+# ストリーミング認識（SimulStreaming 相当）
+STREAMING_WINDOW_SECONDS = int(os.getenv("STREAMING_WINDOW_SECONDS", 14))
+STREAMING_STEP_SECONDS = int(os.getenv("STREAMING_STEP_SECONDS", 4))
+STREAMING_HISTORY_MAX = int(os.getenv("STREAMING_HISTORY_MAX", 1200))
 
 # Parakeet-CTC（NeMo）
 PARAKEET_MODEL_ID = os.getenv("PARAKEET_MODEL_ID", "nvidia/parakeet-tdt_ctc-0.6b-ja")
+PARAKEET_MODEL_ID_EN = os.getenv("PARAKEET_MODEL_ID_EN", "nvidia/parakeet-ctc-1.1b-en")
 ASR_DEVICE = os.getenv("ASR_DEVICE", "cuda")  # "cuda" or "cpu"
 ASR_LANGUAGE = os.getenv("ASR_LANGUAGE", "ja")
 
@@ -62,7 +68,7 @@ PUNCT_SPLIT = os.getenv("PUNCT_SPLIT", "0") == "1"  # 句読点での見やす�
 PUNCT_CHARS = os.getenv("PUNCT_CHARS", "。．.!！?？")
 PARTIAL_MIN_LOGPROB = float(os.getenv("PARTIAL_MIN_LOGPROB", -1.5))  # 暫定表示の最低信頼度（平均）
 MAX_HISTORY_CHARS = int(os.getenv("MAX_HISTORY_CHARS", 1200))
-MIN_FINAL_MS = int(os.getenv("MIN_FINAL_MS", 400))
+MIN_FINAL_MS = int(os.getenv("MIN_FINAL_MS", 700))
 
 # ウォームアップ
 WARMUP_FILE = os.getenv("WARMUP_FILE", "")
@@ -75,3 +81,9 @@ FORCE_OVERLAP_MS = int(os.getenv("FORCE_OVERLAP_MS", 1200))      # 次区間へ�
 ENABLE_DIARIZATION = os.getenv("ENABLE_DIARIZATION", "0") == "1"  # 既定OFF
 DIAR_THRESHOLD = float(os.getenv("DIAR_THRESHOLD", 0.75))  # 類似度しきい値（cosine）
 DIAR_MAX_SPEAKERS = int(os.getenv("DIAR_MAX_SPEAKERS", 8))
+
+# Voice Activity Controller (VAC)
+VAC_ENABLE = os.getenv("VAC_ENABLE", "1") == "1"
+VAC_MIN_SPEECH_MS = int(os.getenv("VAC_MIN_SPEECH_MS", 120))
+VAC_HANGOVER_MS = int(os.getenv("VAC_HANGOVER_MS", 260))
+VAC_MIN_FINAL_MS = int(os.getenv("VAC_MIN_FINAL_MS", 500))

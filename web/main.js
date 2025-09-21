@@ -26,6 +26,7 @@
   const autoVadWindowMsEl = $('#autoVadWindowMs');
   const calibBtn = $('#calibBtn');
   const vadStatusEl = $('#vadStatus');
+  const asrBackendEl = $('#asrBackend');
   const utterSilEl = $('#utteranceSilenceMs');
   const forceUttEl = $('#forceUtteranceMs');
   const forceOvEl = $('#forceOverlapMs');
@@ -35,12 +36,19 @@
   const beamSizeEl = $('#beamSize');
   const patienceEl = $('#patience');
   const minFinalMsEl = $('#minFinalMs');
+  const vacEnableEl = $('#vacEnable');
+  const vacMinSpeechMsEl = $('#vacMinSpeechMs');
+  const vacHangoverMsEl = $('#vacHangoverMs');
+  const vacMinFinalMsEl = $('#vacMinFinalMs');
   const agcEl = $('#agc');
   const nsEl = $('#ns');
   const ecEl = $('#ec');
   const gainEl = $('#gain');
   const gainValEl = $('#gainVal');
   const levelNowEl = $('#levelNow');
+  const hotwordsEl = $('#hotwords');
+  const hotStatusEl = $('#hotwordsStatus');
+  const saveHotBtn = $('#saveHotwords');
 
   let ws = null;
   let ac = null;
@@ -51,6 +59,10 @@
   let waveBuf = new Float32Array(16000 * 5); // 5秒表示用リングバッファ
   let wavePos = 0;
   let drawReq = null;
+  let pendingStart = null;
+  let awaitingReady = false;
+  let captureActive = false;
+  let gainListenerAttached = false;
   // ユーティリティ
   function dbToAmp(db) { return Math.pow(10, db / 20); }
   function ampToDb(a) { return 20 * Math.log10(Math.max(1e-9, a)); }
@@ -98,10 +110,15 @@
   function readOpts() {
     const opts = {
       language: languageEl?.value || 'ja',
+      asrBackend: asrBackendEl?.value || 'parakeet',
       vadBackend: vadBackendEl?.value || 'silero',
       sileroThreshold: Number(sileroThEl?.value || 0.5),
       autoVadEnable: autoVadEnableEl?.checked ? 1 : 0,
       autoVadWindowMs: Number(autoVadWindowMsEl?.value || 3000),
+      vacEnable: vacEnableEl?.checked ? 1 : 0,
+      vacMinSpeechMs: Number(vacMinSpeechMsEl?.value || 120),
+      vacHangoverMs: Number(vacHangoverMsEl?.value || 260),
+      vacMinFinalMs: Number(vacMinFinalMsEl?.value || 500),
       utteranceSilenceMs: Number(utterSilEl?.value || 600),
       forceUtteranceMs: Number(forceUttEl?.value || 9000),
       forceOverlapMs: Number(forceOvEl?.value || 1200),
@@ -110,20 +127,33 @@
       enableDiarization: diarEl?.checked ? 1 : 0,
       beamSize: Number(beamSizeEl?.value || 10),
       patience: Number(patienceEl?.value || 1.1),
-      minFinalMs: Number(minFinalMsEl?.value || 400),
+      minFinalMs: Number(minFinalMsEl?.value || 700),
     };
     return opts;
   }
 
   async function start() {
+    if ((ws && ws.readyState === 1) || pendingStart) {
+      return;
+    }
     let sessionId = (sessionIdEl?.value || '').trim();
     if (!sessionId) {
       sessionId = 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,6);
       if (sessionIdEl) sessionIdEl.value = sessionId;
     }
-    const source = document.querySelector('input[name="source"]:checked').value;
+    const sourceInput = document.querySelector('input[name="source"]:checked');
+    if (!sourceInput) {
+      setStatus('入力ソースを選択してください');
+      return;
+    }
+    const source = sourceInput.value;
+    startBtn.disabled = true;
+    stopBtn.disabled = true;
+    setStatus('デバイス確認中...');
+    // 既存ストリームをリセット
+    if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    if (mediaStream2) { mediaStream2.getTracks().forEach(t => t.stop()); mediaStream2 = null; }
     try {
-      setStatus('準備中...');
       if (source === 'mic') {
         mediaStream = await navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: !!ecEl?.checked, noiseSuppression: !!nsEl?.checked, autoGainControl: !!agcEl?.checked }
@@ -138,8 +168,8 @@
           audio: { echoCancellation: !!ecEl?.checked, noiseSuppression: !!nsEl?.checked, autoGainControl: !!agcEl?.checked }
         });
         const disp = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        mediaStream = mic;      // 1 本目
-        mediaStream2 = disp;    // 2 本目
+        mediaStream = mic;
+        mediaStream2 = disp;
         if (disp.getAudioTracks().length === 0) {
           setStatus('画面共有に音声が含まれていないため、マイクのみで進行します');
           mediaStream2 = null;
@@ -147,24 +177,33 @@
       }
     } catch (e) {
       setStatus('音声取得に失敗: ' + e.message);
+      startBtn.disabled = false;
+      pendingStart = null;
       return;
     }
+
+    pendingStart = { source };
+    awaitingReady = true;
+    seq = 0;
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const wsUrl = `${proto}://${location.host}/ws/transcribe`;
     ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
+      const opts = readOpts();
+      pendingStart.opts = opts;
+      const lang = opts.language || 'ja';
       ws.send(JSON.stringify({
         type: 'start',
         sessionId,
         source,
-        lang: 'ja',
+        lang,
         format: 'pcm16',
         sampleRate: 16000,
-        opts: readOpts(),
+        opts,
       }));
-      setStatus('接続中...');
+      setStatus('モデル準備中...');
     };
     ws.onmessage = (ev) => {
       try {
@@ -188,73 +227,124 @@
         } else if (msg.type === 'conn') {
           if (connEl) connEl.textContent = String(msg.count ?? 0);
         } else if (msg.type === 'info') {
-          setStatus(msg.message || 'info');
+          if (msg.sessionId && sessionIdEl) {
+            sessionIdEl.value = msg.sessionId;
+            dlTxt.href = urlForTranscript('txt');
+            dlJsonl.href = urlForTranscript('jsonl');
+            if (dlSrt) dlSrt.href = urlForTranscript('srt');
+          }
+          if (msg.backend && asrBackendEl) {
+            asrBackendEl.value = msg.backend;
+          }
+          const normalizedMessage = (msg.message || '').toLowerCase();
+          if (msg.state === 'ready' || normalizedMessage === 'ready') {
+            const readyText = msg.backend ? `モデル準備完了 · ${msg.backend}` : 'モデル準備完了';
+            setStatus(readyText);
+            activateCapture();
+            return;
+          }
+          if (msg.message && msg.message !== 'ready') {
+            if ((msg.message === 'stopping' || msg.message === 'closed') && !captureActive && !awaitingReady) {
+              // keep current status
+            } else {
+              const infoText = msg.backend ? `${msg.message} · ${msg.backend}` : msg.message;
+              setStatus(infoText);
+            }
+          }
         }
       } catch (_) {}
     };
     ws.onclose = () => {
-      setStatus('切断');
+      if (captureActive || awaitingReady) {
+        setStatus('切断');
+      }
+      ws = null;
       cleanup();
     };
     ws.onerror = () => setStatus('エラー');
+  }
 
-    // Audio pipeline
-    ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
-    await ac.audioWorklet.addModule('/audio-worklet-processor.js');
-    workletNode = new AudioWorkletNode(ac, 'pcm16-downsampler');
-    if (gainEl) workletNode.port.postMessage({ type: 'set', gain: Number(gainEl.value) });
-    const sink = ac.createGain();
-    sink.gain.value = 0; // 無音でスピーカに流さない
-
-    // 入力を接続（mix の場合は 2 系統をサミング）
-    const makeLP = () => { const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 7000; f.Q.value = 0.707; return f; };
-    if (source === 'mix' && mediaStream2) {
-      const src1 = ac.createMediaStreamSource(mediaStream);
-      const src2 = ac.createMediaStreamSource(mediaStream2);
-      const g1 = ac.createGain(); g1.gain.value = 0.7; // -3dB 程度
-      const g2 = ac.createGain(); g2.gain.value = 0.7;
-      const lp1 = makeLP(); const lp2 = makeLP();
-      src1.connect(g1).connect(lp1).connect(workletNode);
-      src2.connect(g2).connect(lp2).connect(workletNode);
-    } else {
-      const src = ac.createMediaStreamSource(mediaStream);
-      const lp = makeLP();
-      src.connect(lp).connect(workletNode);
+  async function activateCapture() {
+    if (!pendingStart || captureActive) {
+      return;
     }
-    workletNode.connect(sink).connect(ac.destination);
-    workletNode.port.onmessage = (ev) => {
-      if (!ws || ws.readyState !== 1) return;
-      const { type, ptsMs, payload } = ev.data || {};
-      if (type !== 'frame' || !payload) return;
-      const header = new ArrayBuffer(8);
-      const view = new DataView(header);
-      view.setUint32(0, seq++ , true);
-      view.setUint32(4, ptsMs >>> 0, true);
-      const body = payload;
-      const out = new Uint8Array(header.byteLength + body.byteLength);
-      out.set(new Uint8Array(header), 0);
-      out.set(new Uint8Array(body), header.byteLength);
-      ws.send(out);
-
-      // 波形バッファに追記（縮約: int16 -> float）
-      const i16 = new Int16Array(body);
-      for (let i = 0; i < i16.length; i++) {
-        waveBuf[wavePos++] = i16[i] / 32768;
-        if (wavePos >= waveBuf.length) wavePos = 0;
+    if (!mediaStream && !mediaStream2) {
+      setStatus('入力ストリームが利用できません');
+      cleanup();
+      return;
+    }
+    const { source, opts = {} } = pendingStart;
+    try {
+      if (!ac) {
+        ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+        await ac.audioWorklet.addModule('/audio-worklet-processor.js');
+      } else if (ac.state === 'suspended') {
+        await ac.resume();
       }
-      if (!drawReq) drawReq = requestAnimationFrame(drawWave);
-    };
-
-    if (gainEl) gainEl.addEventListener('input', () => {
-      if (workletNode) workletNode.port.postMessage({ type: 'set', gain: Number(gainEl.value) });
-    });
-
-    startBtn.disabled = true;
-    stopBtn.disabled = false;
-    setStatus('録音中');
-    dlTxt.href = urlForTranscript('txt');
-    dlJsonl.href = urlForTranscript('jsonl');
-    if (dlSrt) dlSrt.href = urlForTranscript('srt');
+      workletNode = new AudioWorkletNode(ac, 'pcm16-downsampler');
+      if (gainEl) workletNode.port.postMessage({ type: 'set', gain: Number(gainEl.value) });
+      const sink = ac.createGain();
+      sink.gain.value = 0;
+      const makeLP = () => { const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 7000; f.Q.value = 0.707; return f; };
+      if (source === 'mix' && mediaStream2) {
+        const src1 = ac.createMediaStreamSource(mediaStream);
+        const src2 = ac.createMediaStreamSource(mediaStream2);
+        const g1 = ac.createGain(); g1.gain.value = 0.7;
+        const g2 = ac.createGain(); g2.gain.value = 0.7;
+        const lp1 = makeLP(); const lp2 = makeLP();
+        src1.connect(g1).connect(lp1).connect(workletNode);
+        src2.connect(g2).connect(lp2).connect(workletNode);
+      } else if (mediaStream) {
+        const src = ac.createMediaStreamSource(mediaStream);
+        const lp = makeLP();
+        src.connect(lp).connect(workletNode);
+      } else {
+        throw new Error('入力ソースが見つかりません');
+      }
+      workletNode.connect(sink).connect(ac.destination);
+      workletNode.port.onmessage = (ev) => {
+        if (!ws || ws.readyState !== 1) return;
+        const { type, ptsMs, payload } = ev.data || {};
+        if (type !== 'frame' || !payload) return;
+        const header = new ArrayBuffer(8);
+        const view = new DataView(header);
+        view.setUint32(0, seq++ , true);
+        view.setUint32(4, ptsMs >>> 0, true);
+        const body = payload;
+        const out = new Uint8Array(header.byteLength + body.byteLength);
+        out.set(new Uint8Array(header), 0);
+        out.set(new Uint8Array(body), header.byteLength);
+        ws.send(out);
+        const i16 = new Int16Array(body);
+        for (let i = 0; i < i16.length; i++) {
+          waveBuf[wavePos++] = i16[i] / 32768;
+          if (wavePos >= waveBuf.length) wavePos = 0;
+        }
+        if (!drawReq) drawReq = requestAnimationFrame(drawWave);
+      };
+      if (gainEl && !gainListenerAttached) {
+        gainEl.addEventListener('input', () => {
+          if (workletNode) workletNode.port.postMessage({ type: 'set', gain: Number(gainEl.value) });
+        });
+        gainListenerAttached = true;
+      }
+      captureActive = true;
+      awaitingReady = false;
+      pendingStart = null;
+      stopBtn.disabled = false;
+      setStatus('録音中');
+      dlTxt.href = urlForTranscript('txt');
+      dlJsonl.href = urlForTranscript('jsonl');
+      if (dlSrt) dlSrt.href = urlForTranscript('srt');
+    } catch (err) {
+      console.error(err);
+      setStatus('音声処理初期化に失敗: ' + err.message);
+      pendingStart = null;
+      awaitingReady = false;
+      captureActive = false;
+      stopBtn.disabled = false;
+      stop();
+    }
   }
 
   function cleanup() {
@@ -262,6 +352,12 @@
     if (ac) { try { ac.close(); } catch {} ac = null; }
     if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
     if (mediaStream2) { mediaStream2.getTracks().forEach(t => t.stop()); mediaStream2 = null; }
+    if (drawReq) { cancelAnimationFrame(drawReq); drawReq = null; }
+    waveBuf.fill(0);
+    pendingStart = null;
+    awaitingReady = false;
+    captureActive = false;
+    seq = 0;
     if (ws) { ws = null; }
     startBtn.disabled = false;
     stopBtn.disabled = true;
@@ -273,34 +369,67 @@
     const ctx = waveCanvas.getContext('2d');
     const W = waveCanvas.width, H = waveCanvas.height;
     ctx.clearRect(0,0,W,H);
-    // 波形のみ（シンプル表示）
     const styles = getComputedStyle(document.documentElement);
-    ctx.strokeStyle = styles.getPropertyValue('--accent') || '#1aa3ff';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
+    const accent = (styles.getPropertyValue('--accent') || '#38bdf8').trim();
+    const toRgba = (hex, alpha) => {
+      const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+      if (!m) return `rgba(56,189,248,${alpha})`;
+      const [r, g, b] = m.slice(1).map(v => parseInt(v, 16));
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    };
+    const gradient = ctx.createLinearGradient(0, 0, 0, H);
+    gradient.addColorStop(0, toRgba(accent, 0.45));
+    gradient.addColorStop(0.6, toRgba(accent, 0.10));
+    gradient.addColorStop(1, toRgba(accent, 0));
+
+    const areaPath = new Path2D();
+    const strokePath = new Path2D();
+    const mid = H / 2;
+    const scale = H / 2 - 6;
     const N = waveBuf.length;
+    areaPath.moveTo(0, mid);
+    strokePath.moveTo(0, mid);
     for (let x = 0; x < W; x++) {
       const idx = (wavePos + Math.floor(x / W * N)) % N;
       const v = waveBuf[idx] || 0;
-      const y = H/2 - v * (H/2 - 2);
-      if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      const ease = Math.pow(Math.sin((x / W) * Math.PI), 0.65);
+      const y = mid - v * scale * ease;
+      areaPath.lineTo(x, y);
+      strokePath.lineTo(x, y);
     }
-    ctx.stroke();
-    // 直近 200ms の RMS を表示
+    areaPath.lineTo(W, mid);
+    areaPath.lineTo(0, mid);
+    areaPath.closePath();
+
+    ctx.fillStyle = gradient;
+    ctx.fill(areaPath);
+
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = toRgba(accent, 0.9);
+    ctx.shadowColor = toRgba(accent, 0.25);
+    ctx.shadowBlur = 12;
+    ctx.stroke(strokePath);
+    ctx.shadowBlur = 0;
+
     const win = 3200; // 200ms @ 16k
     let sum2 = 0;
-    for (let i = 0; i < win; i++) { const idx = (wavePos - 1 - i + N) % N; const v = waveBuf[idx] || 0; sum2 += v*v; }
+    for (let i = 0; i < win; i++) {
+      const idx = (wavePos - 1 - i + N) % N;
+      const v = waveBuf[idx] || 0;
+      sum2 += v * v;
+    }
     const rms = Math.sqrt(sum2 / win);
     const db = ampToDb(rms);
     if (levelNowEl) levelNowEl.textContent = `RMS: ${db.toFixed(1)} dBFS`;
-    // 次フレーム
     drawReq = requestAnimationFrame(drawWave);
   }
 
   async function stop() {
-    if (ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'stop' }));
-      ws.close();
+    if (ws) {
+      if (ws.readyState === 1) {
+        try { ws.send(JSON.stringify({ type: 'stop' })); } catch {}
+      }
+      try { ws.close(); } catch {}
     }
     cleanup();
     setStatus('停止');

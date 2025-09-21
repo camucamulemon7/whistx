@@ -31,10 +31,15 @@ class GlobalASR:
     _instances: Dict[str, object] = {}
 
     @classmethod
-    def get(cls):
-        key = 'default'
+    def get(cls, backend_name: Optional[str] = None, language: Optional[str] = None):
+        backend = backend_name or getattr(config, 'ASR_BACKEND', 'default')
+        lang_key = (language or '').lower()
+        if backend == 'parakeet':
+            key = f"{backend}:{lang_key or 'default'}"
+        else:
+            key = backend
         if key not in cls._instances:
-            cls._instances[key] = create_backend(config)
+            cls._instances[key] = create_backend(config, backend_name=backend, language=language)
         return cls._instances[key]
 
 
@@ -82,7 +87,19 @@ class VADSegmenter:
         self._auto_speech_frames = 0
         self._auto_rms_acc = 0.0
         self._auto_next_eval = self.auto_window_ms
-        self.min_final_ms = int(vad_opts.get("MIN_FINAL_MS", getattr(config, "MIN_FINAL_MS", 400)))
+        self.min_final_ms = int(vad_opts.get("MIN_FINAL_MS", getattr(config, "MIN_FINAL_MS", 700)))
+        # VAC 設定
+        self.vac_enable = bool(int(vad_opts.get("VAC_ENABLE", 1 if getattr(config, 'VAC_ENABLE', False) else 0)))
+        self.vac_min_speech_ms = int(vad_opts.get("VAC_MIN_SPEECH_MS", getattr(config, 'VAC_MIN_SPEECH_MS', 120)))
+        self.vac_hang_ms = int(vad_opts.get("VAC_HANGOVER_MS", getattr(config, 'VAC_HANGOVER_MS', 260)))
+        self.vac_min_final_ms = int(vad_opts.get("VAC_MIN_FINAL_MS", getattr(config, 'VAC_MIN_FINAL_MS', self.min_final_ms)))
+        if self.vac_enable:
+            self.min_final_ms = min(self.min_final_ms, self.vac_min_final_ms)
+        self._vac_frames_required = max(1, int(self.vac_min_speech_ms / self.vad_frame_ms)) if self.vac_enable else 0
+        self._vac_release_frames = max(1, int(self.vac_hang_ms / self.vad_frame_ms)) if self.vac_enable else 0
+        self._vac_counter = 0
+        self._vac_cooldown = 0
+        self._vac_active = False
         # Silero-VAD は軽量のため CPU で十分。GPU 依存を避けて安定化。
         self.device = "cpu"
         self._silero = None  # (model, get_speech_timestamps)
@@ -150,7 +167,25 @@ class VADSegmenter:
                 break
         return False
 
-    def feed(self, pcm16_bytes: bytes, pts_ms: int) -> Tuple[Optional[bytes], Optional[Tuple[int, int]], bool]:
+    def _vac_filter(self, raw_speech: bool) -> bool:
+        if not self.vac_enable:
+            return raw_speech
+        if raw_speech:
+            self._vac_counter = min(self._vac_counter + 1, self._vac_frames_required * 3)
+            self._vac_cooldown = self._vac_release_frames
+        else:
+            if self._vac_cooldown > 0:
+                self._vac_cooldown -= 1
+            else:
+                self._vac_counter = max(0, self._vac_counter - 1)
+
+        if not self._vac_active and self._vac_counter >= self._vac_frames_required:
+            self._vac_active = True
+        elif self._vac_active and self._vac_counter == 0 and self._vac_cooldown == 0:
+            self._vac_active = False
+        return self._vac_active
+
+    def feed(self, pcm16_bytes: bytes, pts_ms: int) -> Tuple[Optional[bytes], Optional[Tuple[int, int]], bool, bool]:
         self.buffer.extend(pcm16_bytes)
         emitted = None
         emitted_ts = None
@@ -163,6 +198,7 @@ class VADSegmenter:
             else:
                 speech = self.vad.is_speech(frame, self.sample_rate)
             frame_ms = self.vad_frame_ms
+            speech = self._vac_filter(speech)
             # RMS 推定（int16）
             try:
                 import numpy as _np
@@ -244,7 +280,7 @@ class VADSegmenter:
                         self.current_chunk[:] = self.current_chunk[flush_bytes:]
                         # in_speech は継続（区切りは作らない）
                         break
-        return emitted, emitted_ts, utterance_closed
+        return emitted, emitted_ts, utterance_closed, self._vac_active
 
 
 class TranscribeWorker:
@@ -254,14 +290,24 @@ class TranscribeWorker:
         self.stop_event = asyncio.Event()
         self.send_json = send_json
         self.opts = opts or {}
-        # Whisper 設定
+        # Whisper / ASR 設定
         self.model_name = self.opts.get("whisperModel", config.WHISPER_MODEL_NAME)
-        device_pref = self.opts.get("whisperDevice", config.WHISPER_DEVICE)
-        compute_type = self.opts.get("whisperComputeType", config.WHISPER_COMPUTE_TYPE)
+        self.backend_name = str(self.opts.get("asrBackend", getattr(config, "ASR_BACKEND", "parakeet"))).lower()
         self.lang = self.opts.get("language", config.WHISPER_LANGUAGE)
-        if isinstance(self.lang, str) and self.lang.lower() == "auto":
-            self.lang = None
-        self.model = GlobalASR.get()
+        if isinstance(self.lang, str):
+            self.lang = self.lang.strip()
+            if not self.lang:
+                self.lang = None
+            elif self.lang.lower() == "auto":
+                self.lang = None
+            else:
+                self.lang = self.lang.lower()
+        # 後方互換: 旧UIの parakeet_en を受け取ったらパラメータを統合
+        if self.backend_name == 'parakeet_en':
+            self.backend_name = 'parakeet'
+            if self.lang is None or self.lang == 'ja':
+                self.lang = 'en'
+        self.model = GlobalASR.get(self.backend_name, language=self.lang)
         # VAD セグメンタ設定
         vad_opts: Dict[str, Any] = {
             "sampleRate": config.SAMPLE_RATE,
@@ -284,14 +330,20 @@ class TranscribeWorker:
             "AUTO_VAD_RMS_LOW": self.opts.get("autoVadRmsLow", getattr(config, 'AUTO_VAD_RMS_LOW', 0.02)),
             "AUTO_VAD_RMS_HIGH": self.opts.get("autoVadRmsHigh", getattr(config, 'AUTO_VAD_RMS_HIGH', 0.05)),
             "AUTO_VAD_TUNE_SILENCE": self.opts.get("autoVadTuneSilence", 1 if getattr(config, 'AUTO_VAD_TUNE_SILENCE', True) else 0),
+            "VAC_ENABLE": self.opts.get("vacEnable", 1 if getattr(config, 'VAC_ENABLE', False) else 0),
+            "VAC_MIN_SPEECH_MS": self.opts.get("vacMinSpeechMs", getattr(config, 'VAC_MIN_SPEECH_MS', 120)),
+            "VAC_HANGOVER_MS": self.opts.get("vacHangoverMs", getattr(config, 'VAC_HANGOVER_MS', 260)),
+            "VAC_MIN_FINAL_MS": self.opts.get("vacMinFinalMs", getattr(config, 'VAC_MIN_FINAL_MS', getattr(config, 'MIN_FINAL_MS', 400))),
         }
         # 出力後処理設定
         self.punct_split = bool(int(self.opts.get("punctSplit", 0 if not getattr(config, "PUNCT_SPLIT", False) else 1)))
         self.max_history_chars = int(self.opts.get("maxHistoryChars", getattr(config, "MAX_HISTORY_CHARS", 1200)))
         # VAD セグメンタ
-        self.segmenter = VADSegmenter({**vad_opts, "MIN_FINAL_MS": self.opts.get("minFinalMs", getattr(config, "MIN_FINAL_MS", 400))})
+        self.segmenter = VADSegmenter({**vad_opts, "MIN_FINAL_MS": self.opts.get("minFinalMs", getattr(config, "MIN_FINAL_MS", 700))})
         # 出力ポリシー
         self.partial_interval_ms = int(self.opts.get("partialIntervalMs", config.PARTIAL_INTERVAL_MS))
+        self.beam_size = int(self.opts.get("beamSize", 10))
+        self.patience = float(self.opts.get("patience", 1.1))
         self.window_seconds = int(self.opts.get("windowSeconds", config.WINDOW_SECONDS))
         self.partial_window_seconds = int(self.opts.get("partialWindowSeconds", getattr(config, "PARTIAL_WINDOW_SECONDS", 3)))
         self.window_overlap_seconds = int(self.opts.get("windowOverlapSeconds", config.WINDOW_OVERLAP_SECONDS))
@@ -317,6 +369,15 @@ class TranscribeWorker:
         self._calib_frames = 0
         self._calib_speech_frames = 0
         self._calib_rms_acc = 0.0
+        # ストリーミング推論
+        self.streaming_enabled = getattr(self.model, 'supports_streaming', False)
+        self._stream_state = None
+        if self.streaming_enabled:
+            try:
+                self._stream_state = self.model.create_stream(language=self.lang, beam_size=self.beam_size, patience=self.patience)
+            except Exception as exc:
+                logger.warning("streaming backend init failed: %s", exc)
+                self.streaming_enabled = False
 
     async def put_audio(self, pcm16_bytes: bytes, pts_ms: int):
         await self.audio_q.put((pcm16_bytes, pts_ms))
@@ -339,7 +400,33 @@ class TranscribeWorker:
     async def _run_infer_final(self, pcm16: bytes, ts: Tuple[int, int]):
         audio = np_int16_to_float32(pcm16le_bytes_to_np(pcm16))
         loop = asyncio.get_running_loop()
-        text = await loop.run_in_executor(None, lambda: self.model.transcribe(audio, language=self.lang, beam_size=int(self.opts.get("beamSize", 10)), patience=float(self.opts.get("patience", 1.1)), partial=False))
+        if self.streaming_enabled and self._stream_state is not None:
+            text = await loop.run_in_executor(
+                None,
+                lambda: self.model.transcribe_stream(
+                    self._stream_state,
+                    audio,
+                    language=self.lang,
+                    beam_size=self.beam_size,
+                    patience=self.patience,
+                    is_final=True,
+                ),
+            )
+            try:
+                self._stream_state = self.model.create_stream(language=self.lang, beam_size=self.beam_size, patience=self.patience)
+            except Exception:
+                self.streaming_enabled = False
+        else:
+            text = await loop.run_in_executor(
+                None,
+                lambda: self.model.transcribe(
+                    audio,
+                    language=self.lang,
+                    beam_size=self.beam_size,
+                    patience=self.patience,
+                    partial=False,
+                ),
+            )
         # ホットワード後処理
         if self.hotwords is not None:
             try:
@@ -404,8 +491,44 @@ class TranscribeWorker:
         if now - self.last_partial_ts < self.partial_interval_ms:
             return
         self.last_partial_ts = now
-        # ストリーミング最適化: 直前の部分音声がプレフィックスなら差分のみを推論
+        # ストリーミングバックエンドの場合は専用パス
         loop = asyncio.get_running_loop()
+        if self.streaming_enabled and self._stream_state is not None:
+            audio = np_int16_to_float32(pcm16le_bytes_to_np(pcm16))
+            text = await loop.run_in_executor(
+                None,
+                lambda: self.model.transcribe_stream(
+                    self._stream_state,
+                    audio,
+                    language=self.lang,
+                    beam_size=self.beam_size,
+                    patience=self.patience,
+                    is_final=False,
+                ),
+            )
+            if not isinstance(text, str):
+                text = ""
+            text = text.strip()
+            if not text:
+                return
+            if self.hotwords is not None:
+                try:
+                    text = boost_hotwords(text, self.hotwords)
+                except Exception:
+                    pass
+            self._partial_acc_text = text
+            self._prev_partial_pcm = pcm16
+            await self.send_json(
+                {
+                    "type": "partial",
+                    "seq": 0,
+                    "text": text,
+                    "tsStart": ts_end_ms - int(len(pcm16) / 2 / (config.SAMPLE_RATE / 1000)),
+                    "tsEnd": ts_end_ms,
+                }
+            )
+            return
+        # 既存バックエンド: 直前の部分音声がプレフィックスなら差分のみを推論
         if len(pcm16) >= len(self._prev_partial_pcm) and pcm16[: len(self._prev_partial_pcm)] == self._prev_partial_pcm:
             delta = pcm16[len(self._prev_partial_pcm) :]
             if len(delta) == 0:
@@ -457,7 +580,7 @@ class TranscribeWorker:
             if pts < 0:
                 break
             # 受信したフレームをそのままVADへ
-            emitted, ts, closed = self.segmenter.feed(pcm, pts)
+            emitted, ts, closed, vac_active = self.segmenter.feed(pcm, pts)
             # キャリブレーション収集（Silero時のみ意味がある）
             if self._calib_active:
                 try:
