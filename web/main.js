@@ -17,6 +17,9 @@
   const autoscrollEl = document.querySelector('#autoscroll');
   const copyAllBtn = document.querySelector('#copyAll');
   const clearAllBtn = document.querySelector('#clearAll');
+  const captionToggle = $('#toggleCaption');
+  const audioToggle = $('#toggleAudio');
+  const audioBody = $('#audioBody');
   // settings
   // Parakeet 用に Whisper 固有のUIは非表示（保持しても送らない）
   const languageEl = $('#language');
@@ -63,12 +66,30 @@
   let awaitingReady = false;
   let captureActive = false;
   let gainListenerAttached = false;
+  let audioStreaming = false;
   // ユーティリティ
   function dbToAmp(db) { return Math.pow(10, db / 20); }
   function ampToDb(a) { return 20 * Math.log10(Math.max(1e-9, a)); }
   function setGainLabel() { if (gainEl && gainValEl) gainValEl.textContent = 'x' + Number(gainEl.value).toFixed(2); }
   setGainLabel();
   if (gainEl) gainEl.addEventListener('input', setGainLabel);
+
+  function syncToggle(btn, target, opts = {}) {
+    if (!btn || !target) return;
+    const { show = '表示', hide = '非表示' } = opts;
+    const update = () => {
+      const hidden = target.classList.contains('hidden');
+      btn.textContent = hidden ? show : hide;
+    };
+    btn.addEventListener('click', () => {
+      target.classList.toggle('hidden');
+      update();
+    });
+    update();
+  }
+
+  syncToggle(captionToggle, partialEl);
+  syncToggle(audioToggle, audioBody);
 
   function setStatus(s) { statusEl.textContent = s; }
   function urlForTranscript(ext) {
@@ -116,18 +137,18 @@
       autoVadEnable: autoVadEnableEl?.checked ? 1 : 0,
       autoVadWindowMs: Number(autoVadWindowMsEl?.value || 3000),
       vacEnable: vacEnableEl?.checked ? 1 : 0,
-      vacMinSpeechMs: Number(vacMinSpeechMsEl?.value || 120),
-      vacHangoverMs: Number(vacHangoverMsEl?.value || 260),
-      vacMinFinalMs: Number(vacMinFinalMsEl?.value || 500),
+      vacMinSpeechMs: Number(vacMinSpeechMsEl?.value || 220),
+      vacHangoverMs: Number(vacHangoverMsEl?.value || 360),
+      vacMinFinalMs: Number(vacMinFinalMsEl?.value || 700),
       utteranceSilenceMs: Number(utterSilEl?.value || 600),
       forceUtteranceMs: Number(forceUttEl?.value || 9000),
       forceOverlapMs: Number(forceOvEl?.value || 1200),
-      partialIntervalMs: Number(partialIntEl?.value || 600),
+      partialIntervalMs: Number(partialIntEl?.value || 650),
       windowSeconds: Number(windowSecEl?.value || 8),
       enableDiarization: diarEl?.checked ? 1 : 0,
-      beamSize: Number(beamSizeEl?.value || 10),
-      patience: Number(patienceEl?.value || 1.1),
-      minFinalMs: Number(minFinalMsEl?.value || 700),
+      beamSize: Number(beamSizeEl?.value || 12),
+      patience: Number(patienceEl?.value || 1.2),
+      minFinalMs: Number(minFinalMsEl?.value || 800),
     };
     return opts;
   }
@@ -237,6 +258,10 @@
             asrBackendEl.value = msg.backend;
           }
           const normalizedMessage = (msg.message || '').toLowerCase();
+          if (normalizedMessage === 'backend_loading' || msg.state === 'loading') {
+            setStatus('モデル読み込み中...');
+            return;
+          }
           if (msg.state === 'ready' || normalizedMessage === 'ready') {
             const readyText = msg.backend ? `モデル準備完了 · ${msg.backend}` : 'モデル準備完了';
             setStatus(readyText);
@@ -315,6 +340,10 @@
         out.set(new Uint8Array(header), 0);
         out.set(new Uint8Array(body), header.byteLength);
         ws.send(out);
+        if (!audioStreaming) {
+          audioStreaming = true;
+          setStatus('録音中');
+        }
         const i16 = new Int16Array(body);
         for (let i = 0; i < i16.length; i++) {
           waveBuf[wavePos++] = i16[i] / 32768;
@@ -332,7 +361,8 @@
       awaitingReady = false;
       pendingStart = null;
       stopBtn.disabled = false;
-      setStatus('録音中');
+      audioStreaming = false;
+      setStatus('録音準備完了');
       dlTxt.href = urlForTranscript('txt');
       dlJsonl.href = urlForTranscript('jsonl');
       if (dlSrt) dlSrt.href = urlForTranscript('srt');
@@ -357,6 +387,7 @@
     pendingStart = null;
     awaitingReady = false;
     captureActive = false;
+    audioStreaming = false;
     seq = 0;
     if (ws) { ws = null; }
     startBtn.disabled = false;

@@ -39,7 +39,11 @@ class GlobalASR:
         else:
             key = backend
         if key not in cls._instances:
+            logger.info("[ASR] backend=%s lang=%s を初期化します", backend, lang_key or 'default')
             cls._instances[key] = create_backend(config, backend_name=backend, language=language)
+            logger.info("[ASR] backend=%s lang=%s 初期化完了", backend, lang_key or 'default')
+        else:
+            logger.info("[ASR] backend=%s lang=%s を再利用します", backend, lang_key or 'default')
         return cls._instances[key]
 
 
@@ -293,6 +297,9 @@ class TranscribeWorker:
         # Whisper / ASR 設定
         self.model_name = self.opts.get("whisperModel", config.WHISPER_MODEL_NAME)
         self.backend_name = str(self.opts.get("asrBackend", getattr(config, "ASR_BACKEND", "parakeet"))).lower()
+        if self.backend_name not in {"parakeet"}:
+            logger.info("[ASR] 未対応バックエンド %s を受信したため parakeet に強制変更します", self.backend_name)
+            self.backend_name = "parakeet"
         self.lang = self.opts.get("language", config.WHISPER_LANGUAGE)
         if isinstance(self.lang, str):
             self.lang = self.lang.strip()
@@ -331,19 +338,19 @@ class TranscribeWorker:
             "AUTO_VAD_RMS_HIGH": self.opts.get("autoVadRmsHigh", getattr(config, 'AUTO_VAD_RMS_HIGH', 0.05)),
             "AUTO_VAD_TUNE_SILENCE": self.opts.get("autoVadTuneSilence", 1 if getattr(config, 'AUTO_VAD_TUNE_SILENCE', True) else 0),
             "VAC_ENABLE": self.opts.get("vacEnable", 1 if getattr(config, 'VAC_ENABLE', False) else 0),
-            "VAC_MIN_SPEECH_MS": self.opts.get("vacMinSpeechMs", getattr(config, 'VAC_MIN_SPEECH_MS', 120)),
-            "VAC_HANGOVER_MS": self.opts.get("vacHangoverMs", getattr(config, 'VAC_HANGOVER_MS', 260)),
-            "VAC_MIN_FINAL_MS": self.opts.get("vacMinFinalMs", getattr(config, 'VAC_MIN_FINAL_MS', getattr(config, 'MIN_FINAL_MS', 400))),
+            "VAC_MIN_SPEECH_MS": self.opts.get("vacMinSpeechMs", getattr(config, 'VAC_MIN_SPEECH_MS', 220)),
+            "VAC_HANGOVER_MS": self.opts.get("vacHangoverMs", getattr(config, 'VAC_HANGOVER_MS', 360)),
+            "VAC_MIN_FINAL_MS": self.opts.get("vacMinFinalMs", getattr(config, 'VAC_MIN_FINAL_MS', getattr(config, 'MIN_FINAL_MS', 800))),
         }
         # 出力後処理設定
         self.punct_split = bool(int(self.opts.get("punctSplit", 0 if not getattr(config, "PUNCT_SPLIT", False) else 1)))
         self.max_history_chars = int(self.opts.get("maxHistoryChars", getattr(config, "MAX_HISTORY_CHARS", 1200)))
         # VAD セグメンタ
-        self.segmenter = VADSegmenter({**vad_opts, "MIN_FINAL_MS": self.opts.get("minFinalMs", getattr(config, "MIN_FINAL_MS", 700))})
+        self.segmenter = VADSegmenter({**vad_opts, "MIN_FINAL_MS": self.opts.get("minFinalMs", getattr(config, "MIN_FINAL_MS", 800))})
         # 出力ポリシー
         self.partial_interval_ms = int(self.opts.get("partialIntervalMs", config.PARTIAL_INTERVAL_MS))
-        self.beam_size = int(self.opts.get("beamSize", 10))
-        self.patience = float(self.opts.get("patience", 1.1))
+        self.beam_size = int(self.opts.get("beamSize", 12))
+        self.patience = float(self.opts.get("patience", 1.2))
         self.window_seconds = int(self.opts.get("windowSeconds", config.WINDOW_SECONDS))
         self.partial_window_seconds = int(self.opts.get("partialWindowSeconds", getattr(config, "PARTIAL_WINDOW_SECONDS", 3)))
         self.window_overlap_seconds = int(self.opts.get("windowOverlapSeconds", config.WINDOW_OVERLAP_SECONDS))

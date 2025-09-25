@@ -15,7 +15,7 @@ CHANNELS = int(os.getenv("CHANNELS", 1))
 FRAME_MS = int(os.getenv("FRAME_MS", 200))  # クライアントからのフレーム長（目安）
 VAD_FRAME_MS = int(os.getenv("VAD_FRAME_MS", 20))  # VAD解析フレーム
 VAD_AGGRESSIVENESS = int(os.getenv("VAD_AGGRESSIVENESS", 2))
-UTTERANCE_SILENCE_MS = int(os.getenv("UTTERANCE_SILENCE_MS", 500))  # これ以上の無音で区切り（短め）
+UTTERANCE_SILENCE_MS = int(os.getenv("UTTERANCE_SILENCE_MS", 600))  # これ以上の無音で区切り（短め）
 
 # VAD バックエンド
 VAD_BACKEND = os.getenv("VAD_BACKEND", "silero")  # "silero" | "webrtc"
@@ -58,7 +58,7 @@ WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "ja")
 WHISPER_TASK = os.getenv("WHISPER_TASK", "transcribe")  # or "translate"
 
 # 部分/確定結果のポリシー
-PARTIAL_INTERVAL_MS = int(os.getenv("PARTIAL_INTERVAL_MS", 600))  # 暫定結果の送信間隔
+PARTIAL_INTERVAL_MS = int(os.getenv("PARTIAL_INTERVAL_MS", 650))  # 暫定結果の送信間隔
 WINDOW_SECONDS = int(os.getenv("WINDOW_SECONDS", 8))
 WINDOW_OVERLAP_SECONDS = int(os.getenv("WINDOW_OVERLAP_SECONDS", 2))
 PARTIAL_WINDOW_SECONDS = int(os.getenv("PARTIAL_WINDOW_SECONDS", 3))
@@ -68,7 +68,7 @@ PUNCT_SPLIT = os.getenv("PUNCT_SPLIT", "0") == "1"  # 句読点での見やす�
 PUNCT_CHARS = os.getenv("PUNCT_CHARS", "。．.!！?？")
 PARTIAL_MIN_LOGPROB = float(os.getenv("PARTIAL_MIN_LOGPROB", -1.5))  # 暫定表示の最低信頼度（平均）
 MAX_HISTORY_CHARS = int(os.getenv("MAX_HISTORY_CHARS", 1200))
-MIN_FINAL_MS = int(os.getenv("MIN_FINAL_MS", 700))
+MIN_FINAL_MS = int(os.getenv("MIN_FINAL_MS", 800))
 
 # ウォームアップ
 WARMUP_FILE = os.getenv("WARMUP_FILE", "")
@@ -84,6 +84,6 @@ DIAR_MAX_SPEAKERS = int(os.getenv("DIAR_MAX_SPEAKERS", 8))
 
 # Voice Activity Controller (VAC)
 VAC_ENABLE = os.getenv("VAC_ENABLE", "1") == "1"
-VAC_MIN_SPEECH_MS = int(os.getenv("VAC_MIN_SPEECH_MS", 120))
-VAC_HANGOVER_MS = int(os.getenv("VAC_HANGOVER_MS", 260))
-VAC_MIN_FINAL_MS = int(os.getenv("VAC_MIN_FINAL_MS", 500))
+VAC_MIN_SPEECH_MS = int(os.getenv("VAC_MIN_SPEECH_MS", 220))
+VAC_HANGOVER_MS = int(os.getenv("VAC_HANGOVER_MS", 360))
+VAC_MIN_FINAL_MS = int(os.getenv("VAC_MIN_FINAL_MS", 700))
