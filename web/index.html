@@ -3,174 +3,196 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Whisper Realtime (Mic / Display)</title>
-    <link rel="stylesheet" href="/style.css?v=20250907" />
+    <title>whistx · Realtime Transcription</title>
+    <link rel="stylesheet" href="/style.css?v=20250925" />
   </head>
   <body>
-    <main class="page">
-      <div class="app">
-        <aside class="sidebar">
-        <div class="section">
-          <div class="muted cap">セッション</div>
-          <label class="field hide"><input id="sessionId" value="sess-" /></label>
-          <div class="inputs">
-            <label><input type="radio" name="source" value="mic" checked /> マイク</label>
-            <label><input type="radio" name="source" value="display" /> 画面</label>
-            <label><input type="radio" name="source" value="mix" /> ミックス</label>
-          </div>
-          <div class="row mt8">
-            <button id="startBtn" class="btn primary wide">開始</button>
-            <button id="stopBtn" class="btn wide" disabled>停止</button>
-          </div>
-          <div class="row mt8 small">
-            <button id="themeToggle" class="btn">テーマ切替</button>
-          </div>
-          <div class="row mt8">
-            <div class="cap muted">VAD</div>
-            <div class="status-dot" id="vadDot" title="VAD"></div>
-            <span id="connCount" class="muted small" title="同時接続">0</span>
-            <div class="grow"></div>
-            <div id="status" class="muted">idle</div>
-          </div>
-        </div>
-        <div class="section">
-          <div class="section-header">
-            <div>
-              <div class="muted cap">オーディオ</div>
-              <div class="small">ゲインや処理の確認</div>
-            </div>
-            <button id="toggleAudio" class="btn sm subtle" type="button">表示</button>
-          </div>
-          <div class="audio-body hidden" id="audioBody">
-            <div class="levels">
-              <label>ゲイン <input id="gain" type="range" min="0.2" max="4" step="0.05" value="1" /> <span id="gainVal">x1.00</span></label>
-              <div class="level-now" id="levelNow">RMS: -- dBFS</div>
-            </div>
-            <div class="row mt8 small">
-              <label><input id="agc" type="checkbox" checked /> AGC</label>
-              <label><input id="ns" type="checkbox" checked /> Noise</label>
-              <label><input id="ec" type="checkbox" checked /> Echo</label>
-            </div>
-          </div>
-        </div>
-        <div class="section">
-          <div class="muted cap">音声認識</div>
-          <div class="subtle">Parakeet‑CTC（言語選択でモデル切替）</div>
-          <details class="fold">
-            <summary>詳細設定</summary>
-            <div class="grid2">
-              <input type="hidden" id="asrBackend" value="parakeet" />
-              <label>言語
-                <select id="language">
-                  <option value="ja" selected>日本語</option>
-                  <option value="en">English</option>
-                </select>
-              </label>
-              <label>Beam
-                <input id="beamSize" type="number" value="12" min="1" max="20" step="1" />
-              </label>
-              <label>Patience
-                <input id="patience" type="number" value="1.2" min="0.5" max="2.0" step="0.1" />
-              </label>
-            </div>
-          </details>
-        </div>
-        <div class="section">
-          <div class="muted cap">辞書 / ホットワード</div>
-          <textarea id="hotwords" rows="6" placeholder="1行に1語。例:\n議事録\nAIアシスタント\nZoom会議"></textarea>
-          <div class="row mt8">
-            <button id="saveHotwords" class="btn">保存</button>
-            <span id="hotwordsStatus" class="muted"></span>
-          </div>
-        </div>
-        <div class="section">
-          <div class="muted cap">VAD</div>
-          <details class="fold">
-            <summary>詳細設定</summary>
-            <div class="grid2">
-              <label>Backend
-                <select id="vadBackend">
-                  <option value="silero" selected>silero</option>
-                  <option value="webrtc">webrtc</option>
-                </select>
-              </label>
-              <label>閾値
-                <input id="sileroThreshold" type="range" min="0.1" max="0.9" step="0.05" value="0.5" />
-              </label>
-              <label><input id="autoVadEnable" type="checkbox" checked /> 自動調整</label>
-              <label>窓(ms)
-                <input id="autoVadWindowMs" type="number" value="3000" min="1000" max="10000" step="500" />
-              </label>
-              <label><input id="vacEnable" type="checkbox" checked /> VAC有効</label>
-              <label>VAC起動(ms)
-                <input id="vacMinSpeechMs" type="number" value="220" min="60" max="600" step="20" />
-              </label>
-              <label>VAC保持(ms)
-                <input id="vacHangoverMs" type="number" value="360" min="100" max="1000" step="20" />
-              </label>
-              <label>VAC確定(ms)
-                <input id="vacMinFinalMs" type="number" value="700" min="80" max="1000" step="20" />
-              </label>
-              <div class="row small">
-                <button id="calibBtn" class="btn">VADキャリブレーション(2秒)</button>
-                <span id="vadStatus" class="muted"></span>
+    <main class="layout">
+      <header class="app-header card">
+        <div class="record-cluster">
+          <input id="sessionId" type="hidden" value="sess-" />
+          <button id="recordButton" class="record-button" type="button" aria-pressed="false">
+            <span class="sr-only">録音開始 / 停止</span>
+            <div class="shape-container"><div class="shape"></div></div>
+            <div class="recording-info">
+              <div class="wave-container">
+                <canvas id="wave" width="320" height="80" aria-hidden="true"></canvas>
               </div>
-              <label>無音しきい
-                <input id="utteranceSilenceMs" type="number" value="600" min="200" max="2000" step="50" />
-              </label>
-              <label>強制分割
-                <input id="forceUtteranceMs" type="number" value="9000" min="3000" max="20000" step="500" />
-              </label>
-              <label>重ね(ms)
-                <input id="forceOverlapMs" type="number" value="1200" min="200" max="4000" step="50" />
-              </label>
-              <label>暫定間隔
-                <input id="partialIntervalMs" type="number" value="650" min="200" max="3000" step="50" />
-              </label>
-              <label>ウィンドウ(s)
-                <input id="windowSeconds" type="number" value="8" min="4" max="20" step="1" />
-              </label>
-              <label>話者分離
-                <input id="enableDiarization" type="checkbox" />
-              </label>
-              <label>最小確定(ms)
-                <input id="minFinalMs" type="number" value="800" min="100" max="2000" step="50" />
-              </label>
+              <div class="timer" id="recordTimer">00:00</div>
             </div>
-          </details>
-        </div>
-      </aside>
-        <section class="main">
-        <div class="wave-wrap card">
-          <canvas id="wave" width="900" height="120"></canvas>
-        </div>
-        <div class="card caption-card">
-          <div class="section-header">
-            <div>
-              <div class="muted cap">キャプション</div>
-              <div class="small">リアルタイム字幕</div>
-            </div>
-            <button id="toggleCaption" class="btn sm subtle" type="button">表示</button>
+          </button>
+          <div class="status-line">
+            <div class="status-dot" id="vadDot" title="VAD"></div>
+            <span id="status" class="status-text">idle</span>
+            <span class="meta muted" title="同時接続"><span id="connCount">0</span></span>
           </div>
-          <div class="caption hidden" id="partial"></div>
         </div>
-        <div class="transcripts card">
-          <div class="transcripts-toolbar">
-            <div class="download-group">
-              <a id="dlTxt" href="#" download>TXT</a>
-              <a id="dlJsonl" href="#" download>JSONL</a>
-              <a id="dlSrt" href="#" download>SRT</a>
-            </div>
-            <div class="grow"></div>
-            <label class="small"><input type="checkbox" id="autoscroll" checked /> 自動スクロール</label>
-            <button id="copyAll" class="btn subtle" type="button">コピー</button>
-            <button id="clearAll" class="btn subtle" type="button">クリア</button>
+        <div class="header-actions">
+          <div class="theme-selector segmented" role="radiogroup" aria-label="テーマ設定">
+            <input type="radio" id="theme-light" name="theme" value="light" />
+            <label for="theme-light" title="ライト">
+              <img src="/assets/light_mode.svg" alt="" />
+              <span class="sr-only">Light</span>
+            </label>
+            <input type="radio" id="theme-dark" name="theme" value="dark" />
+            <label for="theme-dark" title="ダーク">
+              <img src="/assets/dark_mode.svg" alt="" />
+              <span class="sr-only">Dark</span>
+            </label>
           </div>
-          <div class="list" id="finalList"></div>
         </div>
+      </header>
+
+      <div class="layout-body">
+        <aside class="sidebar">
+          <section class="panel card">
+            <fieldset class="field-group" aria-label="入力ソース">
+              <legend class="sr-only">入力ソースを選択</legend>
+              <div class="input-selector">
+                <input type="radio" id="source-mic" name="source" value="mic" checked />
+                <label for="source-mic">マイク</label>
+              </div>
+              <div class="input-selector">
+                <input type="radio" id="source-display" name="source" value="display" />
+                <label for="source-display">画面共有</label>
+              </div>
+              <div class="input-selector">
+                <input type="radio" id="source-mix" name="source" value="mix" />
+                <label for="source-mix">ミックス</label>
+              </div>
+            </fieldset>
+          </section>
+
+          <section class="panel card">
+            <details class="fold fold-inline" id="monitorFold">
+              <summary>モニタ</summary>
+              <div class="audio-body" id="audioBody">
+                <div class="levels">
+                  <label>ゲイン
+                    <input id="gain" type="range" min="0.2" max="4" step="0.05" value="1" />
+                    <span id="gainVal">x1.00</span>
+                  </label>
+                  <div class="level-now" id="levelNow">RMS: -- dBFS</div>
+                </div>
+                <div class="toggle-row">
+                  <label><input id="agc" type="checkbox" checked /> AGC</label>
+                  <label><input id="ns" type="checkbox" checked /> Noise</label>
+                  <label><input id="ec" type="checkbox" checked /> Echo</label>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <section class="panel card">
+            <input type="hidden" id="asrBackend" value="parakeet" />
+            <details class="fold">
+              <summary>ASR設定</summary>
+              <div class="grid2">
+                <label>言語
+                  <select id="language">
+                    <option value="ja" selected>日本語</option>
+                    <option value="en">English</option>
+                  </select>
+                </label>
+                <label>Beam
+                  <input id="beamSize" type="number" value="12" min="1" max="20" step="1" />
+                </label>
+                <label>Patience
+                  <input id="patience" type="number" value="1.2" min="0.5" max="2.0" step="0.1" />
+                </label>
+                <label>最小確定(ms)
+                  <input id="minFinalMs" type="number" value="800" min="100" max="2000" step="50" />
+                </label>
+              </div>
+            </details>
+          </section>
+
+          <section class="panel card">
+            <textarea id="hotwords" rows="6" placeholder="1行に1語"></textarea>
+            <div class="inline-row">
+              <button id="saveHotwords" class="btn" type="button">保存</button>
+              <span id="hotwordsStatus" class="muted"></span>
+            </div>
+          </section>
+
+          <section class="panel card">
+            <details class="fold">
+              <summary>VAD設定</summary>
+              <div class="grid2">
+                <label>Backend
+                  <select id="vadBackend">
+                    <option value="silero" selected>silero</option>
+                    <option value="webrtc">webrtc</option>
+                  </select>
+                </label>
+                <label>閾値
+                  <input id="sileroThreshold" type="range" min="0.1" max="0.9" step="0.05" value="0.5" />
+                </label>
+                <label><input id="autoVadEnable" type="checkbox" checked /> 自動調整</label>
+                <label>窓(ms)
+                  <input id="autoVadWindowMs" type="number" value="3000" min="1000" max="10000" step="500" />
+                </label>
+                <label><input id="vacEnable" type="checkbox" checked /> VAC有効</label>
+                <label>VAC起動(ms)
+                  <input id="vacMinSpeechMs" type="number" value="220" min="60" max="600" step="20" />
+                </label>
+                <label>VAC保持(ms)
+                  <input id="vacHangoverMs" type="number" value="360" min="100" max="1000" step="20" />
+                </label>
+                <label>VAC確定(ms)
+                  <input id="vacMinFinalMs" type="number" value="700" min="80" max="1000" step="20" />
+                </label>
+                <div class="inline-row">
+                  <button id="calibBtn" class="btn" type="button">VADキャリブ</button>
+                  <span id="vadStatus" class="muted"></span>
+                </div>
+                <label>無音しきい
+                  <input id="utteranceSilenceMs" type="number" value="600" min="200" max="2000" step="50" />
+                </label>
+                <label>強制分割
+                  <input id="forceUtteranceMs" type="number" value="9000" min="3000" max="20000" step="500" />
+                </label>
+                <label>重ね(ms)
+                  <input id="forceOverlapMs" type="number" value="1200" min="200" max="4000" step="50" />
+                </label>
+                <label>暫定間隔
+                  <input id="partialIntervalMs" type="number" value="650" min="200" max="3000" step="50" />
+                </label>
+                <label>ウィンドウ(s)
+                  <input id="windowSeconds" type="number" value="8" min="4" max="20" step="1" />
+                </label>
+                <label>話者分離
+                  <input id="enableDiarization" type="checkbox" />
+                </label>
+              </div>
+            </details>
+          </section>
+        </aside>
+
+        <section class="main-content">
+          <article class="panel card caption-card">
+            <details class="fold fold-inline" id="captionFold">
+              <summary>字幕</summary>
+              <div class="caption muted" id="partial"></div>
+            </details>
+          </article>
+
+          <article class="panel card transcripts">
+            <div class="transcripts-toolbar">
+              <div class="download-group">
+                <a id="dlTxt" href="#" download>TXT</a>
+                <a id="dlJsonl" href="#" download>JSONL</a>
+                <a id="dlSrt" href="#" download>SRT</a>
+              </div>
+              <label class="small"><input type="checkbox" id="autoscroll" checked /> 自動スクロール</label>
+              <button id="copyAll" class="btn subtle" type="button">コピー</button>
+              <button id="clearAll" class="btn subtle" type="button">クリア</button>
+            </div>
+            <div class="list" id="finalList" role="log" aria-live="polite" aria-label="ログ"></div>
+          </article>
         </section>
       </div>
-      <script src="/main.js?v=20250907"></script>
     </main>
+    <script type="module" src="/main.js?v=20250925"></script>
   </body>
 </html>

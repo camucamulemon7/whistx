@@ -6,6 +6,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
+import logging
+import sys
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import warnings
@@ -20,6 +22,23 @@ from .hotwords import HotwordStore
 # 3rdパーティ内部の一時的な RuntimeWarning を抑制（faster-whisper の mean 計算等）
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=r"Mean of empty slice\.")
 warnings.filterwarnings("ignore", category=RuntimeWarning, message=r"invalid value encountered in scalar divide")
+
+root_logger = logging.getLogger()
+if not root_logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    root_logger.addHandler(handler)
+
+try:
+    _log_level = getattr(config, "LOG_LEVEL", "INFO")
+    if isinstance(_log_level, str):
+        _log_level_value = getattr(logging, _log_level.upper(), logging.INFO)
+    else:
+        _log_level_value = int(_log_level)
+except Exception:
+    _log_level_value = logging.INFO
+
+root_logger.setLevel(_log_level_value)
 
 app = FastAPI()
 
