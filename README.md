@@ -28,15 +28,20 @@ After startup, open:
 - WS: `ws://localhost:8005/ws/transcribe`
 
 ## Usage
-1) Choose "Microphone" or "Share system audio" → "Start".
-2) Interim results appear in gray; finalized text is appended below.
-3) After stopping, download `txt`/`json` from the link at the bottom-right.
+1) ヘッダー左の円形レコードボタンで開始/停止。音声ソースはサイドバーのセグメントトグルで切替できます。
+2) 録音中はヘッダー内の波形/タイマーがアクティブになり、リアルタイム字幕は「LIVE」カード内に表示されます。
+3) 確定テキストは「TRANSCRIPT」カードに蓄積され、ツールバーから `TXT` / `JSONL` / `SRT` ダウンロード、コピー、クリアが可能です。
+4) ステータス（モデルロード/VAD）はヘッダーのメタ情報に集約され、ホットワード・VAD詳細設定はカード折りたたみで編集できます。
 
 ## Key Parameters
 - See `server/config.py` (VAD/silence thresholds, windows, language, etc.).
 
 ## Notes
 - To capture audio during screen sharing, enable "Share audio" in the share dialog.
+
+## Logging
+- Docker 実行中はモデルダウンロードの進行が `[MODEL_DOWNLOAD] {"stage": "start|progress|complete|reuse", ...}` 形式で標準出力に出力されます。
+- `stage: "progress"` では `percent` フィールドが 10% 刻みで表示されるため、`docker logs -f <container>` で進行状況を確認できます。
 
 ## Run with Docker (CUDA‑enabled)
 Prerequisites: NVIDIA driver + NVIDIA Container Toolkit installed, and `docker compose` can access the GPU.

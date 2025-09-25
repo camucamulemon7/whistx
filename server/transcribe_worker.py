@@ -26,6 +26,62 @@ def np_int16_to_float32(x: np.ndarray) -> np.ndarray:
 
 logger = logging.getLogger(__name__)
 
+try:
+    from huggingface_hub.utils import _tqdm as hf_tqdm_module  # type: ignore
+    if not getattr(hf_tqdm_module, "_whistx_patched", False):
+        _OriginalTqdm = hf_tqdm_module.tqdm
+
+        class _LoggingTqdm(_OriginalTqdm):  # type: ignore
+            def __init__(self, *args, **kwargs):
+                self._download_logger = logging.getLogger("MODEL_DOWNLOAD")
+                self._last_percent = -1
+                super().__init__(*args, **kwargs)
+                self._desc_name = getattr(self, 'desc', None) or kwargs.get('desc') or ""
+
+            def _log_progress(self, force: bool = False):
+                total = getattr(self, 'total', None)
+                current = getattr(self, 'n', None)
+                if not total or total <= 0 or current is None:
+                    return
+                percent = int(min(100, max(0, (current / total) * 100)))
+                if not force:
+                    if percent == self._last_percent:
+                        return
+                    if percent < 100 and self._last_percent != -1 and percent - self._last_percent < 10:
+                        return
+                self._last_percent = percent
+                desc_value = getattr(self, 'desc', None) or self._desc_name or "download"
+                desc_value = desc_value.replace('"', "'")
+                self._download_logger.info(
+                    "[MODEL_DOWNLOAD] {\"stage\": \"progress\", \"desc\": \"%s\", \"percent\": %d}",
+                    desc_value,
+                    percent,
+                )
+
+            def update(self, n=1):
+                result = super().update(n)
+                self._log_progress()
+                return result
+
+            def refresh(self, *args, **kwargs):
+                result = super().refresh(*args, **kwargs)
+                self._log_progress()
+                return result
+
+            def close(self):
+                self._log_progress(force=True)
+                return super().close()
+
+        hf_tqdm_module.tqdm = _LoggingTqdm
+        try:
+            import huggingface_hub.utils as hf_utils  # type: ignore
+            hf_utils.tqdm = _LoggingTqdm
+        except Exception:
+            pass
+        hf_tqdm_module._whistx_patched = True
+except Exception:
+    pass
+
 
 class GlobalASR:
     _instances: Dict[str, object] = {}
@@ -39,11 +95,25 @@ class GlobalASR:
         else:
             key = backend
         if key not in cls._instances:
-            logger.info("[ASR] backend=%s lang=%s を初期化します", backend, lang_key or 'default')
+            logger.info("[MODEL_DOWNLOAD] {\"backend\": \"%s\", \"language\": \"%s\", \"stage\": \"start\"}", backend, lang_key or 'default')
             cls._instances[key] = create_backend(config, backend_name=backend, language=language)
+            descriptor = getattr(cls._instances[key], 'model_id', getattr(cls._instances[key], 'model_name', backend))
+            logger.info(
+                "[MODEL_DOWNLOAD] {\"backend\": \"%s\", \"language\": \"%s\", \"stage\": \"complete\", \"model\": \"%s\"}",
+                backend,
+                lang_key or 'default',
+                descriptor,
+            )
             logger.info("[ASR] backend=%s lang=%s 初期化完了", backend, lang_key or 'default')
         else:
             logger.info("[ASR] backend=%s lang=%s を再利用します", backend, lang_key or 'default')
+            descriptor = getattr(cls._instances[key], 'model_id', getattr(cls._instances[key], 'model_name', backend))
+            logger.info(
+                "[MODEL_DOWNLOAD] {\"backend\": \"%s\", \"language\": \"%s\", \"stage\": \"reuse\", \"model\": \"%s\"}",
+                backend,
+                lang_key or 'default',
+                descriptor,
+            )
         return cls._instances[key]
 
 
