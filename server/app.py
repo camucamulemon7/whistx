@@ -160,6 +160,7 @@ async def ws_transcribe(ws: WebSocket):
                     while session_id in sessions:
                         files = SessionFiles(base_session)
                         session_id = files.session_id
+                    await ws.send_json({"type": "info", "message": "backend_loading", "state": "loading"})
                     worker = TranscribeWorker(session_id, send_json, opts)
                     sessions[session_id] = {"worker": worker, "files": files, "ws": ws}
                     asyncio.create_task(worker.run())

@@ -34,11 +34,17 @@ class ParakeetCTCBackend(ASRBackend):
     def __init__(self, model_id: str, device: str = "cuda"):
         # 遅延ロード（importコストを初回に限定）
         from nemo.collections.asr.models import EncDecCTCModelBPE
+
         self._EncDecCTCModelBPE = EncDecCTCModelBPE
         self.model_id = model_id
         self.device = device if device in ("cuda", "cpu") else "cpu"
-        logger.info("[ParakeetCTC] モデル初期化: %s (device=%s)", model_id, self.device)
-        self.model = self._EncDecCTCModelBPE.from_pretrained(model_name=model_id)
+        logger.info("[ParakeetCTC] モデル初期化開始: %s (device=%s)", model_id, self.device)
+        try:
+            self.model = self._EncDecCTCModelBPE.from_pretrained(model_name=model_id)
+        except Exception as e:
+            logger.exception("[ParakeetCTC] モデル取得に失敗: %s", e)
+            raise
+        logger.info("[ParakeetCTC] モデル取得完了: %s", model_id)
         try:
             self.model = self.model.to(self.device)
         except Exception:
@@ -92,8 +98,14 @@ class ParakeetCTCBackend(ASRBackend):
 class WhisperBackend(ASRBackend):
     def __init__(self, model_name: str, device: str = "cuda", compute_type: str = "float16"):
         from faster_whisper import WhisperModel
-        logger.info("[Whisper] モデル初期化: %s (device=%s, compute=%s)", model_name, device, compute_type)
-        self.model = WhisperModel(model_size_or_path=model_name, device=device, compute_type=compute_type)
+
+        logger.info("[Whisper] モデル初期化開始: %s (device=%s, compute=%s)", model_name, device, compute_type)
+        try:
+            self.model = WhisperModel(model_size_or_path=model_name, device=device, compute_type=compute_type)
+        except Exception as e:
+            logger.exception("[Whisper] モデル取得に失敗: %s", e)
+            raise
+        logger.info("[Whisper] モデル初期化完了: %s", model_name)
 
     def transcribe(self, audio_f32_mono_16k: np.ndarray, language: Optional[str] = None,
                    beam_size: int = 1, patience: float = 1.0, partial: bool = False) -> str:
