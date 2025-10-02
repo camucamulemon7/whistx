@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch whistx container with GPU using Podman.
+# Launch whistx container with GPU using Podman (HTTPS-aware).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,24 +8,65 @@ CONTAINER_NAME=${CONTAINER_NAME:-whistx}
 DATA_DIR=${DATA_DIR:-"${SCRIPT_DIR}/data"}
 HF_HOME_DIR=${HF_HOME_DIR:-"${SCRIPT_DIR}/hf-home"}
 
-podman build -t whistx:latest .
-podman run \
-  --rm \
-  --name "${CONTAINER_NAME}" \
-  --publish 8005:8005 \
-  --device nvidia.com/gpu=all \
-  --security-opt label=disable \
-  --env NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all} \
-  --env NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility} \
-  --env ASR_BACKEND=${ASR_BACKEND:-parakeet} \
-  --env ASR_DEVICE=${ASR_DEVICE:-cuda} \
-  --env ASR_LANGUAGE=${ASR_LANGUAGE:-ja} \
-  --env PARAKEET_MODEL_ID=${PARAKEET_MODEL_ID:-nvidia/parakeet-tdt_ctc-0.6b-ja} \
-  --env VAD_BACKEND=${VAD_BACKEND:-silero} \
-  --env SILERO_THRESHOLD=${SILERO_THRESHOLD:-0.5} \
-  --env HF_HOME=/app/hf-home \
-  --env TORCH_HOME=/app/hf-home/torch \
-  --volume "${DATA_DIR}:/app/data" \
-  --volume "${HF_HOME_DIR}:/app/hf-home" \
-  "${IMAGE_NAME}" \
-  /app/start.sh
+# TLS configuration (can be overridden via environment variables)
+TLS_CERT_HOST_PATH=${TLS_CERT_HOST_PATH:-"${SCRIPT_DIR}/certs/server.crt"}
+TLS_KEY_HOST_PATH=${TLS_KEY_HOST_PATH:-"${SCRIPT_DIR}/certs/server.key"}
+TLS_CHAIN_HOST_PATH=${TLS_CHAIN_HOST_PATH:-"${SCRIPT_DIR}/certs/chain.crt"}
+TLS_CONTAINER_CERT_PATH=${TLS_CONTAINER_CERT_PATH:-/app/certs/server.crt}
+TLS_CONTAINER_KEY_PATH=${TLS_CONTAINER_KEY_PATH:-/app/certs/server.key}
+TLS_CONTAINER_CHAIN_PATH=${TLS_CONTAINER_CHAIN_PATH:-/app/certs/chain.crt}
+TLS_PORT=${TLS_PORT:-8443}
+HTTP_PORT=${HTTP_PORT:-8005}
+
+# Build image (idempotent)
+podman build -t "${IMAGE_NAME}" .
+
+# Determine TLS availability
+TLS_ENABLED=false
+if [[ -f "${TLS_CERT_HOST_PATH}" && -f "${TLS_KEY_HOST_PATH}" ]]; then
+  TLS_ENABLED=true
+fi
+
+PODMAN_RUN_ARGS=(
+  run
+  --rm
+  --name "${CONTAINER_NAME}"
+  --device nvidia.com/gpu=all
+  --security-opt label=disable
+  --env NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+  --env NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+  --env ASR_BACKEND=${ASR_BACKEND:-parakeet}
+  --env ASR_DEVICE=${ASR_DEVICE:-cuda}
+  --env ASR_LANGUAGE=${ASR_LANGUAGE:-ja}
+  --env PARAKEET_MODEL_ID=${PARAKEET_MODEL_ID:-nvidia/parakeet-tdt_ctc-0.6b-ja}
+  --env VAD_BACKEND=${VAD_BACKEND:-silero}
+  --env SILERO_THRESHOLD=${SILERO_THRESHOLD:-0.5}
+  --env HF_HOME=/app/hf-home
+  --env TORCH_HOME=/app/hf-home/torch
+  --env HTTP_PORT=${HTTP_PORT}
+  --volume "${DATA_DIR}:/app/data"
+  --volume "${HF_HOME_DIR}:/app/hf-home"
+)
+
+if [[ "${TLS_ENABLED}" == true ]]; then
+  PODMAN_RUN_ARGS+=(
+    --publish "${TLS_PORT}:${TLS_PORT}"
+    --env TLS_CERT_FILE="${TLS_CONTAINER_CERT_PATH}"
+    --env TLS_KEY_FILE="${TLS_CONTAINER_KEY_PATH}"
+    --env TLS_PORT="${TLS_PORT}"
+  )
+  PODMAN_RUN_ARGS+=(--volume "${TLS_CERT_HOST_PATH}:${TLS_CONTAINER_CERT_PATH}:ro")
+  PODMAN_RUN_ARGS+=(--volume "${TLS_KEY_HOST_PATH}:${TLS_CONTAINER_KEY_PATH}:ro")
+  if [[ -f "${TLS_CHAIN_HOST_PATH}" ]]; then
+    PODMAN_RUN_ARGS+=(
+      --volume "${TLS_CHAIN_HOST_PATH}:${TLS_CONTAINER_CHAIN_PATH}:ro"
+      --env TLS_CA_BUNDLE="${TLS_CONTAINER_CHAIN_PATH}"
+    )
+  fi
+else
+  PODMAN_RUN_ARGS+=(--publish "${HTTP_PORT}:${HTTP_PORT}")
+fi
+
+PODMAN_RUN_ARGS+=("${IMAGE_NAME}" /app/start.sh)
+
+podman "${PODMAN_RUN_ARGS[@]}"
