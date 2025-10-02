@@ -3,6 +3,15 @@
 # ベースイメージに含まれる cuDNN と衝突しないよう cudnn 無しの runtime を使用します。
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
+# 一時的に nvidia/cuda の APT エントリを無効化
+RUN set -eux; \
+  for f in /etc/apt/sources.list.d/*cuda*.list /etc/apt/sources.list.d/*nvidia*.list; do \
+    [ -f "$f" ] && sed -i 's/^\s*deb/# &/' "$f"; \
+  done; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
+  update-ca-certificates
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

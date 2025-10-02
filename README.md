@@ -1,105 +1,97 @@
-# Real-Time Transcription (Mic / Screen Share) — whistx (Parakeet‑CTC)
+# whistx — Real-Time Transcription for Japanese Speech
 
-This is an accuracy‑first real‑time ASR prototype. The current setup uses NVIDIA NeMo's Parakeet‑CTC (Japanese) as the backend.
-- Frontend: Static HTML + AudioWorklet (16 kHz / PCM16, 200 ms frames)
-- Server: FastAPI WebSocket + VAD (Silero / WebRTC) + Parakeet-CTC (NeMo)
-- Storage: Text only (JSONL/TXT/SRT). Audio is not persisted (memory only).
+whistx is a real-time transcription demo powered by NVIDIA NeMo’s Parakeet-CTC (Japanese) model. The browser captures audio, the server performs GPU inference, and results stream back as live captions plus finalized transcripts.
 
-## Prerequisites
-- Windows + Chrome (latest stable)
-- NVIDIA GPU (CUDA environment)
+## Features
+- **Browser client**: static HTML + AudioWorklet (16 kHz / PCM16, 200 ms frames)
+- **Server**: FastAPI WebSocket pipeline with Silero/WebRTC VAD feeding Parakeet-CTC inference
+- **Outputs**: text transcripts in JSONL, TXT, or SRT; audio buffers remain in memory only
 
-## Setup
+## Requirements
+- Windows + Chrome (current stable) for the UI
+- NVIDIA GPU with current driver + CUDA runtime (required for the container workflow)
+
+## Local Python Setup
 ```bash
 python -m venv .venv
-. .venv/Scripts/activate  # PowerShell, etc.
+. .venv/Scripts/activate  # adapt for your shell
 pip install -U pip
 pip install -r requirements.txt
-# For GPU usage, CUDA/cuDNN and PyTorch are required. See the Docker setup for details.
+# For GPU use, ensure CUDA/cuDNN and the matching PyTorch build are installed beforehand.
 ```
 
-## Run (Local Python)
+### Run Locally
 ```bash
 uvicorn server.app:app --host 0.0.0.0 --port 8005
 ```
+Open http://localhost:8005/ and connect to `ws://localhost:8005/ws/transcribe` for WebSocket streaming.
 
-After startup, open:
-- http://localhost:8005/  (UI)
-- WS: `ws://localhost:8005/ws/transcribe`
+## Usage Notes
+1. Start/stop capture with the header record button. Switch audio inputs via the sidebar toggles.
+2. The header shows a waveform and timer during recording; the LIVE card displays partial captions.
+3. Confirmed text accrues in the TRANSCRIPT card with export/copy/clear actions (`TXT` / `JSONL` / `SRT`).
+4. Model/VAD status indicators live in the header; hotword and advanced VAD controls reside in collapsible panels.
+5. Enable “Share audio” in your browser when capturing system audio.
 
-## Usage
-1) ヘッダー左の円形レコードボタンで開始/停止。音声ソースはサイドバーのセグメントトグルで切替できます。
-2) 録音中はヘッダー内の波形/タイマーがアクティブになり、リアルタイム字幕は「LIVE」カード内に表示されます。
-3) 確定テキストは「TRANSCRIPT」カードに蓄積され、ツールバーから `TXT` / `JSONL` / `SRT` ダウンロード、コピー、クリアが可能です。
-4) ステータス（モデルロード/VAD）はヘッダーのメタ情報に集約され、ホットワード・VAD詳細設定はカード折りたたみで編集できます。
-
-## Key Parameters
-- See `server/config.py` (VAD/silence thresholds, windows, language, etc.).
-
-## Notes
-- To capture audio during screen sharing, enable "Share audio" in the share dialog.
+Runtime parameters (VAD thresholds, language, etc.) are managed in `server/config.py`.
 
 ## Logging
-- Docker 実行中はモデルダウンロードの進行が `[MODEL_DOWNLOAD] {"stage": "start|progress|complete|reuse", ...}` 形式で標準出力に出力されます。
-- `stage: "progress"` では `percent` フィールドが 10% 刻みで表示されるため、`docker logs -f <container>` で進行状況を確認できます。
+- Model downloads emit `[MODEL_DOWNLOAD] {"stage": "start|progress|complete|reuse", ...}`.
+- During download, `stage: "progress"` adds a `percent` field in 10% steps. Tail logs with `podman logs -f <container>` to monitor progress.
 
-## Run with Docker (CUDA‑enabled)
-Prerequisites: NVIDIA driver + NVIDIA Container Toolkit installed, and `docker compose` can access the GPU.
+## Container Workflow with Podman
+Prerequisites: Podman with NVIDIA Container Toolkit (CDI) configured so `podman run --device nvidia.com/gpu=all` exposes the GPU.
 
-1) Build
+1. Build the image
+   ```bash
+   podman build -t whistx:latest .
+   ```
+2. Start the container with GPU + HTTPS aware script
+   ```bash
+   ./podman-run.sh
+   ```
+   The script mounts `./data` and `./hf-home`, forwards port 8005 by default, and switches to HTTPS automatically when certificates are provided (see below).
+3. Open http://localhost:8005/ (or the HTTPS port if enabled).
+
+If you prefer a one-off command instead of the helper script:
 ```bash
-cd /home/remon1129/ai/whistx
-docker compose build
-```
-
-2) Start (GPU enabled, port 8005)
-```bash
-docker compose up -d
-# Tail logs
-docker compose logs -f
-```
-
-3) Access
-- Browser: http://localhost:8005/
-
-4) Persistence
-- Transcripts: `./data/transcripts/`
-- Models/cache (Hugging Face): `./hf-home/`
-
-Note: If Compose cannot allocate a GPU, you can run with this one‑liner:
-```bash
-docker build -t whistx:latest .
-docker run --rm -it --gpus all -p 8005:8005 \
-  -v $(pwd)/data:/app/data -v $(pwd)/hf-home:/app/hf-home \
+podman run --rm -it \
+  --device nvidia.com/gpu=all \
+  --publish 8005:8005 \
+  --security-opt label=disable \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/hf-home:/app/hf-home \
   whistx:latest
 ```
 
-## License / Credits (Commercial Use Notes)
+### Enabling HTTPS with Internal Certificates
+1. Place PEM-encoded `server.crt`, `server.key`, and (optionally) `chain.crt` on the host; `run.sh` and `podman-run.sh` default to `./certs/`.
+2. Override paths or the HTTPS port as needed:
+   ```bash
+   export TLS_CERT_HOST_PATH="/path/to/server.crt"
+   export TLS_KEY_HOST_PATH="/path/to/server.key"
+   export TLS_CHAIN_HOST_PATH="/path/to/chain.crt"  # optional
+   export TLS_PORT=8443                              # optional
+   ```
+3. Launch `./podman-run.sh`. When certificate and key exist, the container serves `https://localhost:${TLS_PORT:-8443}` and upgrades WebSocket traffic to `wss://`. Without them, it falls back to HTTP on port 8005.
+4. Reload the UI over HTTPS and confirm the browser reports a secure WebSocket handshake (`wss://`).
+5. Rotate certificates by replacing the PEM files and rerunning the script.
 
-This repository's code is released under the MIT License. See `LICENSE` for details.
+## Licensing
+The code is provided under the MIT License (see `LICENSE`). Review upstream licenses before repackaging or commercial use.
 
-This project is a sample implementation and follows the licenses of each component. For commercial use, please pay attention to credit display, distribution, and reuse conditions below. This section is a convenience summary and not legal advice. Always check the latest license/model card from the original sources.
+### Model
+- NVIDIA Parakeet-CTC Japanese (`nvidia/parakeet-tdt_ctc-0.6b-ja`)
 
-1) Models
-- ASR: NVIDIA Parakeet-CTC Japanese (`nvidia/parakeet-tdt_ctc-0.6b-ja`)
-  - Sources: NVIDIA NeMo / NGC / Hugging Face, etc.
-  - License: As stated in the model card (must verify). There may be requirements for attribution, allowed use (commercial or not), redistribution, and limitations of liability.
-  - For commercial use: Follow the model card’s license terms and add credits/links to this README (or an in-app "Credits" page) as required.
+### Runtime Dependencies
+- NVIDIA CUDA base image (`nvidia/cuda:12.4.1-runtime-ubuntu22.04`)
+- PyTorch 2.4 with CUDA 12 wheels
+- NVIDIA cuDNN (`nvidia-cudnn-cu12`)
+- Silero-VAD (`snakers4/silero-vad`)
+- webrtcvad (Python bindings)
+- FastAPI / Uvicorn
+- NumPy / SciPy
+- RapidFuzz
+- SoundFile (`pysoundfile`)
 
-2) Libraries / Code (examples)
-- NVIDIA NeMo Toolkit (`nemo_toolkit[asr]`): Apache-2.0 (observe NOTICE retention and redistribution terms).
-- PyTorch (`torch`): BSD-3-Clause.
-- FastAPI / Uvicorn: MIT.
-- NumPy / SciPy: BSD.
-- RapidFuzz: MIT.
-- webrtcvad (Python bindings): BSD-like.
-- Silero-VAD (`snakers4/silero-vad`): MIT (see LICENSE in the repository).
-- SpeechBrain (used for speaker embeddings options): Apache-2.0. Check each pretrained model’s model card/license.
-- SoundFile (pysoundfile): BSD. Upstream `libsndfile` is LGPL-2.1+ (be mindful of dynamic linking terms).
-
-3) Runtime (Docker / CUDA, etc.)
-- NVIDIA CUDA base images (`nvidia/cuda:*`): Subject to NVIDIA Software License / NVIDIA Deep Learning Container License (pay attention to redistribution/commercial terms).
-- cuDNN (`nvidia-cudnn-cu12`): NVIDIA license (conditions for redistribution/embedding apply).
-- FFmpeg (from distributions): Distribution and linkage may be GPL/LGPL; if included in containers, follow the package’s license.
-
-Note: License names above are general. Actual conditions may differ by version or derivatives. Always follow the latest statements from the original sources.
+Consult each project’s documentation for detailed licensing terms.
