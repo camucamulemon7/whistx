@@ -38,6 +38,7 @@ AUTO_VAD_TUNE_SILENCE = os.getenv("AUTO_VAD_TUNE_SILENCE", "1") == "1"
 
 # ASR バックエンド
 ASR_BACKEND = os.getenv("ASR_BACKEND", "parakeet")  # "parakeet" | "whisper" | "simulwhisper"
+TRANSCRIBE_PROFILE = os.getenv("TRANSCRIBE_PROFILE", "realtime")
 
 # ストリーミング認識（SimulStreaming 相当）
 STREAMING_WINDOW_SECONDS = int(os.getenv("STREAMING_WINDOW_SECONDS", 14))
@@ -70,6 +71,16 @@ PARTIAL_MIN_LOGPROB = float(os.getenv("PARTIAL_MIN_LOGPROB", -1.5))  # 暫定表
 MAX_HISTORY_CHARS = int(os.getenv("MAX_HISTORY_CHARS", 1200))
 MIN_FINAL_MS = int(os.getenv("MIN_FINAL_MS", 800))
 
+# 高精度モード（Parakeet 再デコード）
+HIGH_ACCURACY_PARAKEET_MODEL_ID = os.getenv("HIGH_ACCURACY_PARAKEET_MODEL_ID", PARAKEET_MODEL_ID)
+HIGH_ACCURACY_DECODER_TYPE = os.getenv("HIGH_ACCURACY_DECODER_TYPE", "beamsearch")
+HIGH_ACCURACY_LM_PATH = os.getenv("HIGH_ACCURACY_LM_PATH", "")
+HIGH_ACCURACY_LM_WEIGHT = float(os.getenv("HIGH_ACCURACY_LM_WEIGHT", "2.0"))
+HIGH_ACCURACY_WORD_SCORE = float(os.getenv("HIGH_ACCURACY_WORD_SCORE", "-1.5"))
+HIGH_ACCURACY_BEAM_WIDTH = int(os.getenv("HIGH_ACCURACY_BEAM_WIDTH", "64"))
+HIGH_ACCURACY_PATIENCE = float(os.getenv("HIGH_ACCURACY_PATIENCE", "1.6"))
+REFINE_LOG_LEVEL = os.getenv("REFINE_LOG_LEVEL", "INFO")
+
 # ウォームアップ
 WARMUP_FILE = os.getenv("WARMUP_FILE", "")
 
@@ -87,3 +98,10 @@ VAC_ENABLE = os.getenv("VAC_ENABLE", "1") == "1"
 VAC_MIN_SPEECH_MS = int(os.getenv("VAC_MIN_SPEECH_MS", 220))
 VAC_HANGOVER_MS = int(os.getenv("VAC_HANGOVER_MS", 360))
 VAC_MIN_FINAL_MS = int(os.getenv("VAC_MIN_FINAL_MS", 700))
+
+# 長尺チャンクモード
+CHUNK_MODE = os.getenv("CHUNK_MODE", "utterance")
+LONGFORM_CHUNK_SECONDS = int(os.getenv("LONGFORM_CHUNK_SECONDS", 60))
+LONGFORM_OVERLAP_SECONDS = int(os.getenv("LONGFORM_OVERLAP_SECONDS", 5))
+LONGFORM_MIN_SPEECH_MS = int(os.getenv("LONGFORM_MIN_SPEECH_MS", 1200))
+LONGFORM_STATUS_INTERVAL_MS = int(os.getenv("LONGFORM_STATUS_INTERVAL_MS", 15000))

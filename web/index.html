@@ -108,6 +108,35 @@
           </section>
 
           <section class="panel card">
+            <details class="fold" open>
+              <summary>プロファイル</summary>
+              <fieldset class="field-group" id="profileGroup" aria-label="プロファイル選択">
+                <div class="input-selector">
+                  <input type="radio" id="profile-realtime" name="profile" value="realtime" checked />
+                  <label for="profile-realtime">リアルタイム</label>
+                </div>
+                <div class="input-selector">
+                  <input type="radio" id="profile-balanced" name="profile" value="balanced" />
+                  <label for="profile-balanced">バランス</label>
+                </div>
+                <div class="input-selector">
+                  <input type="radio" id="profile-high" name="profile" value="high_accuracy" />
+                  <label for="profile-high">高精度</label>
+                </div>
+              </fieldset>
+              <div class="grid1">
+                <label>区切りモード
+                  <select id="chunkMode">
+                    <option value="utterance">発話ごと</option>
+                    <option value="longform-60">1分チャンク</option>
+                    <option value="longform-120">2分チャンク</option>
+                  </select>
+                </label>
+              </div>
+            </details>
+          </section>
+
+          <section class="panel card">
             <textarea id="hotwords" rows="6" placeholder="1行に1語"></textarea>
             <div class="inline-row">
               <button id="saveHotwords" class="btn" type="button">保存</button>
@@ -188,6 +217,11 @@
               <button id="copyAll" class="btn subtle" type="button">コピー</button>
               <button id="clearAll" class="btn subtle" type="button">クリア</button>
             </div>
+            <div class="status-strip" aria-live="polite">
+              <span id="refineStatus" class="status-pill" hidden></span>
+              <span id="longformStatus" class="status-pill muted" hidden></span>
+            </div>
+            <div id="longformPlaceholder" class="placeholder muted" hidden></div>
             <div class="list" id="finalList" role="log" aria-live="polite" aria-label="ログ"></div>
           </article>
         </section>

@@ -46,6 +46,11 @@ const hotwordsEl = $('#hotwords');
 const hotStatusEl = $('#hotwordsStatus');
 const saveHotBtn = $('#saveHotwords');
 const themeRadios = $$('input[name="theme"]');
+const profileRadios = $$('input[name="profile"]');
+const chunkModeEl = $('#chunkMode');
+const refineStatusEl = $('#refineStatus');
+const longformStatusEl = $('#longformStatus');
+const longformPlaceholderEl = $('#longformPlaceholder');
 
 const waveCanvas = $('#wave');
 
@@ -71,6 +76,9 @@ let gainListenerAttached = false;
 let audioStreaming = false;
 let pendingStart = null;
 let recordLock = false;
+const finalNodes = new Map();
+const pendingRefineSegments = new Set();
+let refineStatusTimer = null;
 function generateSessionId() {
   return 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
 }
@@ -83,6 +91,83 @@ function ensureSessionId() {
   }
 }
 ensureSessionId();
+
+
+const PREF_KEY = 'whistx-profile';
+
+function getSelectedProfile() {
+  const active = profileRadios.find((input) => input.checked);
+  return active ? active.value : 'realtime';
+}
+
+function applyPreferences() {
+  try {
+    const raw = localStorage.getItem(PREF_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.profile) {
+        profileRadios.forEach((input) => {
+          input.checked = input.value === parsed.profile;
+        });
+      }
+      if (parsed.chunkMode && chunkModeEl) {
+        chunkModeEl.value = parsed.chunkMode;
+      }
+    }
+  } catch {}
+}
+
+function savePreferences() {
+  const payload = {
+    profile: getSelectedProfile(),
+    chunkMode: chunkModeEl?.value || 'utterance',
+  };
+  try {
+    localStorage.setItem(PREF_KEY, JSON.stringify(payload));
+  } catch {}
+}
+
+applyPreferences();
+
+function resetStatuses() {
+  pendingRefineSegments.clear();
+  if (refineStatusTimer) {
+    clearTimeout(refineStatusTimer);
+    refineStatusTimer = null;
+  }
+  if (refineStatusEl) {
+    refineStatusEl.textContent = '';
+    refineStatusEl.hidden = true;
+  }
+  if (longformStatusEl) {
+    longformStatusEl.textContent = '';
+    longformStatusEl.hidden = true;
+  }
+  if (longformPlaceholderEl) {
+    longformPlaceholderEl.hidden = true;
+    longformPlaceholderEl.textContent = '';
+  }
+}
+
+function resetTranscripts() {
+  if (finalListEl) finalListEl.innerHTML = '';
+  finalNodes.clear();
+  if (partialEl) partialEl.textContent = '';
+  resetStatuses();
+}
+
+function updatePlaceholderVisibility() {
+  if (pendingRefineSegments.size === 0) {
+    if (longformPlaceholderEl) {
+      longformPlaceholderEl.hidden = true;
+      longformPlaceholderEl.textContent = '';
+    }
+    if (longformStatusEl) {
+      longformStatusEl.hidden = true;
+      longformStatusEl.textContent = '';
+    }
+  }
+}
 
 
 function setRecordState(nextState) {
@@ -143,6 +228,14 @@ if (gainEl && gainValEl) {
 }
 
 function readOpts() {
+  const profile = getSelectedProfile();
+  const chunkSelection = chunkModeEl?.value || 'utterance';
+  let chunkMode = 'utterance';
+  let chunkSeconds = undefined;
+  if (chunkSelection.startsWith('longform')) {
+    chunkMode = 'longform';
+    chunkSeconds = chunkSelection.endsWith('120') ? 120 : 60;
+  }
   return {
     language: languageEl?.value || 'ja',
     asrBackend: asrBackendEl?.value || 'parakeet',
@@ -163,37 +256,125 @@ function readOpts() {
     beamSize: Number(beamSizeEl?.value || 12),
     patience: Number(patienceEl?.value || 1.2),
     minFinalMs: Number(minFinalMsEl?.value || 800),
+    transcribeProfile: profile,
+    highAccuracy: profile === 'high_accuracy' ? 1 : 0,
+    chunkMode,
+    chunkSeconds,
+    chunkOverlapSeconds: chunkMode === 'longform' ? 5 : undefined,
   };
 }
 
-function appendFinal(msg) {
-  if (!finalListEl) return;
-  const item = document.createElement('div');
-  item.className = 'item';
-
-  const time = document.createElement('div');
-  time.className = 'time';
-  const ts = Math.max(0, Math.round((msg.tsStart || 0) / 1000));
+function formatTimestamp(tsStart = 0) {
+  const ts = Math.max(0, Math.round(tsStart / 1000));
   const mm = Math.floor(ts / 60).toString().padStart(2, '0');
   const ss = (ts % 60).toString().padStart(2, '0');
-  time.textContent = `${mm}:${ss}`;
+  return `${mm}:${ss}`;
+}
 
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble';
-  if (msg.speaker) {
-    const chip = document.createElement('span');
-    chip.className = 'chip';
-    chip.textContent = msg.speaker;
-    bubble.appendChild(chip);
+function ensureFinalNode(segmentId) {
+  let node = finalNodes.get(segmentId);
+  if (!node && finalListEl) {
+    node = document.createElement('div');
+    node.className = 'item';
+    node.dataset.segmentId = segmentId;
+    const timeEl = document.createElement('div');
+    timeEl.className = 'time';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    node.append(timeEl, bubble);
+    finalListEl.appendChild(node);
+    finalNodes.set(segmentId, node);
   }
-  const span = document.createElement('span');
-  span.textContent = msg.text || '';
-  bubble.appendChild(span);
+  return node;
+}
 
-  item.append(time, bubble);
-  finalListEl.appendChild(item);
+function renderFinalNode(node, msg) {
+  if (!node) return;
+  const timeEl = node.querySelector('.time');
+  const bubble = node.querySelector('.bubble');
+  if (timeEl) timeEl.textContent = formatTimestamp(msg.tsStart || 0);
+  if (bubble) {
+    bubble.innerHTML = '';
+    if (msg.speaker) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = msg.speaker;
+      bubble.appendChild(chip);
+    }
+    const span = document.createElement('span');
+    span.textContent = msg.text || '';
+    bubble.appendChild(span);
+  }
+}
+
+function removeFinalNode(segmentId) {
+  const node = finalNodes.get(segmentId);
+  if (node && node.parentElement) {
+    node.parentElement.removeChild(node);
+  }
+  finalNodes.delete(segmentId);
+  updatePlaceholderVisibility();
+}
+
+function appendFinal(msg) {
+  if (!finalListEl || !msg.segmentId) return;
+  const text = (msg.text || '').trim();
+  if (!text) {
+    removeFinalNode(msg.segmentId);
+    return;
+  }
+  const node = ensureFinalNode(msg.segmentId);
+  renderFinalNode(node, msg);
   if (autoscrollEl?.checked) {
     finalListEl.scrollTop = finalListEl.scrollHeight;
+  }
+  updatePlaceholderVisibility();
+}
+
+function handleStatusMessage(msg) {
+  const stage = msg.stage;
+  if (!stage) return;
+  if (stage === 'refining') {
+    if (msg.segmentId) pendingRefineSegments.add(msg.segmentId);
+    if (refineStatusTimer) {
+      clearTimeout(refineStatusTimer);
+      refineStatusTimer = null;
+    }
+    if (refineStatusEl) {
+      const count = pendingRefineSegments.size;
+      refineStatusEl.hidden = false;
+      refineStatusEl.textContent = count > 1 ? `精度向上処理中… (${count})` : '精度向上処理中…';
+    }
+    if (msg.segmentId && msg.segmentId.startsWith('chunk_') && longformPlaceholderEl) {
+      longformPlaceholderEl.hidden = false;
+      longformPlaceholderEl.textContent = '長尺チャンクを処理中…';
+    }
+  } else if (stage === 'refined') {
+    if (msg.segmentId) pendingRefineSegments.delete(msg.segmentId);
+    if (refineStatusEl) {
+      const latencySec = msg.latencyMs ? (msg.latencyMs / 1000).toFixed(1) : null;
+      refineStatusEl.hidden = false;
+      refineStatusEl.textContent = latencySec ? `精度向上完了 (${latencySec}s)` : '精度向上完了';
+    }
+    if (refineStatusTimer) clearTimeout(refineStatusTimer);
+    refineStatusTimer = setTimeout(() => {
+      if (pendingRefineSegments.size === 0 && refineStatusEl) {
+        refineStatusEl.hidden = true;
+        refineStatusEl.textContent = '';
+      }
+    }, 2000);
+    updatePlaceholderVisibility();
+  } else if (stage === 'longform_pending') {
+    const remainingMs = Number(msg.remainingMs ?? 0);
+    const seconds = (remainingMs / 1000).toFixed(1);
+    if (longformStatusEl) {
+      longformStatusEl.hidden = false;
+      longformStatusEl.textContent = `長尺チャンク処理中… 残り${seconds}s`;
+    }
+    if (longformPlaceholderEl) {
+      longformPlaceholderEl.hidden = false;
+      longformPlaceholderEl.textContent = `長尺チャンク処理中… (残り${seconds}s)`;
+    }
   }
 }
 
@@ -266,6 +447,7 @@ async function startCapture() {
 
   pendingStart = { source };
   awaitingReady = true;
+  resetStatuses();
   seq = 0;
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const wsUrl = `${proto}://${location.host}/ws/transcribe`;
@@ -378,6 +560,8 @@ function handleMessage(data) {
     } else if (msg.type === 'final') {
       if (partialEl) partialEl.textContent = '';
       appendFinal(msg);
+    } else if (msg.type === 'overwrite') {
+      appendFinal(msg);
     } else if (msg.type === 'vad') {
       if (msg.state === 'start') vadDot?.classList.add('on');
       if (msg.state === 'end') vadDot?.classList.remove('on');
@@ -391,6 +575,8 @@ function handleMessage(data) {
           if (vadStatusEl.textContent.startsWith('calib:')) vadStatusEl.textContent = '';
         }, 4000);
       }
+    } else if (msg.type === 'status') {
+      handleStatusMessage(msg);
     } else if (msg.type === 'conn') {
       if (connEl) connEl.textContent = String(msg.count ?? 0);
     } else if (msg.type === 'info') {
@@ -550,6 +736,7 @@ function cleanup() {
   seq = 0;
   pendingStart = null;
   recordLock = false;
+  resetStatuses();
   setRecordState('idle');
   stopTimer();
 }
@@ -637,8 +824,21 @@ if (copyAllBtn) {
 if (clearAllBtn) {
   clearAllBtn.addEventListener('click', (e) => {
     e.preventDefault();
-    if (finalListEl) finalListEl.innerHTML = '';
-    if (partialEl) partialEl.textContent = '';
+    resetTranscripts();
+  });
+}
+
+profileRadios.forEach((input) => {
+  input.addEventListener('change', () => {
+    savePreferences();
+    resetTranscripts();
+  });
+});
+
+if (chunkModeEl) {
+  chunkModeEl.addEventListener('change', () => {
+    savePreferences();
+    resetTranscripts();
   });
 }
 

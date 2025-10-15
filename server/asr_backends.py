@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any
 import logging
 
 import numpy as np
@@ -53,6 +53,22 @@ class ParakeetCTCBackend(ASRBackend):
         # 高速一時ファイル領域（RAMディスク）があれば利用
         ramdir = "/dev/shm"
         self.tmp_dir = ramdir if os.path.isdir(ramdir) else None
+        self._default_decoder_type = "greedy"
+        self._default_decoder_params: Optional[Dict[str, Any]] = None
+        try:
+            decoding_cfg = getattr(self.model.cfg, "decoding", None)
+            if decoding_cfg is not None:
+                self._default_decoder_type = getattr(decoding_cfg, "strategy", "greedy")
+                params = getattr(decoding_cfg, self._default_decoder_type, None)
+                if params is not None:
+                    if hasattr(params, "to_dict"):
+                        params = params.to_dict()  # type: ignore
+                    elif hasattr(params, "__dict__"):
+                        params = dict(params.__dict__)
+                if isinstance(params, dict):
+                    self._default_decoder_params = params
+        except Exception:
+            logger.debug("Parakeet decoder metadata capture failed", exc_info=True)
 
     def _to_text(self, obj) -> str:
         # 抽象的に NeMo の戻り値から text を抽出
@@ -78,11 +94,53 @@ class ParakeetCTCBackend(ASRBackend):
             return ""
         return ""
 
+    def _apply_decoder_options(self, options: Optional[Dict[str, Any]]) -> None:
+        if not options:
+            return
+        decoder_type = options.get("decoder_type") or options.get("decoderType") or "beamsearch"
+        decode_params: Dict[str, Any] = {}
+        if "beam_size" in options:
+            try:
+                decode_params["beam_size"] = int(options["beam_size"])
+            except Exception:
+                pass
+        if "alpha" in options or "lm_weight" in options:
+            try:
+                decode_params["alpha"] = float(options.get("alpha", options.get("lm_weight")))
+            except Exception:
+                pass
+        if "beta" in options or "word_score" in options:
+            try:
+                decode_params["beta"] = float(options.get("beta", options.get("word_score")))
+            except Exception:
+                pass
+        lm_path = options.get("lm_path") or options.get("lmPath")
+        if lm_path:
+            decode_params["lm_path"] = lm_path
+        try:
+            if decode_params:
+                self.model.change_decoding_strategy(decoder_type=decoder_type, decode_params=decode_params)
+            else:
+                self.model.change_decoding_strategy(decoder_type=decoder_type)
+        except Exception:
+            logger.warning("Failed to apply decoder options %s", options, exc_info=True)
+
+    def _restore_decoder(self) -> None:
+        try:
+            if self._default_decoder_params:
+                self.model.change_decoding_strategy(decoder_type=self._default_decoder_type, decode_params=self._default_decoder_params)
+            else:
+                self.model.change_decoding_strategy(decoder_type=self._default_decoder_type)
+        except Exception:
+            logger.debug("Failed to restore decoder strategy", exc_info=True)
+
     def transcribe(self, audio_f32_mono_16k: np.ndarray, language: Optional[str] = None,
-                   beam_size: int = 1, patience: float = 1.0, partial: bool = False) -> str:
+                   beam_size: int = 1, patience: float = 1.0, partial: bool = False,
+                   decoder_options: Optional[Dict[str, Any]] = None) -> str:
         # NeMo の transcribe はファイル入力が扱いやすいため、一時WAVに出力
         # 16kHz mono float32 を 16-bit PCM で保存
         import soundfile as sf
+        self._apply_decoder_options(decoder_options)
         with tempfile.NamedTemporaryFile(dir=self.tmp_dir, suffix='.wav', delete=True) as tmp:
             sf.write(tmp.name, audio_f32_mono_16k, 16000, subtype='PCM_16')
             # NeMo の API 差分に対応（RNNT/CTCで引数名が異なることがある）
@@ -90,6 +148,7 @@ class ParakeetCTCBackend(ASRBackend):
                 hyps = self.model.transcribe([tmp.name], batch_size=1)
             except TypeError:
                 hyps = self.model.transcribe(paths2audio_files=[tmp.name], batch_size=1)
+        self._restore_decoder()
         if not hyps:
             return ""
         return self._to_text(hyps)

@@ -1,7 +1,7 @@
 # CUDA 12 ランタイム（Ubuntu 22.04）
 # 注意: PyTorch のホイールは cuDNN を同梱しているため、
 # ベースイメージに含まれる cuDNN と衝突しないよう cudnn 無しの runtime を使用します。
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM docker.io/nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
 # 一時的に nvidia/cuda の APT エントリを無効化
 RUN set -eux; \
