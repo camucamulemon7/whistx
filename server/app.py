@@ -9,14 +9,17 @@ from typing import Dict, Optional
 import logging
 import sys
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import warnings
-from fastapi.responses import FileResponse, HTMLResponse
+from collections import OrderedDict
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from . import config
 from .transcribe_worker import TranscribeWorker
 from .hotwords import HotwordStore
+from .metrics import profile_switch_total
 
 
 # 3rdパーティ内部の一時的な RuntimeWarning を抑制（faster-whisper の mean 計算等）
@@ -73,38 +76,54 @@ class SessionFiles:
         self.jsonl_path = self.base.with_suffix(".jsonl")
         self.txt_path = self.base.with_suffix(".txt")
         self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-        self.jsonl_f = self.jsonl_path.open("a", encoding="utf-8")
-        self.txt_f = self.txt_path.open("a", encoding="utf-8")
+        self.records: "OrderedDict[str, Dict[str, object]]" = OrderedDict()
+        self._sync_files()
 
-    def write_final(self, text: str, ts_start: int, ts_end: int, segment_id: int, speaker: str | None = None):
-        rec = {
+    def _sync_files(self):
+        with self.jsonl_path.open("w", encoding="utf-8") as jf:
+            for rec in self.records.values():
+                jf.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        with self.txt_path.open("w", encoding="utf-8") as tf:
+            for rec in self.records.values():
+                text = rec.get("text", "")
+                speaker = rec.get("speaker")
+                line = f"{speaker}: {text}" if speaker else text
+                if not isinstance(line, str):
+                    line = str(line)
+                if not line.endswith("\n"):
+                    line += "\n"
+                tf.write(line)
+
+    def write_final(self, text: str, ts_start: int, ts_end: int, segment_id, speaker: str | None = None):
+        key = str(segment_id)
+        self.records[key] = {
             "type": "final",
-            "segmentId": segment_id,
+            "segmentId": key,
             "text": text,
             "tsStart": ts_start,
             "tsEnd": ts_end,
+            **({"speaker": speaker} if speaker else {}),
         }
-        if speaker:
-            rec["speaker"] = speaker
-        self.jsonl_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        self.jsonl_f.flush()
-        line = text
-        if speaker:
-            line = f"{speaker}: {text}"
-        self.txt_f.write(line)
-        if not text.endswith("\n"):
-            self.txt_f.write("\n")
-        self.txt_f.flush()
+        self._sync_files()
+
+    def write_overwrite(self, text: str, ts_start: int, ts_end: int, segment_id, speaker: str | None = None):
+        key = str(segment_id)
+        if not text.strip():
+            self.records.pop(key, None)
+        else:
+            self.records[key] = {
+                "type": "final",
+                "segmentId": key,
+                "text": text,
+                "tsStart": ts_start,
+                "tsEnd": ts_end,
+                **({"speaker": speaker} if speaker else {}),
+            }
+        self._sync_files()
 
     def close(self):
-        try:
-            self.jsonl_f.close()
-        except Exception:
-            pass
-        try:
-            self.txt_f.close()
-        except Exception:
-            pass
+        # ファイルは都度同期しているため追加処理は不要
+        pass
 
 
 sessions: Dict[str, Dict] = {}
@@ -139,13 +158,27 @@ async def ws_transcribe(ws: WebSocket):
         except Exception:
             pass
         finally:
-            if files and payload.get("type") == "final":
+            if not files:
+                return
+            ptype = payload.get("type")
+            if ptype == "final":
                 try:
                     files.write_final(
                         text=payload.get("text", ""),
-                        ts_start=payload.get("tsStart", 0),
-                        ts_end=payload.get("tsEnd", 0),
-                        segment_id=payload.get("segmentId", 0),
+                        ts_start=int(payload.get("tsStart", 0)),
+                        ts_end=int(payload.get("tsEnd", 0)),
+                        segment_id=payload.get("segmentId", ""),
+                        speaker=payload.get("speaker"),
+                    )
+                except Exception:
+                    pass
+            elif ptype == "overwrite":
+                try:
+                    files.write_overwrite(
+                        text=payload.get("text", ""),
+                        ts_start=int(payload.get("tsStart", 0)),
+                        ts_end=int(payload.get("tsEnd", 0)),
+                        segment_id=payload.get("segmentId", ""),
                         speaker=payload.get("speaker"),
                     )
                 except Exception:
@@ -181,6 +214,10 @@ async def ws_transcribe(ws: WebSocket):
                         session_id = files.session_id
                     await ws.send_json({"type": "info", "message": "backend_loading", "state": "loading"})
                     worker = TranscribeWorker(session_id, send_json, opts)
+                    try:
+                        profile_switch_total.labels(profile=worker.profile).inc()
+                    except Exception:
+                        pass
                     sessions[session_id] = {"worker": worker, "files": files, "ws": ws}
                     asyncio.create_task(worker.run())
                     if ka_task is None:
@@ -320,6 +357,12 @@ async def get_srt(session_id: str):
         idx += 1
     content = "\n".join(out)
     return HTMLResponse(status_code=200, content=content, media_type="text/plain; charset=utf-8")
+
+
+@app.get("/metrics")
+async def metrics():
+    payload = generate_latest()
+    return Response(status_code=200, content=payload, media_type=CONTENT_TYPE_LATEST)
 
 # 静的ファイルは最後にマウント（他のルートを優先させるため）
 WEB_DIR = Path("web")

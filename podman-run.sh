@@ -2,6 +2,10 @@
 # Launch whistx container with GPU using Podman (HTTPS-aware).
 set -euo pipefail
 
+if [ ! -e data ]; then
+  mkdir data hf-home
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME=${IMAGE_NAME:-whistx:latest}
 CONTAINER_NAME=${CONTAINER_NAME:-whistx}
@@ -31,7 +35,7 @@ PODMAN_RUN_ARGS=(
   run
   --rm
   --name "${CONTAINER_NAME}"
-  --device nvidia.com/gpu=all
+  --device nvidia.com/gpu=all 
   --security-opt label=disable
   --env NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
   --env NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
