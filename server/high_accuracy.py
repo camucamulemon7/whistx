@@ -62,10 +62,13 @@ class SegmentAccumulator:
 
     def add(self, pcm16: bytes, ts: Tuple[int, int], *, force: bool = False) -> Optional[Tuple[bytes, Tuple[int, int]]]:
         seg_ms = max(0, int(ts[1] - ts[0]))
+        samples = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
+        rms = float(np.sqrt(np.mean(np.square(samples)) + 1e-9))
         if seg_ms < self.min_speech_ms and not force:
-            # ノイズ的な短片断はノイズプロファイルとして学習
-            self._update_noise_profile(pcm16)
-            return None
+            # ノイズ的な短片断はノイズプロファイルとして学習。ただし十分な音量なら保持
+            if rms < self.target_rms * 0.55:
+                self._update_noise_profile(samples)
+                return None
         if self.head_ts is None:
             self.head_ts = ts[0]
         self.tail_ts = max(ts[1], ts[0])
@@ -101,13 +104,10 @@ class SegmentAccumulator:
         audio = self._post_process(audio)
         return audio, ts
 
-    def _update_noise_profile(self, pcm16: bytes):
-        if not pcm16:
+    def _update_noise_profile(self, samples: np.ndarray):
+        if samples.size < 32:
             return
-        f32 = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
-        if f32.size < 32:
-            return
-        spec = np.abs(np.fft.rfft(f32))
+        spec = np.abs(np.fft.rfft(samples))
         if self._noise_profile is None or self._noise_profile.shape != spec.shape:
             self._noise_profile = spec
         else:

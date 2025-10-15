@@ -394,7 +394,6 @@ class VADSegmenter:
 class TranscribeWorker:
     def __init__(self, session_id: str, send_json, opts: Optional[Dict[str, Any]] = None):
         self.session_id = session_id
-        self.audio_q: asyncio.Queue[Tuple[bytes, int]] = asyncio.Queue(maxsize=256)
         self.stop_event = asyncio.Event()
         self.send_json = send_json
         self.opts = opts or {}
@@ -475,6 +474,12 @@ class TranscribeWorker:
                 min_speech_ms=self.longform_min_speech_ms,
             )
             longform_queue_depth.set(0)
+        queue_maxsize = getattr(config, "AUDIO_QUEUE_MAXSIZE", 256)
+        if self.chunk_mode == "longform":
+            queue_maxsize = max(queue_maxsize, getattr(config, "LONGFORM_QUEUE_MAXSIZE", queue_maxsize))
+            frames_per_chunk = max(1, int(self.longform_chunk_ms / max(1, config.FRAME_MS)))
+            queue_maxsize = max(queue_maxsize, frames_per_chunk * 6)
+        self.audio_q: asyncio.Queue[Tuple[bytes, int]] = asyncio.Queue(maxsize=queue_maxsize)
 
         def _int_opt(key: str, default: int) -> int:
             val = self.opts.get(key, default)
@@ -497,6 +502,11 @@ class TranscribeWorker:
         self.window_seconds = _int_opt("windowSeconds", config.WINDOW_SECONDS)
         self.partial_window_seconds = _int_opt("partialWindowSeconds", getattr(config, "PARTIAL_WINDOW_SECONDS", 3))
         self.window_overlap_seconds = _int_opt("windowOverlapSeconds", config.WINDOW_OVERLAP_SECONDS)
+
+        if self.chunk_mode == "longform":
+            base_silence = max(self.longform_min_speech_ms + 800, int(self.longform_chunk_ms * 0.2))
+            utterance_silence_ms = max(utterance_silence_ms, base_silence)
+            min_final_ms = max(min_final_ms, self.longform_min_speech_ms)
 
         vad_opts: Dict[str, Any] = {
             "sampleRate": config.SAMPLE_RATE,
@@ -875,11 +885,6 @@ class TranscribeWorker:
         logger.debug("final len=%.2fs text_chars=%d", len(audio) / 16000.0, len(coarse_text))
         self._prev_partial_pcm = b""
         self._partial_acc_text = ""
-        if self.high_accuracy_enabled and self.refiner and self.refine_queue:
-            segment_id = self._next_segment_id(ts)
-            await self._send_status("refining", segment_id, ts)
-            await self._enqueue_refinement(segment_id, pcm16, ts, coarse_text)
-            return coarse_text
         speaker = None
         if self.diarizer is not None and coarse_text:
             try:
@@ -887,6 +892,11 @@ class TranscribeWorker:
             except Exception:
                 speaker = None
         segment_ids = await self._emit_final_text(coarse_text, ts, speaker)
+        if self.high_accuracy_enabled and self.refiner and self.refine_queue:
+            for seg_id in segment_ids:
+                await self._send_status("refining", seg_id, ts)
+                piece_text = self.final_text_by_segment.get(seg_id, coarse_text)
+                await self._enqueue_refinement(seg_id, pcm16, ts, piece_text)
         if self.chunk_mode == "longform":
             now = time.time()
             for seg_id in segment_ids:
