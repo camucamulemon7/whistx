@@ -31,7 +31,7 @@ DOCKER_RUN_ARGS=(
   run
   --rm
   --name "${CONTAINER_NAME}"
-  --device nvidia.com/gpu=all
+  --gpus all
   --security-opt label=disable
   --env NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
   --env NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}

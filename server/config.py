@@ -16,6 +16,8 @@ FRAME_MS = int(os.getenv("FRAME_MS", 200))  # クライアントからのフレ�
 VAD_FRAME_MS = int(os.getenv("VAD_FRAME_MS", 20))  # VAD解析フレーム
 VAD_AGGRESSIVENESS = int(os.getenv("VAD_AGGRESSIVENESS", 2))
 UTTERANCE_SILENCE_MS = int(os.getenv("UTTERANCE_SILENCE_MS", 600))  # これ以上の無音で区切り（短め）
+AUDIO_QUEUE_MAXSIZE = int(os.getenv("AUDIO_QUEUE_MAXSIZE", 256))
+LONGFORM_QUEUE_MAXSIZE = int(os.getenv("LONGFORM_QUEUE_MAXSIZE", 1024))
 
 # VAD バックエンド
 VAD_BACKEND = os.getenv("VAD_BACKEND", "silero")  # "silero" | "webrtc"

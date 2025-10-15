@@ -50,7 +50,8 @@ const profileRadios = $$('input[name="profile"]');
 const chunkModeEl = $('#chunkMode');
 const refineStatusEl = $('#refineStatus');
 const longformStatusEl = $('#longformStatus');
-const longformPlaceholderEl = $('#longformPlaceholder');
+const longformProgressEl = $('#longformProgress');
+const longformProgressBarEl = $('#longformProgressBar');
 
 const waveCanvas = $('#wave');
 
@@ -79,6 +80,14 @@ let recordLock = false;
 const finalNodes = new Map();
 const pendingRefineSegments = new Set();
 let refineStatusTimer = null;
+let longformCountdownTimer = null;
+let longformDeadline = null;
+let longformPending = false;
+let longformTargetMs = null;
+let currentChunkTargetMs = null;
+let waveDisplayGain = 1;
+let smoothedWave = null;
+let lastWaveDraw = performance.now();
 function generateSessionId() {
   return 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
 }
@@ -143,10 +152,8 @@ function resetStatuses() {
     longformStatusEl.textContent = '';
     longformStatusEl.hidden = true;
   }
-  if (longformPlaceholderEl) {
-    longformPlaceholderEl.hidden = true;
-    longformPlaceholderEl.textContent = '';
-  }
+  clearLongformCountdown();
+  longformPending = false;
 }
 
 function resetTranscripts() {
@@ -158,14 +165,61 @@ function resetTranscripts() {
 
 function updatePlaceholderVisibility() {
   if (pendingRefineSegments.size === 0) {
-    if (longformPlaceholderEl) {
-      longformPlaceholderEl.hidden = true;
-      longformPlaceholderEl.textContent = '';
-    }
-    if (longformStatusEl) {
+    if (longformStatusEl && !longformPending) {
       longformStatusEl.hidden = true;
       longformStatusEl.textContent = '';
     }
+  }
+}
+
+function clearLongformCountdown() {
+  if (longformCountdownTimer) {
+    clearInterval(longformCountdownTimer);
+    longformCountdownTimer = null;
+  }
+  longformDeadline = null;
+  longformPending = false;
+  longformTargetMs = null;
+  if (longformStatusEl) {
+    longformStatusEl.textContent = '';
+    longformStatusEl.hidden = true;
+  }
+  if (longformProgressEl) longformProgressEl.hidden = true;
+  if (longformProgressBarEl) longformProgressBarEl.style.width = '0%';
+}
+
+function updateLongformCountdown() {
+  if (!longformPending || !longformDeadline) return;
+  const remaining = Math.max(0, longformDeadline - Date.now());
+  const seconds = Math.max(0, Math.ceil(remaining / 1000));
+  const text = `長尺チャンク処理中… 残り${seconds}s`;
+  if (longformStatusEl) {
+    longformStatusEl.hidden = false;
+    longformStatusEl.textContent = text;
+  }
+  const target = longformTargetMs || currentChunkTargetMs;
+  if (target && longformProgressEl && longformProgressBarEl) {
+    longformProgressEl.hidden = false;
+    const progress = Math.min(1, Math.max(0, 1 - remaining / target));
+    longformProgressBarEl.style.width = `${Math.round(progress * 100)}%`;
+  }
+  if (remaining <= 0 && !pendingRefineSegments.size) {
+    clearLongformCountdown();
+  }
+}
+
+function startLongformCountdown(remainingMs) {
+  longformPending = true;
+  const remaining = Math.max(0, remainingMs);
+  longformDeadline = Date.now() + remaining;
+  longformTargetMs = currentChunkTargetMs || (remaining || null);
+  if (longformCountdownTimer) {
+    clearInterval(longformCountdownTimer);
+    longformCountdownTimer = null;
+  }
+  updateLongformCountdown();
+  if (!longformCountdownTimer) {
+    longformCountdownTimer = setInterval(updateLongformCountdown, 1000);
   }
 }
 
@@ -234,8 +288,11 @@ function readOpts() {
   let chunkSeconds = undefined;
   if (chunkSelection.startsWith('longform')) {
     chunkMode = 'longform';
-    chunkSeconds = chunkSelection.endsWith('120') ? 120 : 60;
+    const parts = chunkSelection.split('-');
+    const secCandidate = Number(parts[1]);
+    chunkSeconds = Number.isFinite(secCandidate) && secCandidate > 0 ? secCandidate : 60;
   }
+  currentChunkTargetMs = chunkMode === 'longform' && chunkSeconds ? chunkSeconds * 1000 : null;
   return {
     language: languageEl?.value || 'ja',
     asrBackend: asrBackendEl?.value || 'parakeet',
@@ -328,6 +385,9 @@ function appendFinal(msg) {
   if (autoscrollEl?.checked) {
     finalListEl.scrollTop = finalListEl.scrollHeight;
   }
+  if (msg.segmentId.startsWith('chunk_')) {
+    clearLongformCountdown();
+  }
   updatePlaceholderVisibility();
 }
 
@@ -345,12 +405,11 @@ function handleStatusMessage(msg) {
       refineStatusEl.hidden = false;
       refineStatusEl.textContent = count > 1 ? `精度向上処理中… (${count})` : '精度向上処理中…';
     }
-    if (msg.segmentId && msg.segmentId.startsWith('chunk_') && longformPlaceholderEl) {
-      longformPlaceholderEl.hidden = false;
-      longformPlaceholderEl.textContent = '長尺チャンクを処理中…';
-    }
   } else if (stage === 'refined') {
     if (msg.segmentId) pendingRefineSegments.delete(msg.segmentId);
+    if (pendingRefineSegments.size === 0) {
+      clearLongformCountdown();
+    }
     if (refineStatusEl) {
       const latencySec = msg.latencyMs ? (msg.latencyMs / 1000).toFixed(1) : null;
       refineStatusEl.hidden = false;
@@ -366,15 +425,7 @@ function handleStatusMessage(msg) {
     updatePlaceholderVisibility();
   } else if (stage === 'longform_pending') {
     const remainingMs = Number(msg.remainingMs ?? 0);
-    const seconds = (remainingMs / 1000).toFixed(1);
-    if (longformStatusEl) {
-      longformStatusEl.hidden = false;
-      longformStatusEl.textContent = `長尺チャンク処理中… 残り${seconds}s`;
-    }
-    if (longformPlaceholderEl) {
-      longformPlaceholderEl.hidden = false;
-      longformPlaceholderEl.textContent = `長尺チャンク処理中… (残り${seconds}s)`;
-    }
+    startLongformCountdown(remainingMs);
   }
 }
 
@@ -654,23 +705,47 @@ function drawWave() {
     const [r, g, b] = m.slice(1).map((v) => parseInt(v, 16));
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
   };
+  if (!smoothedWave || smoothedWave.length !== W) {
+    smoothedWave = new Float32Array(W);
+  }
+  const nowTs = performance.now ? performance.now() : Date.now();
+  let dt = nowTs - lastWaveDraw;
+  if (!Number.isFinite(dt) || dt <= 0) dt = 16;
+  dt = Math.min(120, Math.max(8, dt));
+  const smoothingFactor = 1 - Math.exp(-dt / 80);
+  lastWaveDraw = nowTs;
+  let maxAbs = 0;
+  const sampleStride = Math.max(1, Math.floor(waveBuf.length / W));
+  for (let i = 0; i < waveBuf.length; i += sampleStride) {
+    const v = Math.abs(waveBuf[i] || 0);
+    if (v > maxAbs) maxAbs = v;
+  }
+  const baseScale = H * 0.75;
+  if (maxAbs > 1e-4) {
+    const targetGain = Math.min(12, Math.max(1, 0.6 / maxAbs));
+    waveDisplayGain += (targetGain - waveDisplayGain) * 0.15;
+  } else {
+    waveDisplayGain += (1 - waveDisplayGain) * 0.1;
+  }
+  const amplitudeScale = Math.min(baseScale * waveDisplayGain, H * 2);
   const gradient = ctx.createLinearGradient(0, 0, 0, H);
-  gradient.addColorStop(0, toRgba(accent, 0.45));
-  gradient.addColorStop(0.6, toRgba(accent, 0.1));
-  gradient.addColorStop(1, toRgba(accent, 0));
+  gradient.addColorStop(0, toRgba(accent, 0.6));
+  gradient.addColorStop(0.6, toRgba(accent, 0.18));
+  gradient.addColorStop(1, toRgba(accent, 0.04));
 
   const areaPath = new Path2D();
   const strokePath = new Path2D();
   const mid = H / 2;
-  const scale = H / 2 - 6;
   const N = waveBuf.length;
   areaPath.moveTo(0, mid);
   strokePath.moveTo(0, mid);
   for (let x = 0; x < W; x++) {
     const idx = (wavePos + Math.floor((x / W) * N)) % N;
     const v = waveBuf[idx] || 0;
-    const ease = Math.pow(Math.sin((x / W) * Math.PI), 0.65);
-    const y = mid - v * scale * ease;
+    const ease = Math.pow(Math.sin((x / W) * Math.PI), 0.8);
+    const smoothed = smoothedWave[x] + (v - smoothedWave[x]) * smoothingFactor;
+    smoothedWave[x] = smoothed;
+    const y = mid - smoothed * amplitudeScale * ease;
     areaPath.lineTo(x, y);
     strokePath.lineTo(x, y);
   }
@@ -679,10 +754,10 @@ function drawWave() {
   areaPath.closePath();
   ctx.fillStyle = gradient;
   ctx.fill(areaPath);
-  ctx.lineWidth = 1.6;
-  ctx.strokeStyle = toRgba(accent, 0.9);
-  ctx.shadowColor = toRgba(accent, 0.25);
-  ctx.shadowBlur = 12;
+  ctx.lineWidth = 2.2;
+  ctx.strokeStyle = toRgba(accent, 0.95);
+  ctx.shadowColor = toRgba(accent, 0.35);
+  ctx.shadowBlur = 16;
   ctx.stroke(strokePath);
   ctx.shadowBlur = 0;
 
