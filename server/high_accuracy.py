@@ -151,6 +151,7 @@ class HighAccuracyDecoder:
         self.word_score = float(getattr(config, "HIGH_ACCURACY_WORD_SCORE", -1.5))
         self.patience = float(getattr(config, "HIGH_ACCURACY_PATIENCE", 1.6))
         self._lock = asyncio.Lock()
+        self._supports_decoder_options = hasattr(self.backend, "_apply_decoder_options")
         self.chunk_seconds = 6
         self.overlap_seconds = 1
 
@@ -158,14 +159,16 @@ class HighAccuracyDecoder:
         lang = language or self.language
         audio = np_int16_to_float32(pcm16le_bytes_to_np(pcm16))
         loop = asyncio.get_running_loop()
-        decoder_options: Dict[str, Any] = {
-            "decoder_type": self.decoder_type,
-            "beam_size": self.beam_width,
-            "alpha": self.lm_weight,
-            "beta": self.word_score,
-        }
-        if self.lm_path:
-            decoder_options["lm_path"] = self.lm_path
+        decoder_options: Optional[Dict[str, Any]] = None
+        if self._supports_decoder_options:
+            decoder_options = {
+                "decoder_type": self.decoder_type,
+                "beam_size": self.beam_width,
+                "alpha": self.lm_weight,
+                "beta": self.word_score,
+            }
+            if self.lm_path:
+                decoder_options["lm_path"] = self.lm_path
         async with self._lock:
             try:
                 if audio.size > int((self.chunk_seconds + self.overlap_seconds) * 16000):
@@ -176,21 +179,14 @@ class HighAccuracyDecoder:
                 else:
                     result = await loop.run_in_executor(
                         None,
-                        lambda: self.backend.transcribe(
-                            audio,
-                            language=lang,
-                            beam_size=self.beam_width,
-                            patience=self.patience,
-                            partial=False,
-                            decoder_options=decoder_options,
-                        ),
+                        lambda: self._run_decode_once(audio, lang, decoder_options),
                     )
             except Exception as exc:
                 _logger.exception("high accuracy decode failed: %s", exc)
                 result = ""
         return self._cleanup_text(result or "")
 
-    def _decode_with_chunks(self, audio: np.ndarray, language: Optional[str], decoder_options: Dict[str, Any]) -> str:
+    def _decode_with_chunks(self, audio: np.ndarray, language: Optional[str], decoder_options: Optional[Dict[str, Any]]) -> str:
         sr = 16000
         chunk_samples = int(self.chunk_seconds * sr)
         step_samples = int((self.chunk_seconds - self.overlap_seconds) * sr)
@@ -201,19 +197,24 @@ class HighAccuracyDecoder:
         while start < audio.shape[0]:
             end = min(audio.shape[0], start + chunk_samples)
             chunk = audio[start:end]
-            text = self.backend.transcribe(
-                chunk,
-                language=language,
-                beam_size=self.beam_width,
-                patience=self.patience,
-                partial=False,
-                decoder_options=decoder_options,
-            )
+            text = self._run_decode_once(chunk, language, decoder_options)
             segments.append(text or "")
             if end >= audio.shape[0]:
                 break
             start += step_samples
         return "".join(segments)
+
+    def _run_decode_once(self, audio: np.ndarray, language: Optional[str], decoder_options: Optional[Dict[str, Any]]) -> str:
+        kwargs: Dict[str, Any] = {
+            "audio_f32_mono_16k": audio,
+            "language": language,
+            "beam_size": self.beam_width,
+            "patience": self.patience,
+            "partial": False,
+        }
+        if self._supports_decoder_options and decoder_options:
+            kwargs["decoder_options"] = decoder_options
+        return self.backend.transcribe(**kwargs)
 
     def _cleanup_text(self, text: str) -> str:
         if not text:

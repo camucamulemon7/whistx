@@ -41,6 +41,8 @@ AUTO_VAD_TUNE_SILENCE = os.getenv("AUTO_VAD_TUNE_SILENCE", "1") == "1"
 # ASR バックエンド
 ASR_BACKEND = os.getenv("ASR_BACKEND", "parakeet")  # "parakeet" | "whisper" | "simulwhisper"
 TRANSCRIBE_PROFILE = os.getenv("TRANSCRIBE_PROFILE", "realtime")
+HF_AUTH_TOKEN = os.getenv("HF_AUTH_TOKEN", os.getenv("HUGGING_FACE_HUB_TOKEN", ""))
+ENABLE_PARAKEET_EN = os.getenv("ENABLE_PARAKEET_EN", "0") == "1"
 
 # ストリーミング認識（SimulStreaming 相当）
 STREAMING_WINDOW_SECONDS = int(os.getenv("STREAMING_WINDOW_SECONDS", 14))
