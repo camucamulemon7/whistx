@@ -5,6 +5,7 @@ import tempfile
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple, List, Dict, Any
 import logging
+import threading
 
 import numpy as np
 
@@ -31,16 +32,22 @@ class ASRBackend(ABC):
 
 
 class ParakeetCTCBackend(ASRBackend):
-    def __init__(self, model_id: str, device: str = "cuda"):
+    def __init__(self, model_id: str, device: str = "cuda", hf_token: Optional[str] = None):
         # 遅延ロード（importコストを初回に限定）
         from nemo.collections.asr.models import EncDecCTCModelBPE
 
         self._EncDecCTCModelBPE = EncDecCTCModelBPE
         self.model_id = model_id
         self.device = device if device in ("cuda", "cpu") else "cpu"
+        self._hf_token = hf_token or os.getenv("HF_AUTH_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN") or os.getenv("HF_HUB_TOKEN")
         logger.info("[ParakeetCTC] モデル初期化開始: %s (device=%s)", model_id, self.device)
         try:
-            self.model = self._EncDecCTCModelBPE.from_pretrained(model_name=model_id)
+            extra_args: Dict[str, Any] = {}
+            if self._hf_token:
+                extra_args["token"] = self._hf_token
+                os.environ.setdefault("HUGGING_FACE_HUB_TOKEN", self._hf_token)
+                os.environ.setdefault("HF_HUB_TOKEN", self._hf_token)
+            self.model = self._EncDecCTCModelBPE.from_pretrained(model_name=model_id, **extra_args)
         except Exception as e:
             logger.exception("[ParakeetCTC] モデル取得に失敗: %s", e)
             raise
@@ -50,6 +57,11 @@ class ParakeetCTCBackend(ASRBackend):
         except Exception:
             pass
         self.model.eval()
+        try:
+            self.model.freeze()
+        except Exception:
+            logger.debug("Parakeet model freeze skipped", exc_info=True)
+        self._lock = threading.RLock()
         # 高速一時ファイル領域（RAMディスク）があれば利用
         ramdir = "/dev/shm"
         self.tmp_dir = ramdir if os.path.isdir(ramdir) else None
@@ -94,36 +106,14 @@ class ParakeetCTCBackend(ASRBackend):
             return ""
         return ""
 
-    def _apply_decoder_options(self, options: Optional[Dict[str, Any]]) -> None:
+    def _apply_decoder_options(self, options: Optional[Dict[str, Any]]) -> bool:
         if not options:
-            return
-        decoder_type = options.get("decoder_type") or options.get("decoderType") or "beamsearch"
-        decode_params: Dict[str, Any] = {}
-        if "beam_size" in options:
-            try:
-                decode_params["beam_size"] = int(options["beam_size"])
-            except Exception:
-                pass
-        if "alpha" in options or "lm_weight" in options:
-            try:
-                decode_params["alpha"] = float(options.get("alpha", options.get("lm_weight")))
-            except Exception:
-                pass
-        if "beta" in options or "word_score" in options:
-            try:
-                decode_params["beta"] = float(options.get("beta", options.get("word_score")))
-            except Exception:
-                pass
-        lm_path = options.get("lm_path") or options.get("lmPath")
-        if lm_path:
-            decode_params["lm_path"] = lm_path
-        try:
-            if decode_params:
-                self.model.change_decoding_strategy(decoder_type=decoder_type, decode_params=decode_params)
-            else:
-                self.model.change_decoding_strategy(decoder_type=decoder_type)
-        except Exception:
-            logger.warning("Failed to apply decoder options %s", options, exc_info=True)
+            return False
+        # 現行 NeMo (23.x 系) の change_decoding_strategy は decode_params 等のキーワードを
+        # 受け付けず、cfg の書き換えが必要になるケースが多い。安全策として警告のみ出し
+        # 既定値のまま利用する。
+        logger.info("[ParakeetCTC] decoder options ignored (unsupported by current NeMo API): %s", options)
+        return False
 
     def _restore_decoder(self) -> None:
         try:
@@ -140,15 +130,16 @@ class ParakeetCTCBackend(ASRBackend):
         # NeMo の transcribe はファイル入力が扱いやすいため、一時WAVに出力
         # 16kHz mono float32 を 16-bit PCM で保存
         import soundfile as sf
-        self._apply_decoder_options(decoder_options)
-        with tempfile.NamedTemporaryFile(dir=self.tmp_dir, suffix='.wav', delete=True) as tmp:
-            sf.write(tmp.name, audio_f32_mono_16k, 16000, subtype='PCM_16')
-            # NeMo の API 差分に対応（RNNT/CTCで引数名が異なることがある）
-            try:
-                hyps = self.model.transcribe([tmp.name], batch_size=1)
-            except TypeError:
-                hyps = self.model.transcribe(paths2audio_files=[tmp.name], batch_size=1)
-        self._restore_decoder()
+        with self._lock:
+            params_changed = self._apply_decoder_options(decoder_options)
+            with tempfile.NamedTemporaryFile(dir=self.tmp_dir, suffix='.wav', delete=True) as tmp:
+                sf.write(tmp.name, audio_f32_mono_16k, 16000, subtype='PCM_16')
+                try:
+                    hyps = self.model.transcribe([tmp.name], batch_size=1)
+                except TypeError:
+                    hyps = self.model.transcribe(paths2audio_files=[tmp.name], batch_size=1)
+            if params_changed:
+                self._restore_decoder()
         if not hyps:
             return ""
         return self._to_text(hyps)
@@ -260,11 +251,20 @@ def create_backend(cfg, backend_name: Optional[str] = None, language: Optional[s
     backend = backend_name or getattr(cfg, 'ASR_BACKEND', 'parakeet')
     lang = (language or '').lower()
     logger.info("[ASR] バックエンド初期化: %s (language=%s)", backend, lang or '<default>')
-    if backend == 'parakeet':
-        model_id = cfg.PARAKEET_MODEL_ID
-        if lang.startswith('en'):
-            model_id = getattr(cfg, 'PARAKEET_MODEL_ID_EN', cfg.PARAKEET_MODEL_ID)
-        return ParakeetCTCBackend(model_id=model_id, device=getattr(cfg, 'ASR_DEVICE', 'cuda'))
+    use_parakeet = backend == 'parakeet'
+    model_id = getattr(cfg, 'PARAKEET_MODEL_ID', 'parakeet')
+    if use_parakeet and lang.startswith('en'):
+        model_id = getattr(cfg, 'PARAKEET_MODEL_ID_EN', getattr(cfg, 'PARAKEET_MODEL_ID', 'parakeet'))
+        if not getattr(cfg, 'ENABLE_PARAKEET_EN', False) and not getattr(cfg, 'HF_AUTH_TOKEN', ''):
+            logger.info("[ASR] English Parakeet disabled or token missing. Using Whisper backend instead.")
+            use_parakeet = False
+    if use_parakeet:
+        try:
+            return ParakeetCTCBackend(model_id=model_id, device=getattr(cfg, 'ASR_DEVICE', 'cuda'), hf_token=getattr(cfg, 'HF_AUTH_TOKEN', ''))
+        except Exception as exc:
+            logger.exception("[ASR] Parakeet backend init failed (model=%s). Falling back to Whisper backend.", model_id)
+            use_parakeet = False
+            backend = 'whisper'
     if backend == 'simulwhisper':
         return SimulWhisperBackend(
             model_name=cfg.WHISPER_MODEL_NAME,

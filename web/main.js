@@ -52,6 +52,7 @@ const refineStatusEl = $('#refineStatus');
 const longformStatusEl = $('#longformStatus');
 const longformProgressEl = $('#longformProgress');
 const longformProgressBarEl = $('#longformProgressBar');
+const connCountEls = $$('.conn-count');
 
 const waveCanvas = $('#wave');
 
@@ -137,6 +138,24 @@ function savePreferences() {
 }
 
 applyPreferences();
+
+function autoSelectBackendForLanguage() {
+  if (!languageEl || !asrBackendEl) return;
+  const lang = (languageEl.value || '').toLowerCase();
+  if (lang.startsWith('en')) {
+    asrBackendEl.value = 'whisper';
+  } else if (asrBackendEl.value !== 'parakeet') {
+    asrBackendEl.value = 'parakeet';
+  }
+}
+
+autoSelectBackendForLanguage();
+if (languageEl) {
+  languageEl.addEventListener('change', () => {
+    autoSelectBackendForLanguage();
+    savePreferences();
+  });
+}
 
 function resetStatuses() {
   pendingRefineSegments.clear();
@@ -611,6 +630,11 @@ function handleMessage(data) {
     } else if (msg.type === 'final') {
       if (partialEl) partialEl.textContent = '';
       appendFinal(msg);
+    } else if (msg.type === 'conn') {
+      const viewers = typeof msg.viewers === 'number' ? msg.viewers : 0;
+      connCountEls.forEach((el) => {
+        el.textContent = String(viewers);
+      });
     } else if (msg.type === 'overwrite') {
       appendFinal(msg);
     } else if (msg.type === 'vad') {

@@ -35,6 +35,16 @@ Open http://localhost:8005/ and connect to `ws://localhost:8005/ws/transcribe` f
 
 Runtime parameters (VAD thresholds, language, etc.) are managed in `server/config.py`.
 
+### English (en) Transcription
+To enable the English Parakeet model, set the following environment variables before starting the server/container:
+
+```bash
+export PARAKEET_MODEL_ID_EN="nvidia/parakeet-ctc-1.1b-en"   # or your preferred model
+export HF_AUTH_TOKEN="<your-huggingface-token>"
+```
+
+`HF_AUTH_TOKEN` is forwarded to the Hugging Face Hub so that private or gated NVIDIA models can be downloaded once and re-used from `./hf-home`. If the Parakeet model cannot be downloaded, the server automatically falls back to the Whisper backend so that transcription still works (albeit with different accuracy/performance characteristics).
+
 ## Logging
 - Model downloads emit `[MODEL_DOWNLOAD] {"stage": "start|progress|complete|reuse", ...}`.
 - During download, `stage: "progress"` adds a `percent` field in 10% steps. Tail logs with `podman logs -f <container>` to monitor progress.

@@ -127,10 +127,28 @@ class SessionFiles:
 
 
 sessions: Dict[str, Dict] = {}
+client_views: Dict[str, WebSocket] = {}
+client_counter = 0
+
+async def broadcast_view_count():
+    payload = {"type": "conn", "count": len(sessions), "viewers": len(client_views)}
+    for ws in list(client_views.values()):
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            pass
+    for ent in list(sessions.values()):
+        w = ent.get("ws")
+        if w is None:
+            continue
+        try:
+            await w.send_json(payload)
+        except Exception:
+            pass
 
 async def broadcast_conn_count():
     try:
-        payload = {"type": "conn", "count": len(sessions)}
+        payload = {"type": "conn", "count": len(sessions), "viewers": len(client_views)}
         for sid, ent in list(sessions.items()):
             w = ent.get("ws")
             if w is None:
@@ -146,6 +164,11 @@ async def broadcast_conn_count():
 @app.websocket(config.WS_PATH)
 async def ws_transcribe(ws: WebSocket):
     await ws.accept()
+    global client_counter
+    client_counter += 1
+    client_id = f"view-{client_counter}"
+    client_views[client_id] = ws
+    await broadcast_view_count()
     worker: Optional[TranscribeWorker] = None
     files: Optional[SessionFiles] = None
     session_id: Optional[str] = None
@@ -228,6 +251,12 @@ async def ws_transcribe(ws: WebSocket):
                         payload["backend"] = backend_name
                     if raw_session and raw_session != session_id:
                         payload["normalized"] = True
+                    notice = getattr(worker, 'backend_notice', None)
+                    if notice:
+                        try:
+                            await ws.send_json({"type": "info", "message": notice})
+                        except Exception:
+                            pass
                     await ws.send_json(payload)
                     await broadcast_conn_count()
                 elif mtype == "calibrate":
@@ -259,6 +288,8 @@ async def ws_transcribe(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        if client_id in client_views:
+            client_views.pop(client_id, None)
         if worker:
             await worker.stop()
         if files:
@@ -270,6 +301,8 @@ async def ws_transcribe(ws: WebSocket):
             except Exception:
                 pass
             await broadcast_conn_count()
+        else:
+            await broadcast_view_count()
         if ka_task:
             try:
                 ka_task.cancel()

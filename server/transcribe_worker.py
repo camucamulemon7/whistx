@@ -397,6 +397,7 @@ class TranscribeWorker:
         self.stop_event = asyncio.Event()
         self.send_json = send_json
         self.opts = opts or {}
+        self.backend_notice: Optional[str] = None
         raw_profile = self.opts.get("transcribeProfile", getattr(config, "TRANSCRIBE_PROFILE", "realtime"))
         if isinstance(raw_profile, str):
             profile = raw_profile.lower()
@@ -406,12 +407,15 @@ class TranscribeWorker:
             profile = "realtime"
         self.profile = profile
         profile_defaults = PROFILE_DEFAULTS.get(self.profile, PROFILE_DEFAULTS["realtime"])
-        # ASR 設定（Parakeet 固定）
+        # ASR 設定
         self.model_name = self.opts.get("whisperModel", config.WHISPER_MODEL_NAME)
+        allowed_backends = {"parakeet", "whisper", "simulwhisper"}
         self.backend_name = str(self.opts.get("asrBackend", getattr(config, "ASR_BACKEND", "parakeet"))).lower()
-        if self.backend_name not in {"parakeet"}:
-            logger.info("[ASR] 未対応バックエンド %s を受信したため parakeet に強制変更します", self.backend_name)
-            self.backend_name = "parakeet"
+        if self.backend_name not in allowed_backends:
+            logger.info("[ASR] 未対応バックエンド %s を受信したため %s に変更します", self.backend_name, getattr(config, "ASR_BACKEND", "parakeet"))
+            self.backend_name = str(getattr(config, "ASR_BACKEND", "parakeet")).lower()
+            if self.backend_name not in allowed_backends:
+                self.backend_name = "parakeet"
         self.lang = self.opts.get("language", config.WHISPER_LANGUAGE)
         if isinstance(self.lang, str):
             self.lang = self.lang.strip()
@@ -425,6 +429,13 @@ class TranscribeWorker:
             self.backend_name = 'parakeet'
             if self.lang is None or self.lang == 'ja':
                 self.lang = 'en'
+        enable_parakeet_en = getattr(config, "ENABLE_PARAKEET_EN", False)
+        has_token = bool(getattr(config, "HF_AUTH_TOKEN", ""))
+        if self.lang and self.lang.startswith('en'):
+            if self.backend_name == 'parakeet' and not (enable_parakeet_en and has_token):
+                logger.info("[ASR] 英語モードでは Whisper backend を使用します (Parakeet EN 未許可またはトークン未設定)")
+                self.backend_name = 'whisper'
+                self.backend_notice = "Using Whisper backend for English mode"
         self.model = GlobalASR.get(self.backend_name, language=self.lang)
         # 高精度モード
         opt_high_accuracy = self.opts.get("highAccuracy")
