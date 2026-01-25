@@ -34,3 +34,5 @@ backend/__pycache__/
 backend/*.pyc
 frontend/__pycache__/
 frontend/*.pyc
+
+.claude
