@@ -1,0 +1,28 @@
+# FastAPI & WebSocket
+fastapi==0.112.0
+uvicorn[standard]==0.30.0
+websockets==13.1
+
+# Audio Processing
+numpy==1.26.4
+# webrtcvad==2.0.10  # 古いパッケージでビルドエラー発生。Silero VADを使用するため不要。
+scipy==1.11.4
+soundfile==0.12.1
+
+# ASR Engines
+faster-whisper==1.0.3
+# nemo_toolkit[asr]  # Parakeet-CTC（オプション）
+
+# VAD
+speechbrain==0.5.16
+
+# Utilities
+rapidfuzz==3.9.6
+prometheus_client==0.20.0
+
+# HTTP Client for vLLM API
+httpx>=0.25.0
+
+# vLLMは別プロセスで起動するため含めない
+# 起動コマンド例:
+# python -m vllm serve Qwen/Qwen2.5-7B-Instruct --port 8000
