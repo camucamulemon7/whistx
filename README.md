@@ -1,104 +1,121 @@
-# whistx v2
+# whistx
 
-OpenAI API (`whisper-1`) を使った、チャンク型のリアルタイム文字起こしアプリです。  
-ブラウザで録音した音声を WebSocket でサーバーへ送信し、サーバーが `whisper-1` で文字起こしして結果を逐次返します。
+`whistx` is a real-time transcription app built on OpenAI `whisper-1`.
+It captures browser audio, sends chunked audio over WebSocket, transcribes on the server, and streams finalized segments back to the UI.
 
-## 1. 最短実行手順（ローカル）
+## Features
 
-### 前提
+- Real-time chunk-based transcription using OpenAI `whisper-1`
+- Context carry-over between chunks for better continuity
+- Built-in silence handling
+  - Client-side lightweight VAD (skip silent chunks)
+  - Server-side hallucination suppression for common silence artifacts
+- Audio source selection in UI
+  - Microphone
+  - Display audio (screen/tab share audio)
+  - Microphone + display audio mix
+- Transcript export
+  - TXT
+  - JSONL
+  - SRT
+- One-click LLM summary from transcript text (`/api/summarize`)
+
+## Architecture
+
+- **Frontend**: static files in `web/`
+  - Uses `MediaRecorder` + WebSocket
+  - Creates fixed-size chunks (default 20s, configurable 12-30s)
+- **Backend**: FastAPI in `server/`
+  - `/ws/transcribe`: receives chunks, calls OpenAI transcription API, emits final segments
+  - `/api/summarize`: summarizes transcript text with a chat model
+  - `/api/transcript/{session_id}.{txt|jsonl|srt}`: download outputs
+
+## Requirements
+
 - Python 3.10+
-- 最新版 Chrome / Edge
-- OpenAI API キー
+- Chrome or Edge (latest recommended)
+- OpenAI API key
 
-### 手順
+## Quick Start (Local)
+
 ```bash
 cd /home/remon1129/ai/whistx
 cp .env.example .env
-# .env の OPENAI_API_KEY を設定
+# Set OPENAI_API_KEY in .env
 ./run.sh
 ```
 
-`run.sh` は `.venv` を自動作成し、依存インストール後に `uvicorn` を起動します。  
-ブラウザで `http://localhost:8005` を開き、`録音開始` を押してください。
+Then open:
 
-UI の既定は精度優先で、チャンク秒数は `20s`（調整範囲 `12〜30s`）です。  
-`要約` ボタンで、画面上の文字起こし結果を LLM で要約できます（`SUMMARY_API_KEY` 未設定時は `OPENAI_API_KEY` を流用）。
-音声ソースは `マイク / 画面共有音声 / マイク+画面共有音声` を選択できます。
+- `http://localhost:8005`
 
-## 2. Docker 実行
+## Quick Start (Docker)
 
 ```bash
 cd /home/remon1129/ai/whistx
 cp .env.example .env
-# .env の OPENAI_API_KEY を設定
+# Set OPENAI_API_KEY in .env
 ./start.sh
 ```
 
-`start.sh` は Docker イメージをビルドしてコンテナを起動します。
-
-Podman の場合:
+For Podman:
 
 ```bash
 ./podman-run.sh
 ```
 
-## 3. 実行時設定（環境変数）
+## Environment Variables
 
-必須:
+Required:
 
 - `OPENAI_API_KEY`
 
-設定ファイル:
+Important optional settings:
 
-- `/home/remon1129/ai/whistx/.env`
-- `run.sh` / `start.sh` / `podman-run.sh` は起動時に `.env` を自動読込します
+- `OPENAI_BASE_URL` (default: OpenAI)
+- `WHISPER_MODEL` (default: `whisper-1`)
+- `DEFAULT_LANGUAGE` (default: `ja`)
+- `DEFAULT_PROMPT`
+- `DEFAULT_TEMPERATURE` (default: `0.0`)
+- `CONTEXT_PROMPT_ENABLED` (default: `1`)
+- `CONTEXT_MAX_CHARS` (default: `1000`)
+- `MAX_CHUNK_BYTES` (default: `12582912`)
 
-主な任意設定:
+Summary settings:
 
-- `WHISPER_MODEL`（既定: `whisper-1`）
-- `OPENAI_BASE_URL`（既定: OpenAI 公式エンドポイント）
-- `SUMMARY_API_KEY`（既定: 空。未設定なら `OPENAI_API_KEY` を流用）
-- `SUMMARY_BASE_URL`（既定: `OPENAI_BASE_URL` と同じ）
-- `SUMMARY_MODEL`（既定: `gpt-4o-mini`）
-- `SUMMARY_TEMPERATURE`（既定: `0.2`）
-- `SUMMARY_INPUT_MAX_CHARS`（既定: `16000`）
-- `DEFAULT_LANGUAGE`（既定: `ja`）
-- `PORT`（既定: `8005`）
-- `WS_PATH`（既定: `/ws/transcribe`）
-- `DATA_DIR`（既定: `data/transcripts`）
-- `CONTEXT_PROMPT_ENABLED`（既定: `1`。前チャンク文脈を次チャンクへ引き継ぐ）
-- `CONTEXT_MAX_CHARS`（既定: `1000`。引き継ぐ文脈文字数の上限）
-- `MAX_CHUNK_BYTES`（既定: `12582912`）
+- `SUMMARY_API_KEY` (falls back to `OPENAI_API_KEY`)
+- `SUMMARY_BASE_URL` (falls back to `OPENAI_BASE_URL`)
+- `SUMMARY_MODEL` (default: `gpt-4o-mini`)
+- `SUMMARY_TEMPERATURE` (default: `0.2`)
+- `SUMMARY_INPUT_MAX_CHARS` (default: `16000`)
 
-## 4. API / WebSocket
+Runtime settings:
 
-### Health Check
+- `HOST` (default: `0.0.0.0`)
+- `PORT` (default: `8005`)
+- `WS_PATH` (default: `/ws/transcribe`)
+- `DATA_DIR` (default: `data/transcripts`)
+
+## API
+
+### Health
 
 - `GET /api/health`
 
-### 要約 API
+### WebSocket Transcription
 
-- `POST /api/summarize`
+- `ws://<host>:<port>/ws/transcribe` (`wss://` when HTTPS)
 
-```json
-{
-  "text": "文字起こし本文",
-  "language": "ja"
-}
-```
-
-### WebSocket
-
-- `ws://<host>:<port>/ws/transcribe`（HTTPS の場合は `wss://`）
-
-クライアント -> サーバー:
+Client messages:
 
 - `start`
+
 ```json
-{"type":"start","sessionId":"sess-xxx","language":"ja","prompt":"会議用語"}
+{"type":"start","sessionId":"sess-xxx","language":"ja","prompt":"domain terms"}
 ```
 
 - `chunk`
+
 ```json
 {
   "type": "chunk",
@@ -111,41 +128,41 @@ Podman の場合:
 ```
 
 - `stop`
+
 ```json
 {"type":"stop"}
 ```
 
-サーバー -> クライアント:
+Server messages:
 
-- `info`（`ready` / `stopping`）
-- `final`（確定テキスト）
+- `info`
+- `final`
 - `error`
-- `conn`（接続数）
+- `conn`
 
-## 5. 出力ファイル
+### Summary
 
-文字起こし結果は `data/transcripts` に保存されます。
+- `POST /api/summarize`
 
-- `*.txt`
-- `*.jsonl`
-- `*.srt`（JSONL から生成）
+```json
+{
+  "text": "full transcript text",
+  "language": "ja"
+}
+```
 
-ダウンロード API:
+## Zoom / Webex Notes
 
-- `/api/transcript/{session_id}.txt`
-- `/api/transcript/{session_id}.jsonl`
-- `/api/transcript/{session_id}.srt`
+- Choose **Display audio** or **Mic + Display audio** in the UI.
+- In the browser share dialog, enable audio sharing (for tab share: "Share tab audio").
+- If display sharing stops, recording stops automatically.
 
-## 6. 注意事項
+## Security Notes
 
-- `whisper-1` はネイティブな双方向ストリーミング API ではないため、短いチャンク連続送信でリアルタイム風に実現しています。
-- チャンク秒数を短くすると体感遅延は減りますが、API 呼び出し回数とコストは増えます。
-- デフォルトで、直前チャンクの転写末尾（`CONTEXT_MAX_CHARS` 以内）を次チャンクの `prompt` に自動連結します。
-- ブラウザ側で簡易 VAD を行い、無音チャンクは送信スキップします。加えて、無音時に出やすい定型ハルシネーションはサーバー側で抑止しています。
+- Do not commit `.env`.
+- Use `.env.example` as a template.
+- Rotate API keys if accidentally exposed.
 
-## 7. Zoom / Webex 音声取得のコツ
+## License
 
-- UIの「音声ソース」で `画面共有音声` か `マイク + 画面共有音声` を選びます。
-- 共有ダイアログで必ず音声共有を有効にします（Chrome/Edge のタブ共有なら「タブの音声を共有」）。
-- 画面共有を停止すると録音も自動停止します。
-- 環境によっては会議デスクトップアプリより、ブラウザ版会議のほうが取得しやすい場合があります。
+MIT License. See [LICENSE](./LICENSE).
