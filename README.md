@@ -64,6 +64,19 @@ For Podman:
 ./podman-run.sh
 ```
 
+### Rootless Podman Notes
+
+`podman-run.sh` is tuned for rootless mode by default:
+
+- `--userns=keep-id` is enabled (`PODMAN_USERNS=keep-id`)
+- volume mount defaults to `:Z` label option (`PODMAN_VOLUME_OPTS=Z`)
+
+If your environment does not need SELinux relabeling, set:
+
+```bash
+PODMAN_VOLUME_OPTS=
+```
+
 ## Environment Variables
 
 Required:
@@ -95,6 +108,8 @@ Runtime settings:
 - `PORT` (default: `8005`)
 - `WS_PATH` (default: `/ws/transcribe`)
 - `DATA_DIR` (default: `data/transcripts`)
+- `PODMAN_USERNS` (default: `keep-id`, used by `podman-run.sh`)
+- `PODMAN_VOLUME_OPTS` (default: `Z`, used by `podman-run.sh`)
 
 ## API
 
