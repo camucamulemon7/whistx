@@ -2,235 +2,246 @@
 <html lang="ja">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>whistx · Realtime Transcription</title>
-    <link rel="stylesheet" href="/style.css?v=20250925" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f5f5f7" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>whistx</title>
+    <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <main class="layout">
-      <header class="app-header card">
-        <div class="record-cluster">
-          <input id="sessionId" type="hidden" value="sess-" />
-          <button id="recordButton" class="record-button" type="button" aria-pressed="false">
-            <span class="sr-only">録音開始 / 停止</span>
-            <div class="shape-container"><div class="shape"></div></div>
-            <div class="recording-info">
-              <div class="wave-container">
-                <canvas id="wave" width="320" height="80" aria-hidden="true"></canvas>
-              </div>
-              <div class="timer" id="recordTimer">00:00</div>
+    <div class="app">
+      <!-- Header -->
+      <header class="header glass-panel">
+        <div class="header-content">
+          <div class="brand">
+            <div class="brand-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" x2="12" y1="19" y2="22"/>
+              </svg>
             </div>
-          </button>
-          <div class="status-line">
-            <div class="status-dot" id="vadDot" title="VAD"></div>
-            <span id="status" class="status-text">idle</span>
-            <span class="meta muted" title="同時接続"><span id="connCount">0</span></span>
+            <div class="brand-text">
+              <h1>whistx</h1>
+              <p class="brand-tagline">高精度リアルタイム文字起こし</p>
+            </div>
           </div>
-        </div>
-        <div class="header-actions">
-          <div class="theme-selector segmented" role="radiogroup" aria-label="テーマ設定">
-            <input type="radio" id="theme-light" name="theme" value="light" />
-            <label for="theme-light" title="ライト">
-              <img src="/assets/light_mode.svg" alt="" />
-              <span class="sr-only">Light</span>
-            </label>
-            <input type="radio" id="theme-dark" name="theme" value="dark" />
-            <label for="theme-dark" title="ダーク">
-              <img src="/assets/dark_mode.svg" alt="" />
-              <span class="sr-only">Dark</span>
-            </label>
+          <div class="status-group" role="status" aria-live="polite">
+            <div class="status-item">
+              <span class="status-label">STATUS</span>
+              <span id="statusText" class="status-value" data-state="idle">idle</span>
+            </div>
+            <div class="status-item">
+              <span class="status-label">SEGMENTS</span>
+              <span id="connCount" class="status-value">0</span>
+            </div>
           </div>
         </div>
       </header>
 
-      <div class="layout-body">
-        <aside class="sidebar">
-          <section class="panel card">
-            <fieldset class="field-group" aria-label="入力ソース">
-              <legend class="sr-only">入力ソースを選択</legend>
-              <div class="input-selector">
-                <input type="radio" id="source-mic" name="source" value="mic" checked />
-                <label for="source-mic">マイク</label>
-              </div>
-              <div class="input-selector">
-                <input type="radio" id="source-display" name="source" value="display" />
-                <label for="source-display">画面共有</label>
-              </div>
-              <div class="input-selector">
-                <input type="radio" id="source-mix" name="source" value="mix" />
-                <label for="source-mix">ミックス</label>
-              </div>
-            </fieldset>
-          </section>
-
-          <section class="panel card">
-            <details class="fold fold-inline" id="monitorFold">
-              <summary>モニタ</summary>
-              <div class="audio-body" id="audioBody">
-                <div class="levels">
-                  <label>ゲイン
-                    <input id="gain" type="range" min="0.2" max="4" step="0.05" value="1" />
-                    <span id="gainVal">x1.00</span>
-                  </label>
-                  <div class="level-now" id="levelNow">RMS: -- dBFS</div>
-                </div>
-                <div class="toggle-row">
-                  <label><input id="agc" type="checkbox" checked /> AGC</label>
-                  <label><input id="ns" type="checkbox" checked /> Noise</label>
-                  <label><input id="ec" type="checkbox" checked /> Echo</label>
-                </div>
-              </div>
-            </details>
-          </section>
-
-          <section class="panel card">
-            <input type="hidden" id="asrBackend" value="parakeet" />
-            <details class="fold">
-              <summary>ASR設定</summary>
-              <div class="grid2">
-                <label>言語
-                  <select id="language">
-                    <option value="ja" selected>日本語</option>
-                    <option value="en">English</option>
-                  </select>
-                </label>
-                <label>Beam
-                  <input id="beamSize" type="number" value="12" min="1" max="20" step="1" />
-                </label>
-                <label>Patience
-                  <input id="patience" type="number" value="1.2" min="0.5" max="2.0" step="0.1" />
-                </label>
-                <label>最小確定(ms)
-                  <input id="minFinalMs" type="number" value="800" min="100" max="2000" step="50" />
-                </label>
-              </div>
-            </details>
-          </section>
-
-          <section class="panel card">
-            <details class="fold" open>
-              <summary>プロファイル</summary>
-              <fieldset class="field-group" id="profileGroup" aria-label="プロファイル選択">
-                <div class="input-selector">
-                  <input type="radio" id="profile-realtime" name="profile" value="realtime" checked />
-                  <label for="profile-realtime">リアルタイム</label>
-                </div>
-                <div class="input-selector">
-                  <input type="radio" id="profile-balanced" name="profile" value="balanced" />
-                  <label for="profile-balanced">バランス</label>
-                </div>
-                <div class="input-selector">
-                  <input type="radio" id="profile-high" name="profile" value="high_accuracy" />
-                  <label for="profile-high">高精度</label>
-                </div>
-              </fieldset>
-              <div class="grid1">
-                <label>区切りモード
-                  <select id="chunkMode">
-                    <option value="utterance">発話ごと</option>
-                    <option value="longform-30">30秒チャンク</option>
-                    <option value="longform-60">1分チャンク</option>
-                  </select>
-                </label>
-              </div>
-            </details>
-          </section>
-
-          <section class="panel card">
-            <textarea id="hotwords" rows="6" placeholder="1行に1語"></textarea>
-            <div class="inline-row">
-              <button id="saveHotwords" class="btn" type="button">保存</button>
-              <span id="hotwordsStatus" class="muted"></span>
-            </div>
-          </section>
-
-          <section class="panel card">
-            <details class="fold">
-              <summary>VAD設定</summary>
-              <div class="grid2">
-                <label>Backend
-                  <select id="vadBackend">
-                    <option value="silero" selected>silero</option>
-                    <option value="webrtc">webrtc</option>
-                  </select>
-                </label>
-                <label>閾値
-                  <input id="sileroThreshold" type="range" min="0.1" max="0.9" step="0.05" value="0.5" />
-                </label>
-                <label><input id="autoVadEnable" type="checkbox" checked /> 自動調整</label>
-                <label>窓(ms)
-                  <input id="autoVadWindowMs" type="number" value="3000" min="1000" max="10000" step="500" />
-                </label>
-                <label><input id="vacEnable" type="checkbox" checked /> VAC有効</label>
-                <label>VAC起動(ms)
-                  <input id="vacMinSpeechMs" type="number" value="220" min="60" max="600" step="20" />
-                </label>
-                <label>VAC保持(ms)
-                  <input id="vacHangoverMs" type="number" value="360" min="100" max="1000" step="20" />
-                </label>
-                <label>VAC確定(ms)
-                  <input id="vacMinFinalMs" type="number" value="700" min="80" max="1000" step="20" />
-                </label>
-                <div class="inline-row">
-                  <button id="calibBtn" class="btn" type="button">VADキャリブ</button>
-                  <span id="vadStatus" class="muted"></span>
-                </div>
-                <label>無音しきい
-                  <input id="utteranceSilenceMs" type="number" value="600" min="200" max="2000" step="50" />
-                </label>
-                <label>強制分割
-                  <input id="forceUtteranceMs" type="number" value="9000" min="3000" max="20000" step="500" />
-                </label>
-                <label>重ね(ms)
-                  <input id="forceOverlapMs" type="number" value="1200" min="200" max="4000" step="50" />
-                </label>
-                <label>暫定間隔
-                  <input id="partialIntervalMs" type="number" value="650" min="200" max="3000" step="50" />
-                </label>
-                <label>ウィンドウ(s)
-                  <input id="windowSeconds" type="number" value="8" min="4" max="20" step="1" />
-                </label>
-                <label>話者分離
-                  <input id="enableDiarization" type="checkbox" />
-                </label>
-              </div>
-            </details>
-          </section>
-        </aside>
-
-        <section class="main-content">
-          <article class="panel card caption-card">
-            <details class="fold fold-inline" id="captionFold">
-              <summary>字幕</summary>
-              <div class="caption muted" id="partial"></div>
-            </details>
-          </article>
-
-          <article class="panel card transcripts">
-            <div class="transcripts-toolbar">
-              <div class="download-group">
-                <a id="dlTxt" href="#" download>TXT</a>
-                <a id="dlJsonl" href="#" download>JSONL</a>
-                <a id="dlSrt" href="#" download>SRT</a>
-              </div>
-              <label class="small"><input type="checkbox" id="autoscroll" checked /> 自動スクロール</label>
-              <button id="copyAll" class="btn subtle" type="button">コピー</button>
-              <button id="clearAll" class="btn subtle" type="button">クリア</button>
-            </div>
-            <div class="status-strip" aria-live="polite">
-              <span id="refineStatus" class="status-pill" hidden></span>
-              <span id="longformStatus" class="status-pill muted" hidden></span>
-            </div>
-            <div class="longform-progress" id="longformProgress" hidden>
-              <div class="track">
-                <div class="bar" id="longformProgressBar"></div>
+      <!-- Main Content -->
+      <main class="main-content">
+        <!-- Quick Settings Panel -->
+        <section class="settings-panel glass-panel reveal" aria-label="設定">
+          <div class="settings-row">
+            <div class="setting-group">
+              <label for="language" class="setting-label">言語</label>
+              <div class="select-wrapper">
+                <select id="language">
+                  <option value="ja" selected>日本語</option>
+                  <option value="en">English</option>
+                  <option value="">自動検出</option>
+                </select>
               </div>
             </div>
-            <div class="list" id="finalList" role="log" aria-live="polite" aria-label="ログ"></div>
-          </article>
+            <div class="setting-group">
+              <label for="audioSource" class="setting-label">音声ソース</label>
+              <div class="select-wrapper">
+                <select id="audioSource">
+                  <option value="mic" selected>マイク</option>
+                  <option value="display">画面共有</option>
+                  <option value="both">両方</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <p class="setting-hint">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 16v-4"/>
+              <path d="M12 8h.01"/>
+            </svg>
+            画面共有の際は音声共有を有効にしてください
+          </p>
         </section>
-      </div>
-    </main>
-    <script type="module" src="/main.js?v=20250925"></script>
+
+        <!-- Record Control -->
+        <section class="record-section reveal delay-1">
+          <button
+            id="startBtn"
+            class="record-btn"
+            type="button"
+            aria-label="録音を開始"
+            aria-describedby="recordBtnHint"
+          >
+            <div class="record-btn-inner">
+              <svg class="record-icon" width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="12" cy="12" r="6"/>
+              </svg>
+              <svg class="stop-icon" width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2"/>
+              </svg>
+            </div>
+            <span class="record-label">録音開始</span>
+          </button>
+          <span id="recordBtnHint" class="sr-only">タップでマイクからの録音を開始します</span>
+
+          <button id="stopBtn" class="stop-btn hidden" type="button" aria-label="録音を停止">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2"/>
+            </svg>
+            <span>停止</span>
+          </button>
+
+          <!-- Chunk Settings -->
+          <div class="chunk-settings glass-panel">
+            <div class="chunk-header">
+              <span class="chunk-label">チャンク秒数</span>
+              <span id="chunkHint" class="chunk-hint">精度重視</span>
+            </div>
+            <div class="chunk-controls">
+              <input
+                id="chunkSeconds"
+                type="number"
+                min="12"
+                max="30"
+                step="1"
+                value="20"
+                class="chunk-input"
+                aria-label="チャンク秒数"
+              />
+              <div class="chunk-presets" role="group" aria-label="チャンクプリセット">
+                <button type="button" class="chunk-chip" data-chunk-preset="12">12s</button>
+                <button type="button" class="chunk-chip" data-chunk-preset="16">16s</button>
+                <button type="button" class="chunk-chip is-active" data-chunk-preset="20">20s</button>
+                <button type="button" class="chunk-chip" data-chunk-preset="24">24s</button>
+                <button type="button" class="chunk-chip" data-chunk-preset="30">30s</button>
+              </div>
+            </div>
+            <p class="chunk-description">長いほど精度向上・遅延増加</p>
+          </div>
+
+          <!-- Prompt Input -->
+          <div class="prompt-section glass-panel">
+            <label for="prompt" class="prompt-label">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              </svg>
+              コンテキストプロンプト
+            </label>
+            <textarea
+              id="prompt"
+              rows="2"
+              placeholder="固有名詞や専門用語を入力すると認識精度が向上します"
+            ></textarea>
+          </div>
+        </section>
+
+        <!-- Transcript Panel -->
+        <section class="transcript-panel glass-panel reveal delay-2" aria-label="文字起こし結果">
+          <header class="panel-header">
+            <div class="panel-title-group">
+              <h2 class="panel-title">Transcript</h2>
+              <span id="segmentCount" class="panel-badge">0 segments</span>
+            </div>
+            <div class="panel-actions">
+              <button id="copyBtn" type="button" class="icon-btn" aria-label="コピー" title="コピー">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+              </button>
+              <button id="clearBtn" type="button" class="icon-btn" aria-label="クリア" title="クリア">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 6h18"/>
+                  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                </svg>
+              </button>
+            </div>
+          </header>
+
+          <div id="log" class="log-container" role="log" aria-live="polite" aria-relevant="additions">
+            <div class="empty-state">
+              <div class="empty-icon">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                  <line x1="12" x2="12" y1="19" y2="22"/>
+                </svg>
+              </div>
+              <p class="empty-title">まだ文字起こしがありません</p>
+              <p class="empty-description">録音を開始すると、リアルタイムで文字起こしが表示されます</p>
+            </div>
+          </div>
+
+          <!-- Downloads -->
+          <div class="downloads-bar">
+            <span class="downloads-label">エクスポート:</span>
+            <a id="dlTxt" href="#" download class="download-link">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7,10 12,15 17,10"/>
+                <line x1="12" x2="12" y1="15" y2="3"/>
+              </svg>
+              TXT
+            </a>
+            <a id="dlJsonl" href="#" download class="download-link">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7,10 12,15 17,10"/>
+                <line x1="12" x2="12" y1="15" y2="3"/>
+              </svg>
+              JSONL
+            </a>
+            <a id="dlSrt" href="#" download class="download-link">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7,10 12,15 17,10"/>
+                <line x1="12" x2="12" y1="15" y2="3"/>
+              </svg>
+              SRT
+            </a>
+          </div>
+        </section>
+
+        <!-- Summary Panel -->
+        <section class="summary-panel glass-panel reveal delay-3" aria-label="要約">
+          <header class="panel-header">
+            <div class="panel-title-group">
+              <h2 class="panel-title">Summary</h2>
+              <span id="summaryMeta" class="panel-badge">未生成</span>
+            </div>
+            <button id="summaryBtn" type="button" class="btn-secondary">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z"/>
+              </svg>
+              要約生成
+            </button>
+          </header>
+          <div id="summaryText" class="summary-content">
+            <div class="empty-state small">
+              <p class="empty-description">「要約生成」ボタンでAIによる要約を生成します</p>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <!-- Toast Container -->
+      <div id="toastContainer" class="toast-container" role="alert" aria-live="assertive"></div>
+    </div>
+
+    <script type="module" src="/main.js"></script>
   </body>
 </html>

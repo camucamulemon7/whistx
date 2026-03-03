@@ -23,16 +23,22 @@ dist-ssr
 *.sln
 *.sw?
 
-# Python venv
+# Python virtual environments
 venv/
 .venv/
 backend/venv/
 frontend/venv/
 
 # Python cache
+__pycache__/
 backend/__pycache__/
 backend/*.pyc
 frontend/__pycache__/
 frontend/*.pyc
+
+# Runtime artifacts
+data/
+hf-home/
+.env
 
 .claude

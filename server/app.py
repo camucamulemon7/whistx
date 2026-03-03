@@ -1,403 +1,544 @@
+from __future__ import annotations
+
 import asyncio
+import base64
+import difflib
 import json
-import re
-import struct
-import uuid
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, Optional
 import logging
-import sys
+import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
-import warnings
-from collections import OrderedDict
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from pydantic import BaseModel, Field
 
-from . import config
-from .transcribe_worker import TranscribeWorker
-from .hotwords import HotwordStore
-from .metrics import profile_switch_total
-
-
-# 3rdパーティ内部の一時的な RuntimeWarning を抑制（faster-whisper の mean 計算等）
-warnings.filterwarnings("ignore", category=RuntimeWarning, message=r"Mean of empty slice\.")
-warnings.filterwarnings("ignore", category=RuntimeWarning, message=r"invalid value encountered in scalar divide")
-
-root_logger = logging.getLogger()
-if not root_logger.handlers:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-    root_logger.addHandler(handler)
-
-try:
-    _log_level = getattr(config, "LOG_LEVEL", "INFO")
-    if isinstance(_log_level, str):
-        _log_level_value = getattr(logging, _log_level.upper(), logging.INFO)
-    else:
-        _log_level_value = int(_log_level)
-except Exception:
-    _log_level_value = logging.INFO
-
-root_logger.setLevel(_log_level_value)
-
-app = FastAPI()
+from .config import settings
+from .openai_whisper import OpenAIWhisperTranscriber
+from .summarizer import OpenAISummarizer
+from .transcript_store import (
+    TranscriptRecord,
+    TranscriptStore,
+    format_srt,
+    read_jsonl_records,
+    resolve_transcript_path,
+)
 
 
-SESSION_ID_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,95})$")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="whistx", version="2.0.0")
 
 
-def safe_session_id(raw: Optional[str], *, allow_generate: bool = False) -> Optional[str]:
-    if not isinstance(raw, str):
-        raw = ""
-    raw = raw.strip()
-    if SESSION_ID_RE.fullmatch(raw):
-        return raw
-    if allow_generate:
-        return f"sess-{uuid.uuid4().hex}"
-    return None
+@dataclass(slots=True)
+class ChunkMessage:
+    seq: int
+    offset_ms: int
+    duration_ms: int
+    mime_type: str
+    audio_bytes: bytes
 
 
-def resolve_transcript_path(session_id: str, suffix: str) -> Optional[Path]:
-    sid = safe_session_id(session_id, allow_generate=False)
-    if not sid:
-        return None
-    return (config.DATA_DIR / sid).with_suffix(suffix)
+@dataclass(slots=True)
+class LiveSession:
+    session_id: str
+    language: str
+    base_prompt: str
+    temperature: float
+    context_prompt_enabled: bool
+    context_max_chars: int
+    context_text: str
+    last_emitted_text: str
+    store: TranscriptStore
+    queue: asyncio.Queue[ChunkMessage | None]
 
 
-class SessionFiles:
-    def __init__(self, session_id: str):
-        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        token = uuid.uuid4().hex[:4]
-        self.session_id = f"{session_id}_{stamp}_{token}"
-        self.base = config.DATA_DIR / self.session_id
-        self.jsonl_path = self.base.with_suffix(".jsonl")
-        self.txt_path = self.base.with_suffix(".txt")
-        self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-        self.records: "OrderedDict[str, Dict[str, object]]" = OrderedDict()
-        self._sync_files()
-
-    def _sync_files(self):
-        with self.jsonl_path.open("w", encoding="utf-8") as jf:
-            for rec in self.records.values():
-                jf.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        with self.txt_path.open("w", encoding="utf-8") as tf:
-            for rec in self.records.values():
-                text = rec.get("text", "")
-                speaker = rec.get("speaker")
-                line = f"{speaker}: {text}" if speaker else text
-                if not isinstance(line, str):
-                    line = str(line)
-                if not line.endswith("\n"):
-                    line += "\n"
-                tf.write(line)
-
-    def write_final(self, text: str, ts_start: int, ts_end: int, segment_id, speaker: str | None = None):
-        key = str(segment_id)
-        self.records[key] = {
-            "type": "final",
-            "segmentId": key,
-            "text": text,
-            "tsStart": ts_start,
-            "tsEnd": ts_end,
-            **({"speaker": speaker} if speaker else {}),
-        }
-        self._sync_files()
-
-    def write_overwrite(self, text: str, ts_start: int, ts_end: int, segment_id, speaker: str | None = None):
-        key = str(segment_id)
-        if not text.strip():
-            self.records.pop(key, None)
-        else:
-            self.records[key] = {
-                "type": "final",
-                "segmentId": key,
-                "text": text,
-                "tsStart": ts_start,
-                "tsEnd": ts_end,
-                **({"speaker": speaker} if speaker else {}),
-            }
-        self._sync_files()
-
-    def close(self):
-        # ファイルは都度同期しているため追加処理は不要
-        pass
+class SummarizeRequest(BaseModel):
+    text: str = Field(min_length=1)
+    language: str | None = None
 
 
-sessions: Dict[str, Dict] = {}
-client_views: Dict[str, WebSocket] = {}
-client_counter = 0
+TRANSCRIBER: OpenAIWhisperTranscriber | None = None
+SUMMARIZER: OpenAISummarizer | None = None
+ACTIVE_SOCKETS: set[WebSocket] = set()
 
-async def broadcast_view_count():
-    payload = {"type": "conn", "count": len(sessions), "viewers": len(client_views)}
-    for ws in list(client_views.values()):
-        try:
-            await ws.send_json(payload)
-        except Exception:
-            pass
-    for ent in list(sessions.values()):
-        w = ent.get("ws")
-        if w is None:
-            continue
-        try:
-            await w.send_json(payload)
-        except Exception:
-            pass
 
-async def broadcast_conn_count():
+@app.on_event("startup")
+async def on_startup() -> None:
+    global TRANSCRIBER, SUMMARIZER
+
+    TRANSCRIBER = OpenAIWhisperTranscriber(
+        api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
+        model=settings.whisper_model,
+    )
     try:
-        payload = {"type": "conn", "count": len(sessions), "viewers": len(client_views)}
-        for sid, ent in list(sessions.items()):
-            w = ent.get("ws")
-            if w is None:
-                continue
-            try:
-                await w.send_json(payload)
-            except Exception:
-                pass
-    except Exception:
-        pass
+        SUMMARIZER = OpenAISummarizer(
+            api_key=settings.summary_api_key,
+            base_url=settings.summary_base_url,
+            model=settings.summary_model,
+            temperature=settings.summary_temperature,
+        )
+    except Exception as exc:  # noqa: BLE001
+        SUMMARIZER = None
+        logger.warning("summary disabled: %s", exc)
+
+    logger.info("whistx started (model=%s, ws=%s)", settings.whisper_model, settings.ws_path)
 
 
-@app.websocket(config.WS_PATH)
-async def ws_transcribe(ws: WebSocket):
+@app.get("/api/health")
+async def health() -> JSONResponse:
+    return JSONResponse(
+        {
+            "status": "ok",
+            "model": settings.whisper_model,
+            "summaryModel": settings.summary_model if SUMMARIZER else None,
+            "activeConnections": len(ACTIVE_SOCKETS),
+        }
+    )
+
+
+@app.post("/api/summarize")
+async def summarize(payload: SummarizeRequest) -> JSONResponse:
+    if SUMMARIZER is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "summary_not_configured", "detail": "SUMMARY_API_KEY is missing"},
+        )
+
+    raw_text = payload.text.strip()
+    if not raw_text:
+        return JSONResponse(status_code=400, content={"error": "empty_text"})
+
+    truncated = False
+    text = raw_text
+    if len(text) > settings.summary_input_max_chars:
+        text = text[-settings.summary_input_max_chars :]
+        truncated = True
+
+    language = _as_str(payload.language) or settings.default_language
+
+    try:
+        result = await asyncio.to_thread(SUMMARIZER.summarize, text=text, language=language)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Summary failed")
+        return JSONResponse(status_code=502, content={"error": "summary_failed", "detail": str(exc)})
+
+    return JSONResponse(
+        {
+            "summary": result.text,
+            "model": result.model,
+            "inputChars": len(text),
+            "truncated": truncated,
+        }
+    )
+
+
+@app.websocket(settings.ws_path)
+async def ws_transcribe(ws: WebSocket) -> None:
     await ws.accept()
-    global client_counter
-    client_counter += 1
-    client_id = f"view-{client_counter}"
-    client_views[client_id] = ws
-    await broadcast_view_count()
-    worker: Optional[TranscribeWorker] = None
-    files: Optional[SessionFiles] = None
-    session_id: Optional[str] = None
-    ka_task: Optional[asyncio.Task] = None
+    ACTIVE_SOCKETS.add(ws)
+    await _broadcast_conn_count()
 
-    async def send_json(payload):
-        # 送信失敗（切断）を握り潰してログノイズを防ぎつつ、ファイル書き込みは継続
-        try:
-            await ws.send_json(payload)
-        except Exception:
-            pass
-        finally:
-            if not files:
-                return
-            ptype = payload.get("type")
-            if ptype == "final":
-                try:
-                    files.write_final(
-                        text=payload.get("text", ""),
-                        ts_start=int(payload.get("tsStart", 0)),
-                        ts_end=int(payload.get("tsEnd", 0)),
-                        segment_id=payload.get("segmentId", ""),
-                        speaker=payload.get("speaker"),
-                    )
-                except Exception:
-                    pass
-            elif ptype == "overwrite":
-                try:
-                    files.write_overwrite(
-                        text=payload.get("text", ""),
-                        ts_start=int(payload.get("tsStart", 0)),
-                        ts_end=int(payload.get("tsEnd", 0)),
-                        segment_id=payload.get("segmentId", ""),
-                        speaker=payload.get("speaker"),
-                    )
-                except Exception:
-                    pass
-
-    async def keepalive():
-        try:
-            while True:
-                await asyncio.sleep(20)
-                try:
-                    await ws.send_json({"type": "ping", "ts": int(asyncio.get_event_loop().time() * 1000)})
-                except Exception:
-                    break
-        except asyncio.CancelledError:
-            pass
+    session: LiveSession | None = None
+    worker_task: asyncio.Task[None] | None = None
 
     try:
         while True:
-            msg = await ws.receive()
-            if "text" in msg and msg["text"]:
-                data = json.loads(msg["text"])  # start/stop/info
-                mtype = data.get("type")
-                if mtype == "start":
-                    raw_session = data.get("sessionId")
-                    base_session = safe_session_id(raw_session, allow_generate=True)
-                    while base_session in sessions:
-                        base_session = safe_session_id(None, allow_generate=True)
-                    opts = data.get("opts") or {}
-                    files = SessionFiles(base_session)
-                    session_id = files.session_id
-                    while session_id in sessions:
-                        files = SessionFiles(base_session)
-                        session_id = files.session_id
-                    await ws.send_json({"type": "info", "message": "backend_loading", "state": "loading"})
-                    worker = TranscribeWorker(session_id, send_json, opts)
-                    try:
-                        profile_switch_total.labels(profile=worker.profile).inc()
-                    except Exception:
-                        pass
-                    sessions[session_id] = {"worker": worker, "files": files, "ws": ws}
-                    asyncio.create_task(worker.run())
-                    if ka_task is None:
-                        ka_task = asyncio.create_task(keepalive())
-                    payload = {"type": "info", "message": "ready", "state": "ready", "sessionId": session_id}
-                    backend_name = getattr(worker, 'backend_name', None)
-                    if backend_name:
-                        payload["backend"] = backend_name
-                    if raw_session and raw_session != session_id:
-                        payload["normalized"] = True
-                    notice = getattr(worker, 'backend_notice', None)
-                    if notice:
-                        try:
-                            await ws.send_json({"type": "info", "message": notice})
-                        except Exception:
-                            pass
-                    await ws.send_json(payload)
-                    await broadcast_conn_count()
-                elif mtype == "calibrate":
-                    dur = int((data.get("durationMs") or 2000))
-                    if worker:
-                        await worker.start_calibration(dur)
-                        try:
-                            await ws.send_json({"type": "info", "message": "calibrating"})
-                        except Exception:
-                            pass
-                elif mtype == "stop":
-                    if worker:
-                        await worker.stop()
-                        try:
-                            await ws.send_json({"type": "info", "message": "stopping"})
-                        except Exception:
-                            pass
-                        break
-            elif "bytes" in msg and msg["bytes"]:
-                b = msg["bytes"]
-                if len(b) < 8:
+            raw = await ws.receive_text()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                await _safe_send(ws, {"type": "error", "message": "invalid_json"})
+                continue
+
+            if not isinstance(data, dict):
+                await _safe_send(ws, {"type": "error", "message": "invalid_payload"})
+                continue
+
+            msg_type = str(data.get("type", "")).strip().lower()
+
+            if msg_type == "start":
+                if session is not None:
+                    await _safe_send(ws, {"type": "error", "message": "already_started"})
                     continue
-                seq, pts_ms = struct.unpack("<II", b[:8])
-                payload = b[8:]
-                if worker:
-                    await worker.put_audio(payload, int(pts_ms))
-            elif msg.get("type") == "websocket.disconnect":
+
+                session = _create_session(data)
+                worker_task = asyncio.create_task(_session_worker(ws, session))
+
+                await _safe_send(
+                    ws,
+                    {
+                        "type": "info",
+                        "message": "ready",
+                        "state": "ready",
+                        "sessionId": session.session_id,
+                        "backend": f"openai:{settings.whisper_model}",
+                    },
+                )
+                await _broadcast_conn_count()
+                continue
+
+            if msg_type == "chunk":
+                if session is None:
+                    await _safe_send(ws, {"type": "error", "message": "not_started"})
+                    continue
+
+                chunk = _parse_chunk_message(data)
+                if chunk is None:
+                    await _safe_send(ws, {"type": "error", "message": "invalid_chunk"})
+                    continue
+
+                if len(chunk.audio_bytes) > settings.max_chunk_bytes:
+                    await _safe_send(
+                        ws,
+                        {
+                            "type": "error",
+                            "message": "chunk_too_large",
+                            "maxBytes": settings.max_chunk_bytes,
+                        },
+                    )
+                    continue
+
+                try:
+                    session.queue.put_nowait(chunk)
+                except asyncio.QueueFull:
+                    await _safe_send(
+                        ws,
+                        {
+                            "type": "error",
+                            "message": "server_busy",
+                            "detail": "queue_full",
+                        },
+                    )
+                continue
+
+            if msg_type == "stop":
+                await _safe_send(ws, {"type": "info", "message": "stopping"})
                 break
+
+            if msg_type == "ping":
+                await _safe_send(ws, {"type": "pong", "ts": data.get("ts")})
+                continue
+
+            await _safe_send(ws, {"type": "error", "message": "unsupported_message"})
+
     except WebSocketDisconnect:
         pass
     finally:
-        if client_id in client_views:
-            client_views.pop(client_id, None)
-        if worker:
-            await worker.stop()
-        if files:
-            files.close()
-        if session_id and session_id in sessions:
-            sessions.pop(session_id, None)
+        if session is not None:
+            await session.queue.put(None)
+
+        if worker_task is not None:
             try:
-                await ws.send_json({"type": "info", "message": "closed"})
-            except Exception:
-                pass
-            await broadcast_conn_count()
-        else:
-            await broadcast_view_count()
-        if ka_task:
-            try:
-                ka_task.cancel()
-            except Exception:
-                pass
+                await asyncio.wait_for(worker_task, timeout=60)
+            except asyncio.TimeoutError:
+                worker_task.cancel()
+
+        ACTIVE_SOCKETS.discard(ws)
+        await _broadcast_conn_count()
 
 
-@app.get("/api/transcript/{session_id}.txt")
-async def get_txt(session_id: str):
-    p = resolve_transcript_path(session_id, ".txt")
-    if not p or not p.exists():
-        return HTMLResponse(status_code=404, content="not found")
-    return FileResponse(str(p), media_type="text/plain")
+async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
+    if TRANSCRIBER is None:
+        await _safe_send(ws, {"type": "error", "message": "transcriber_not_ready"})
+        return
 
+    while True:
+        item = await session.queue.get()
+        if item is None:
+            break
 
-@app.get("/api/transcript/{session_id}.jsonl")
-async def get_jsonl(session_id: str):
-    p = resolve_transcript_path(session_id, ".jsonl")
-    if not p or not p.exists():
-        return HTMLResponse(status_code=404, content="not found")
-    return FileResponse(str(p), media_type="application/jsonl")
-
-
-# 追加API: Hotwords 管理 / SRT 変換（静的マウントより先に定義すること）
-HOTWORDS_PATH = (config.DATA_DIR / "_hotwords.json")
-_store = HotwordStore(HOTWORDS_PATH)
-
-def _fmt_srt_time(ms: int) -> str:
-    if ms < 0: ms = 0
-    h = ms // 3600000
-    ms -= h * 3600000
-    m = ms // 60000
-    ms -= m * 60000
-    s = ms // 1000
-    ms -= s * 1000
-    return f"{h:02}:{m:02}:{s:02},{ms:03}"
-
-
-@app.get("/api/hotwords")
-async def get_hotwords():
-    _store.maybe_reload()
-    return {"words": _store.words}
-
-
-@app.post("/api/hotwords")
-async def set_hotwords(payload: dict):
-    words = payload.get("words")
-    if not isinstance(words, list):
-        text = payload.get("text", "")
-        if isinstance(text, str):
-            words = [w.strip() for w in text.splitlines() if w.strip()]
-        else:
-            words = []
-    _store.save(words)
-    return {"ok": True, "count": len(words)}
-
-
-@app.get("/api/transcript/{session_id}.srt")
-async def get_srt(session_id: str):
-    p = resolve_transcript_path(session_id, ".jsonl")
-    if not p or not p.exists():
-        return HTMLResponse(status_code=404, content="not found")
-    lines = p.read_text(encoding="utf-8").splitlines()
-    out = []
-    idx = 1
-    for line in lines:
         try:
-            rec = json.loads(line)
-        except Exception:
+            prompt = _build_prompt(session)
+            result = await asyncio.to_thread(
+                TRANSCRIBER.transcribe_chunk,
+                item.audio_bytes,
+                mime_type=item.mime_type,
+                language=session.language,
+                prompt=prompt,
+                temperature=session.temperature,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Transcription failed: session=%s seq=%s", session.session_id, item.seq)
+            await _safe_send(
+                ws,
+                {
+                    "type": "error",
+                    "message": "transcription_failed",
+                    "seq": item.seq,
+                    "detail": str(exc),
+                },
+            )
             continue
-        if rec.get("type") != "final":
-            continue
-        text = rec.get("text", "").strip()
+
+        text = result.text.strip()
+        text = _sanitize_transcript_text(text)
         if not text:
+            await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
             continue
-        ts0 = int(rec.get("tsStart", 0))
-        ts1 = int(rec.get("tsEnd", ts0))
-        spk = rec.get("speaker")
-        if spk:
-            text = f"{spk}: {text}"
-        out.append(str(idx))
-        out.append(f"{_fmt_srt_time(ts0)} --> {_fmt_srt_time(ts1)}")
-        out.append(text)
-        out.append("")
-        idx += 1
-    content = "\n".join(out)
-    return HTMLResponse(status_code=200, content=content, media_type="text/plain; charset=utf-8")
+
+        if _is_near_duplicate(text, session.last_emitted_text):
+            await _safe_send(
+                ws,
+                {"type": "ack", "seq": item.seq, "duplicate": True},
+            )
+            continue
+
+        ts_start = item.offset_ms + (result.start_ms or 0)
+        if result.end_ms is not None:
+            ts_end = item.offset_ms + result.end_ms
+        else:
+            ts_end = item.offset_ms + max(item.duration_ms, 600)
+
+        if ts_end < ts_start:
+            ts_end = ts_start
+
+        record = TranscriptRecord(
+            type="final",
+            segmentId=f"{item.seq:06d}",
+            seq=item.seq,
+            text=text,
+            tsStart=ts_start,
+            tsEnd=ts_end,
+            chunkOffsetMs=item.offset_ms,
+            chunkDurationMs=item.duration_ms,
+            language=session.language,
+            createdAt=datetime.now(timezone.utc).isoformat(),
+        )
+        session.store.append_final(record)
+        session.last_emitted_text = text
+        _append_context(session, text)
+
+        await _safe_send(
+            ws,
+            {
+                "type": "final",
+                "segmentId": record.segmentId,
+                "seq": record.seq,
+                "text": record.text,
+                "tsStart": record.tsStart,
+                "tsEnd": record.tsEnd,
+            },
+        )
 
 
-@app.get("/metrics")
-async def metrics():
-    payload = generate_latest()
-    return Response(status_code=200, content=payload, media_type=CONTENT_TYPE_LATEST)
 
-# 静的ファイルは最後にマウント（他のルートを優先させるため）
+def _create_session(payload: dict[str, Any]) -> LiveSession:
+    base_session_id = TranscriptStore.sanitize_or_generate(_as_str(payload.get("sessionId")))
+    runtime_session_id = TranscriptStore.make_runtime_session_id(base_session_id)
+
+    language = _as_str(payload.get("language")) or settings.default_language
+    prompt = _as_str(payload.get("prompt")) or settings.default_prompt
+    temperature = _as_float(payload.get("temperature"), settings.default_temperature)
+
+    return LiveSession(
+        session_id=runtime_session_id,
+        language=language,
+        base_prompt=prompt,
+        temperature=temperature,
+        context_prompt_enabled=settings.context_prompt_enabled,
+        context_max_chars=settings.context_max_chars,
+        context_text="",
+        last_emitted_text="",
+        store=TranscriptStore(settings.transcripts_dir, runtime_session_id),
+        queue=asyncio.Queue(maxsize=settings.max_queue_size),
+    )
+
+
+def _build_prompt(session: LiveSession) -> str | None:
+    parts: list[str] = []
+    if session.base_prompt:
+        parts.append(session.base_prompt.strip())
+
+    if session.context_prompt_enabled and session.context_text:
+        if session.language.lower().startswith("en"):
+            header = "Recent transcript context:"
+        else:
+            header = "直前の文字起こし文脈:"
+        parts.append(f"{header}\n{session.context_text}")
+
+    merged = "\n\n".join(part for part in parts if part).strip()
+    return merged or None
+
+
+def _append_context(session: LiveSession, text: str) -> None:
+    if not session.context_prompt_enabled:
+        return
+    if session.context_max_chars <= 0:
+        return
+
+    cleaned = " ".join(text.split()).strip()
+    cleaned = _sanitize_transcript_text(cleaned)
+    if not cleaned:
+        return
+
+    if session.context_text:
+        merged = f"{session.context_text}\n{cleaned}"
+    else:
+        merged = cleaned
+
+    if len(merged) > session.context_max_chars:
+        merged = merged[-session.context_max_chars :].lstrip()
+    session.context_text = merged
+
+
+REPEAT_COLLAPSE_RE = re.compile(r"(.{2,16}?)\1{3,}")
+REPEAT_DETECT_RE = re.compile(r"(.{2,16}?)\1{5,}")
+
+
+def _sanitize_transcript_text(text: str) -> str:
+    value = " ".join((text or "").split()).strip()
+    if not value:
+        return ""
+
+    # 連続反復を縮約し、意味の薄い暴走出力を抑える。
+    for _ in range(3):
+        collapsed = REPEAT_COLLAPSE_RE.sub(lambda m: m.group(1) * 2, value)
+        if collapsed == value:
+            break
+        value = collapsed
+
+    if _is_repetition_noise(value):
+        return ""
+    return value
+
+
+def _normalize_compare_text(text: str) -> str:
+    return re.sub(r"\s+", "", (text or "").strip())
+
+
+def _is_repetition_noise(text: str) -> bool:
+    normalized = _normalize_compare_text(text)
+    if len(normalized) < 32:
+        return False
+
+    matched = REPEAT_DETECT_RE.search(normalized)
+    if not matched:
+        return False
+
+    run_len = len(matched.group(0))
+    # 1箇所の反復だけで大半を占める場合はノイズ扱い。
+    return run_len >= max(36, int(len(normalized) * 0.45))
+
+
+def _is_near_duplicate(current: str, previous: str) -> bool:
+    a = _normalize_compare_text(current)
+    b = _normalize_compare_text(previous)
+    if not a or not b:
+        return False
+
+    if a == b:
+        return True
+
+    shorter = min(len(a), len(b))
+    longer = max(len(a), len(b))
+    if shorter >= 24 and shorter / longer >= 0.8 and (a in b or b in a):
+        return True
+
+    return shorter >= 24 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.93
+
+
+
+def _parse_chunk_message(payload: dict[str, Any]) -> ChunkMessage | None:
+    audio_b64 = _as_str(payload.get("audio"))
+    if not audio_b64:
+        return None
+
+    try:
+        audio_bytes = base64.b64decode(audio_b64, validate=True)
+    except Exception:  # noqa: BLE001
+        return None
+
+    mime_type = _as_str(payload.get("mimeType")) or "audio/webm"
+    seq = _as_int(payload.get("seq"), 0)
+    offset_ms = max(0, _as_int(payload.get("offsetMs"), 0))
+    duration_ms = max(200, _as_int(payload.get("durationMs"), 2000))
+
+    return ChunkMessage(
+        seq=seq,
+        offset_ms=offset_ms,
+        duration_ms=duration_ms,
+        mime_type=mime_type,
+        audio_bytes=audio_bytes,
+    )
+
+
+def _as_str(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+async def _broadcast_conn_count() -> None:
+    payload = {"type": "conn", "count": len(ACTIVE_SOCKETS)}
+    dead: list[WebSocket] = []
+
+    for sock in list(ACTIVE_SOCKETS):
+        ok = await _safe_send(sock, payload)
+        if not ok:
+            dead.append(sock)
+
+    for sock in dead:
+        ACTIVE_SOCKETS.discard(sock)
+
+
+async def _safe_send(ws: WebSocket, payload: dict[str, Any]) -> bool:
+    try:
+        await ws.send_json(payload)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@app.get("/api/transcript/{session_id}.txt", response_model=None)
+async def get_txt(session_id: str) -> Response:
+    path = resolve_transcript_path(settings.transcripts_dir, session_id, "txt")
+    if not path or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+    return FileResponse(str(path), media_type="text/plain")
+
+
+@app.get("/api/transcript/{session_id}.jsonl", response_model=None)
+async def get_jsonl(session_id: str) -> Response:
+    path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
+    if not path or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+    return FileResponse(str(path), media_type="application/x-ndjson")
+
+
+@app.get("/api/transcript/{session_id}.srt", response_model=None)
+async def get_srt(session_id: str) -> Response:
+    path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
+    if not path or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+
+    records = read_jsonl_records(path)
+    srt = format_srt(records)
+    return PlainTextResponse(status_code=200, content=srt, media_type="text/plain; charset=utf-8")
+
+
 WEB_DIR = Path("web")
 if WEB_DIR.exists():
     app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="static")

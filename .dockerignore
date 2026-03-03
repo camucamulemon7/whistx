@@ -1,0 +1,9 @@
+__pycache__
+*.pyc
+.git
+.gitignore
+data/*
+!data/.gitkeep
+hf-home/*
+node_modules
+.DS_Store

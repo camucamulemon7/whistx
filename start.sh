@@ -1,73 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TLS_CERT_FILE=${TLS_CERT_FILE:-}
-TLS_KEY_FILE=${TLS_KEY_FILE:-}
-TLS_CA_BUNDLE=${TLS_CA_BUNDLE:-}
-TLS_PORT=${TLS_PORT:-8443}
-HTTP_PORT=${HTTP_PORT:-8005}
-TLS_ENABLED=false
-if [[ -n "${TLS_CERT_FILE}" || -n "${TLS_KEY_FILE}" ]]; then
-  if [[ -z "${TLS_CERT_FILE}" || -z "${TLS_KEY_FILE}" ]]; then
-    echo "[start.sh] TLS_CERT_FILE と TLS_KEY_FILE が揃っていません" >&2
-    exit 1
-  fi
-  if [[ ! -f "${TLS_CERT_FILE}" ]]; then
-    echo "[start.sh] TLS_CERT_FILE='${TLS_CERT_FILE}' が見つかりません" >&2
-    exit 1
-  fi
-  if [[ ! -f "${TLS_KEY_FILE}" ]]; then
-    echo "[start.sh] TLS_KEY_FILE='${TLS_KEY_FILE}' が見つかりません" >&2
-    exit 1
-  fi
-  if [[ -n "${TLS_CA_BUNDLE}" && ! -f "${TLS_CA_BUNDLE}" ]]; then
-    echo "[start.sh] TLS_CA_BUNDLE='${TLS_CA_BUNDLE}' が見つかりません" >&2
-    exit 1
-  fi
-  TLS_ENABLED=true
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env}"
+IMAGE_NAME="${IMAGE_NAME:-whistx:latest}"
+CONTAINER_NAME="${CONTAINER_NAME:-whistx}"
+PORT="${PORT:-8005}"
+DATA_DIR="${DATA_DIR:-${SCRIPT_DIR}/data}"
+
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+  set +a
 fi
 
-# Torch / NVIDIA pip 配布ライブラリを優先（cuDNN を確実に解決）
-PY_TORCH_LIB="$(python3 - <<'PY'
-import os
-try:
-    import torch, os.path
-    p = os.path.join(os.path.dirname(torch.__file__), 'lib')
-    print(p)
-except Exception:
-    print("")
-PY
-)"
-if [[ -n "${PY_TORCH_LIB}" && -d "${PY_TORCH_LIB}" ]]; then
-  export LD_LIBRARY_PATH="${PY_TORCH_LIB}:${LD_LIBRARY_PATH:-}"
+if [[ "${DATA_DIR}" != /* ]]; then
+  DATA_DIR="${SCRIPT_DIR}/${DATA_DIR#./}"
 fi
 
-PY_CUDNN_LIB="$(python3 - <<'PY'
-import os
-try:
-    import nvidia.cudnn, os.path
-    base = os.path.dirname(nvidia.cudnn.__file__)
-    lib = os.path.join(base, 'lib')
-    print(lib)
-except Exception:
-    print('')
-PY
-)"
-if [[ -n "${PY_CUDNN_LIB}" && -d "${PY_CUDNN_LIB}" ]]; then
-  export LD_LIBRARY_PATH="${PY_CUDNN_LIB}:${LD_LIBRARY_PATH:-}"
+if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+  echo "[start.sh] OPENAI_API_KEY を設定してください" >&2
+  exit 1
 fi
 
-UVICORN_PORT=${HTTP_PORT}
-declare -a UVICORN_ARGS
-if [[ "${TLS_ENABLED}" == true ]]; then
-  UVICORN_PORT=${TLS_PORT}
-  echo "[start.sh] Starting uvicorn with HTTPS on port ${UVICORN_PORT}" >&2
-  UVICORN_ARGS+=(--ssl-certfile "${TLS_CERT_FILE}" --ssl-keyfile "${TLS_KEY_FILE}")
-  if [[ -n "${TLS_CA_BUNDLE}" ]]; then
-    UVICORN_ARGS+=(--ssl-ca-certs "${TLS_CA_BUNDLE}")
-  fi
-else
-  echo "[start.sh] Starting uvicorn with HTTP on port ${UVICORN_PORT}" >&2
-fi
+mkdir -p "${DATA_DIR}/transcripts"
 
-exec uvicorn server.app:app --host 0.0.0.0 --port "${UVICORN_PORT}" "${UVICORN_ARGS[@]}"
+docker build -t "${IMAGE_NAME}" "${SCRIPT_DIR}"
+
+docker run --rm \
+  --name "${CONTAINER_NAME}" \
+  -p "${PORT}:8005" \
+  -e OPENAI_API_KEY="${OPENAI_API_KEY}" \
+  -e OPENAI_BASE_URL="${OPENAI_BASE_URL:-}" \
+  -e WHISPER_MODEL="${WHISPER_MODEL:-whisper-1}" \
+  -e SUMMARY_API_KEY="${SUMMARY_API_KEY:-}" \
+  -e SUMMARY_BASE_URL="${SUMMARY_BASE_URL:-}" \
+  -e SUMMARY_MODEL="${SUMMARY_MODEL:-gpt-4o-mini}" \
+  -e SUMMARY_TEMPERATURE="${SUMMARY_TEMPERATURE:-0.2}" \
+  -e SUMMARY_INPUT_MAX_CHARS="${SUMMARY_INPUT_MAX_CHARS:-16000}" \
+  -e DEFAULT_LANGUAGE="${DEFAULT_LANGUAGE:-ja}" \
+  -e DEFAULT_PROMPT="${DEFAULT_PROMPT:-}" \
+  -e DEFAULT_TEMPERATURE="${DEFAULT_TEMPERATURE:-0.0}" \
+  -e CONTEXT_PROMPT_ENABLED="${CONTEXT_PROMPT_ENABLED:-1}" \
+  -e CONTEXT_MAX_CHARS="${CONTEXT_MAX_CHARS:-1000}" \
+  -e MAX_QUEUE_SIZE="${MAX_QUEUE_SIZE:-8}" \
+  -e MAX_CHUNK_BYTES="${MAX_CHUNK_BYTES:-12582912}" \
+  -v "${DATA_DIR}:/app/data" \
+  "${IMAGE_NAME}"
