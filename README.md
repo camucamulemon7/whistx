@@ -47,7 +47,7 @@ It captures browser audio, sends chunked audio over WebSocket, transcribes on th
 ## Quick Start (Local)
 
 ```bash
-cd /home/remon1129/ai/whistx
+# from repository root
 cp .env.example .env
 # Set OPENAI_API_KEY in .env
 ./run.sh
@@ -60,7 +60,7 @@ Then open:
 ## Quick Start (Docker)
 
 ```bash
-cd /home/remon1129/ai/whistx
+# from repository root
 cp .env.example .env
 # Set OPENAI_API_KEY in .env
 ./start.sh
@@ -72,18 +72,7 @@ For Podman:
 ./podman-run.sh
 ```
 
-### Rootless Podman Notes
-
-`podman-run.sh` is tuned for rootless mode by default:
-
-- `--userns=keep-id` is enabled (`PODMAN_USERNS=keep-id`)
-- volume mount defaults to `:Z` label option (`PODMAN_VOLUME_OPTS=Z`)
-
-If your environment does not need SELinux relabeling, set:
-
-```bash
-PODMAN_VOLUME_OPTS=
-```
+`podman-run.sh` is prepared for rootless Podman.
 
 ## Environment Variables
 
@@ -193,7 +182,7 @@ Exports (`.txt`, `.jsonl`, `.srt`) include speaker labels once diarization compl
 If you see an error related to `torchaudio.AudioMetaData`, your local `torch/torchaudio` is too new for the current pyannote stack.
 
 ```bash
-cd /home/remon1129/ai/whistx
+# from repository root
 source .venv/bin/activate
 pip install --upgrade "torch>=2.2,<2.9" "torchaudio>=2.2,<2.9"
 ```
@@ -204,7 +193,7 @@ If you still see `hf_hub_download() got an unexpected keyword argument 'use_auth
 after updating this repository, reinstall dependencies:
 
 ```bash
-cd /home/remon1129/ai/whistx
+# from repository root
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
@@ -213,7 +202,7 @@ If diarization fails with `Weights only load failed` / `_pickle.UnpicklingError`
 on `torch>=2.6`, reinstall dependencies and restart:
 
 ```bash
-cd /home/remon1129/ai/whistx
+# from repository root
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
