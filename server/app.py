@@ -91,7 +91,7 @@ async def on_startup() -> None:
     TRANSCRIBER = OpenAIWhisperTranscriber(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
-        model=settings.whisper_model,
+        model=settings.asr_model,
     )
     try:
         SUMMARIZER = OpenAISummarizer(
@@ -99,6 +99,10 @@ async def on_startup() -> None:
             base_url=settings.summary_base_url,
             model=settings.summary_model,
             temperature=settings.summary_temperature,
+            summary_system_prompt=settings.summary_system_prompt,
+            summary_prompt_template=settings.summary_prompt_template,
+            proofread_system_prompt=settings.proofread_system_prompt,
+            proofread_prompt_template=settings.proofread_prompt_template,
         )
     except Exception as exc:  # noqa: BLE001
         SUMMARIZER = None
@@ -110,6 +114,10 @@ async def on_startup() -> None:
             base_url=settings.proofread_base_url,
             model=settings.proofread_model,
             temperature=settings.proofread_temperature,
+            summary_system_prompt=settings.summary_system_prompt,
+            summary_prompt_template=settings.summary_prompt_template,
+            proofread_system_prompt=settings.proofread_system_prompt,
+            proofread_prompt_template=settings.proofread_prompt_template,
         )
     except Exception as exc:  # noqa: BLE001
         PROOFREADER = None
@@ -134,7 +142,7 @@ async def on_startup() -> None:
     else:
         DIARIZER = None
 
-    logger.info("whistx started (model=%s, ws=%s)", settings.whisper_model, settings.ws_path)
+    logger.info("whistx started (model=%s, ws=%s)", settings.asr_model, settings.ws_path)
 
 
 @app.get("/api/health")
@@ -142,7 +150,7 @@ async def health() -> JSONResponse:
     return JSONResponse(
         {
             "status": "ok",
-            "model": settings.whisper_model,
+            "model": settings.asr_model,
             "summaryModel": settings.summary_model if SUMMARIZER else None,
             "proofreadModel": settings.proofread_model if PROOFREADER else None,
             "diarizationEnabled": DIARIZER is not None,
@@ -152,6 +160,8 @@ async def health() -> JSONResponse:
             "diarizationDefaultMaxSpeakers": settings.diarization_max_speakers,
             "diarizationSpeakerCap": MAX_DIARIZATION_SPEAKERS,
             "banners": list(settings.ui_banners),
+            "uiBrandTitle": settings.app_brand_title,
+            "uiBrandTagline": settings.app_brand_tagline,
             "activeConnections": len(ACTIVE_SOCKETS),
         }
     )
@@ -162,7 +172,10 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
     if SUMMARIZER is None:
         return JSONResponse(
             status_code=503,
-            content={"error": "summary_not_configured", "detail": "SUMMARY_API_KEY is missing"},
+            content={
+                "error": "summary_not_configured",
+                "detail": "SUMMARY_API_KEY (or ASR_API_KEY / OPENAI_API_KEY) is missing",
+            },
         )
 
     raw_text = payload.text.strip()
@@ -200,7 +213,7 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
             status_code=503,
             content={
                 "error": "proofread_not_configured",
-                "detail": "PROOFREAD_API_KEY / SUMMARY_API_KEY / OPENAI_API_KEY is missing",
+                "detail": "PROOFREAD_API_KEY / SUMMARY_API_KEY / ASR_API_KEY (or OPENAI_API_KEY) is missing",
             },
         )
 
@@ -272,7 +285,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
                         "message": "ready",
                         "state": "ready",
                         "sessionId": session.session_id,
-                        "backend": f"openai:{settings.whisper_model}",
+                        "backend": f"openai:{settings.asr_model}",
                         "diarizationEnabled": session.collect_audio_for_diarization,
                         "diarizationNumSpeakers": session.diarization_num_speakers,
                         "diarizationMinSpeakers": session.diarization_min_speakers,

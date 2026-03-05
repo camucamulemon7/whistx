@@ -26,9 +26,13 @@ class OpenAISummarizer:
         base_url: str | None,
         model: str,
         temperature: float,
+        summary_system_prompt: str = "",
+        summary_prompt_template: str = "",
+        proofread_system_prompt: str = "",
+        proofread_prompt_template: str = "",
     ):
         if not api_key:
-            raise RuntimeError("SUMMARY_API_KEY (or OPENAI_API_KEY) is not set")
+            raise RuntimeError("SUMMARY_API_KEY (or ASR_API_KEY / OPENAI_API_KEY) is not set")
 
         kwargs: dict[str, Any] = {"api_key": api_key}
         if base_url:
@@ -37,6 +41,10 @@ class OpenAISummarizer:
         self.client = OpenAI(**kwargs)
         self.model = model
         self.temperature = temperature
+        self.summary_system_prompt = summary_system_prompt.strip()
+        self.summary_prompt_template = summary_prompt_template.strip()
+        self.proofread_system_prompt = proofread_system_prompt.strip()
+        self.proofread_prompt_template = proofread_prompt_template.strip()
 
     def summarize(self, *, text: str, language: str) -> SummaryResult:
         clean_text = (text or "").strip()
@@ -50,13 +58,18 @@ class OpenAISummarizer:
                 {
                     "role": "system",
                     "content": (
-                        "You are a careful transcription summarizer. "
+                        self.summary_system_prompt
+                        or "You are a careful transcription summarizer. "
                         "Keep factual consistency with the source and do not hallucinate."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": _build_summary_prompt(clean_text, language),
+                    "content": _build_summary_prompt(
+                        clean_text,
+                        language,
+                        custom_template=self.summary_prompt_template,
+                    ),
                 },
             ],
         )
@@ -77,13 +90,18 @@ class OpenAISummarizer:
                 {
                     "role": "system",
                     "content": (
-                        "You are a strict transcript proofreader. "
+                        self.proofread_system_prompt
+                        or "You are a strict transcript proofreader. "
                         "Do not add new facts. Preserve meaning, speaker intent, and uncertainty."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": _build_proofread_prompt(clean_text, language),
+                    "content": _build_proofread_prompt(
+                        clean_text,
+                        language,
+                        custom_template=self.proofread_prompt_template,
+                    ),
                 },
             ],
         )
@@ -130,7 +148,21 @@ def _is_temperature_unsupported_error(exc: BadRequestError) -> bool:
     return "temperature" in lower and ("only the default" in lower or "does not support" in lower)
 
 
-def _build_summary_prompt(text: str, language: str) -> str:
+def _render_prompt_template(template: str, *, text: str, language: str) -> str:
+    if not template:
+        return ""
+    try:
+        return template.format(text=text, language=language)
+    except Exception:
+        # Fallback: keep template robust even if braces are not escaped.
+        return template.replace("{text}", text).replace("{language}", language)
+
+
+def _build_summary_prompt(text: str, language: str, *, custom_template: str = "") -> str:
+    rendered = _render_prompt_template(custom_template, text=text, language=language)
+    if rendered.strip():
+        return rendered
+
     if language.lower().startswith("en"):
         return (
             "Summarize the transcript below in English.\\n"
@@ -149,7 +181,11 @@ def _build_summary_prompt(text: str, language: str) -> str:
     )
 
 
-def _build_proofread_prompt(text: str, language: str) -> str:
+def _build_proofread_prompt(text: str, language: str, *, custom_template: str = "") -> str:
+    rendered = _render_prompt_template(custom_template, text=text, language=language)
+    if rendered.strip():
+        return rendered
+
     if language.lower().startswith("en"):
         return (
             "Proofread the following ASR transcript in English.\\n"

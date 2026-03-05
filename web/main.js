@@ -3,6 +3,9 @@ const $ = (selector) => document.querySelector(selector);
 const statusTextEl = $("#statusText");
 const connCountEl = $("#connCount");
 const bannersContainerEl = $("#bannersContainer");
+const brandTitleEl = $("#brandTitle");
+const brandTaglineEl = $("#brandTagline");
+const themeToggleBtn = $("#themeToggle");
 
 const languageEl = $("#language");
 const audioSourceEl = $("#audioSource");
@@ -95,6 +98,20 @@ const state = {
 function setStatus(text) {
   statusTextEl.textContent = text;
   statusTextEl.dataset.state = String(text || "").toLowerCase();
+}
+
+function applyBranding(title, tagline) {
+  const cleanTitle = String(title || "").trim();
+  const cleanTagline = String(tagline || "").trim();
+
+  if (brandTitleEl && cleanTitle) {
+    brandTitleEl.textContent = cleanTitle;
+    document.title = cleanTitle;
+  }
+
+  if (brandTaglineEl && cleanTagline) {
+    brandTaglineEl.textContent = cleanTagline;
+  }
 }
 
 function setProofreadButtonBusy(busy) {
@@ -370,7 +387,13 @@ function showToast(message, type = "default", duration = 2500) {
 }
 
 function updateSegmentCount() {
-  segmentCountEl.textContent = `${state.log.length} segments`;
+  const count = state.log.length;
+  segmentCountEl.textContent = `${count} segments`;
+
+  // Trigger animation
+  segmentCountEl.classList.remove("updated");
+  void segmentCountEl.offsetWidth; // Force reflow
+  segmentCountEl.classList.add("updated");
 }
 
 function extractTranscriptText() {
@@ -577,6 +600,12 @@ function applyChunkSeconds(value) {
 
 function setUiRecording(active) {
   state.recording = active;
+
+  // Audio level indicator
+  const audioLevelIndicator = $("#audioLevelIndicator");
+  if (audioLevelIndicator) {
+    audioLevelIndicator.hidden = !active;
+  }
 
   // Update record button state
   if (active) {
@@ -1476,13 +1505,6 @@ if (proofreadBtn) {
   });
 }
 
-// Fallback: if direct binding fails due stale DOM/cache mismatch, still handle click.
-document.addEventListener("click", (event) => {
-  const target = event.target instanceof Element ? event.target.closest("#proofreadBtn") : null;
-  if (!target) return;
-  proofreadAll();
-});
-
 copyBtn.addEventListener("click", () => {
   copyAll();
 });
@@ -1497,18 +1519,66 @@ clearBtn.addEventListener("click", () => {
   clearView();
 });
 
+/* --------------------------------------------------------------------------
+   Theme Toggle - Light/Dark Mode
+   -------------------------------------------------------------------------- */
+function initTheme() {
+  const savedTheme = localStorage.getItem("whistx_theme");
+  if (savedTheme) {
+    document.documentElement.setAttribute("data-theme", savedTheme);
+    updateThemeColorMeta(savedTheme);
+  } else {
+    // Use system preference
+    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const systemTheme = prefersDark ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", systemTheme);
+    updateThemeColorMeta(systemTheme);
+  }
+}
+
+function updateThemeColorMeta(theme) {
+  const metaThemeColor = document.querySelector('meta[name="theme-color"][media*="(prefers-color-scheme: light)"]');
+  if (metaThemeColor) {
+    metaThemeColor.setAttribute(
+      "content",
+      theme === "dark" ? "#0a0a0a" : "#f5f5f7"
+    );
+  }
+}
+
+function toggleTheme() {
+  const currentTheme = document.documentElement.getAttribute("data-theme") || "light";
+  const newTheme = currentTheme === "dark" ? "light" : "dark";
+
+  document.documentElement.setAttribute("data-theme", newTheme);
+  localStorage.setItem("whistx_theme", newTheme);
+  updateThemeColorMeta(newTheme);
+
+  // Show toast
+  const themeName = newTheme === "dark" ? "ダークモード" : "ライトモード";
+  showToast(`${themeName}に切り替えました`, "success");
+}
+
+if (themeToggleBtn) {
+  themeToggleBtn.addEventListener("click", toggleTheme);
+}
+
+// Initialize theme on load
+initTheme();
+
 async function loadCapabilities() {
   try {
     const response = await fetch("/api/health");
     if (!response.ok) return;
     const health = await response.json();
     renderBanners(health.banners);
+    applyBranding(health.uiBrandTitle, health.uiBrandTagline);
     state.proofreadAvailable = !!health.proofreadModel;
     state.diarizationAvailable = !!health.diarizationEnabled;
 
     if (!state.proofreadAvailable) {
       setProofread(
-        "校正機能が無効です。\nサーバーの API キー設定（PROOFREAD_API_KEY / SUMMARY_API_KEY / OPENAI_API_KEY）を確認してください。",
+        "校正機能が無効です。\nサーバーの API キー設定（PROOFREAD_API_KEY / SUMMARY_API_KEY / ASR_API_KEY）を確認してください。",
         "利用不可"
       );
       if (proofreadBtn) {

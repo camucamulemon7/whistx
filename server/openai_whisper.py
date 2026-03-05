@@ -17,7 +17,7 @@ class WhisperChunkResult:
 class OpenAIWhisperTranscriber:
     def __init__(self, *, api_key: str, base_url: str | None, model: str):
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set")
+            raise RuntimeError("ASR_API_KEY (or OPENAI_API_KEY) is not set")
 
         kwargs: dict[str, Any] = {"api_key": api_key}
         if base_url:

@@ -1,11 +1,11 @@
 # whistx
 
-`whistx` is a real-time transcription app built on OpenAI `whisper-1`.
+`whistx` is a real-time transcription app built on an OpenAI-compatible transcription API.
 It captures browser audio, sends chunked audio over WebSocket, transcribes on the server, and streams finalized segments back to the UI.
 
 ## Features
 
-- Real-time chunk-based transcription using OpenAI `whisper-1`
+- Real-time chunk-based transcription using an OpenAI-compatible ASR model
 - Context carry-over between chunks for better continuity
 - Built-in silence handling
   - Client-side lightweight VAD (skip silent chunks)
@@ -41,7 +41,7 @@ It captures browser audio, sends chunked audio over WebSocket, transcribes on th
 
 - Python 3.10+
 - Chrome or Edge (latest recommended)
-- OpenAI API key
+- ASR API key (`ASR_API_KEY`, OpenAI-compatible)
 - (Optional for diarization) Hugging Face token with access to `pyannote/speaker-diarization-3.1`
 
 ## Quick Start (Local)
@@ -49,7 +49,8 @@ It captures browser audio, sends chunked audio over WebSocket, transcribes on th
 ```bash
 # from repository root
 cp .env.example .env
-# Set OPENAI_API_KEY in .env
+# Set ASR_API_KEY in .env
+# If you use local vLLM, set ASR_BASE_URL and ASR_MODEL as well
 ./run.sh
 ```
 
@@ -62,7 +63,8 @@ Then open:
 ```bash
 # from repository root
 cp .env.example .env
-# Set OPENAI_API_KEY in .env
+# Set ASR_API_KEY in .env
+# If you use local vLLM, set ASR_BASE_URL and ASR_MODEL as well
 ./start.sh
 ```
 
@@ -78,50 +80,60 @@ For Podman:
 
 Required:
 
-- `OPENAI_API_KEY`
+- `ASR_API_KEY`
 
 Important optional settings:
 
-- `OPENAI_BASE_URL` (default: OpenAI)
-- `WHISPER_MODEL` (default: `whisper-1`)
-- `DEFAULT_LANGUAGE` (default: `ja`)
-- `DEFAULT_PROMPT`
-- `DEFAULT_TEMPERATURE` (default: `0.0`)
-- `CONTEXT_PROMPT_ENABLED` (default: `1`)
-- `CONTEXT_MAX_CHARS` (default: `1000`)
-- `MAX_CHUNK_BYTES` (default: `12582912`)
+- `ASR_BASE_URL` (default: OpenAI)
+- `ASR_MODEL` (default: `mistralai/Voxtral-Mini-4B-Realtime-2602`)
+- `ASR_DEFAULT_LANGUAGE` (default: `ja`)
+- `ASR_DEFAULT_PROMPT`
+- `ASR_DEFAULT_TEMPERATURE` (default: `0.0`)
+- `ASR_CONTEXT_PROMPT_ENABLED` (default: `1`)
+- `ASR_CONTEXT_MAX_CHARS` (default: `1000`)
+- `ASR_MAX_QUEUE_SIZE` (default: `8`)
+- `ASR_MAX_CHUNK_BYTES` (default: `12582912`)
 
 Summary settings:
 
-- `SUMMARY_API_KEY` (falls back to `OPENAI_API_KEY`)
-- `SUMMARY_BASE_URL` (falls back to `OPENAI_BASE_URL`)
+- `SUMMARY_API_KEY` (falls back to `ASR_API_KEY`)
+- `SUMMARY_BASE_URL` (falls back to `ASR_BASE_URL`)
 - `SUMMARY_MODEL` (default: `gpt-4o-mini`)
 - `SUMMARY_TEMPERATURE` (default: `0.2`)
 - `SUMMARY_INPUT_MAX_CHARS` (default: `16000`)
+- `SUMMARY_SYSTEM_PROMPT` (optional, override system prompt)
+- `SUMMARY_PROMPT_TEMPLATE` (optional, placeholders: `{text}`, `{language}`)
 
 Proofread settings:
 
-- `PROOFREAD_API_KEY` (falls back to `SUMMARY_API_KEY`, then `OPENAI_API_KEY`)
-- `PROOFREAD_BASE_URL` (falls back to `SUMMARY_BASE_URL`, then `OPENAI_BASE_URL`)
+- `PROOFREAD_API_KEY` (falls back to `SUMMARY_API_KEY`, then `ASR_API_KEY`)
+- `PROOFREAD_BASE_URL` (falls back to `SUMMARY_BASE_URL`, then `ASR_BASE_URL`)
 - `PROOFREAD_MODEL` (default: `gpt-4o-mini`)
 - `PROOFREAD_TEMPERATURE` (default: `0.0`)
 - `PROOFREAD_INPUT_MAX_CHARS` (default: `24000`)
+- `PROOFREAD_SYSTEM_PROMPT` (optional, override system prompt)
+- `PROOFREAD_PROMPT_TEMPLATE` (optional, placeholders: `{text}`, `{language}`)
+
+Prompt template notes:
+- `SUMMARY_PROMPT_TEMPLATE` / `PROOFREAD_PROMPT_TEMPLATE` can use `{text}` and `{language}`.
+- You can write line breaks as `\\n` in `.env`.
 
 UI banner settings:
 
-- `UI_BANNERS` (JSON array, default: empty)
-- `WEBUI_BANNERS` (alias of `UI_BANNERS`)
+- `APP_UI_BANNERS` (JSON array, default: empty)
+- `APP_BRAND_TITLE` (default: `whistx`)
+- `APP_BRAND_TAGLINE` (default: `高精度リアルタイム文字起こし`)
 
 Example:
 
 ```env
-UI_BANNERS=[{"id":"notice-1","type":"warning","title":"Notice","message":"Do not input confidential information.","dismissible":true}]
+APP_UI_BANNERS=[{"id":"notice-1","type":"warning","title":"Notice","message":"Do not input confidential information.","dismissible":true}]
 ```
 
 You can also set plain text (non-JSON). In that case it is shown as a single info banner:
 
 ```env
-UI_BANNERS=Do not share confidential content in this workspace.
+APP_UI_BANNERS=Do not share confidential content in this workspace.
 ```
 
 Diarization settings (`pyannote.audio`):
@@ -137,16 +149,25 @@ Diarization settings (`pyannote.audio`):
 - `DIARIZATION_WORK_DIR` (default: `data/diarization`)
 - `DIARIZATION_KEEP_CHUNKS` (default: `0`)
 - `HF_HUB_DISABLE_XET` (default: `1` inside app when diarization is used)
-- `FFMPEG_BIN` (default: `ffmpeg`)
+- `DIARIZATION_FFMPEG_BIN` (default: `ffmpeg`)
 
 Runtime settings:
 
-- `HOST` (default: `0.0.0.0`)
-- `PORT` (default: `8005`)
-- `WS_PATH` (default: `/ws/transcribe`)
-- `DATA_DIR` (default: `data/transcripts`)
+- `APP_HOST` (default: `0.0.0.0`)
+- `APP_PORT` (default: `8005`)
+- `APP_WS_PATH` (default: `/ws/transcribe`)
+- `APP_ENTRYPOINT` (default: `server.app:app`)
+- `APP_DATA_DIR` (default: `./data`)
+- `APP_TRANSCRIPTS_DIR` (optional, default: `APP_DATA_DIR/transcripts`)
+- `CONTAINER_IMAGE_NAME` (default: `whistx:latest`)
 - `PODMAN_USERNS` (default: `keep-id`, used by `podman-run.sh`)
 - `PODMAN_VOLUME_OPTS` (default: `Z`, used by `podman-run.sh`)
+
+Backward-compatible legacy aliases are still supported in the app:
+`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `WHISPER_MODEL`, `HOST`, `PORT`, `WS_PATH`, `DATA_DIR`,
+`DEFAULT_LANGUAGE`, `DEFAULT_PROMPT`, `DEFAULT_TEMPERATURE`, `CONTEXT_PROMPT_ENABLED`,
+`CONTEXT_MAX_CHARS`, `MAX_QUEUE_SIZE`, `MAX_CHUNK_BYTES`, `FFMPEG_BIN`, `UI_BANNERS`,
+`WEBUI_BANNERS`, `APP`, `IMAGE_NAME`, `VENV_DIR`, `SKIP_PIP_INSTALL`.
 
 ## Speaker Diarization Setup (pyannote.audio)
 
