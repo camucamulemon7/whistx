@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import uuid
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -23,6 +24,7 @@ class TranscriptRecord:
     chunkDurationMs: int
     language: str
     createdAt: str
+    speaker: str | None = None
 
 
 class TranscriptStore:
@@ -32,10 +34,12 @@ class TranscriptStore:
         self.base_path = root_dir / session_id
         self.jsonl_path = self.base_path.with_suffix(".jsonl")
         self.txt_path = self.base_path.with_suffix(".txt")
+        self.chunks_dir = self.root_dir / "_chunks" / session_id
 
         self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
         self.jsonl_path.touch(exist_ok=True)
         self.txt_path.touch(exist_ok=True)
+        self.chunks_dir.mkdir(parents=True, exist_ok=True)
 
     def append_final(self, record: TranscriptRecord) -> None:
         payload = asdict(record)
@@ -44,7 +48,32 @@ class TranscriptStore:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
         with self.txt_path.open("a", encoding="utf-8") as handle:
-            handle.write(record.text.strip() + "\n")
+            line = _render_txt_line(payload)
+            if line:
+                handle.write(line + "\n")
+
+    def save_audio_chunk(self, *, seq: int, mime_type: str, audio_bytes: bytes) -> Path:
+        ext = _ext_from_mime(mime_type)
+        path = self.chunks_dir / f"{seq:06d}{ext}"
+        path.write_bytes(audio_bytes)
+        return path
+
+    def rewrite_records(self, records: Iterable[dict]) -> None:
+        rows = [row for row in records if isinstance(row, dict)]
+        with self.jsonl_path.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+        with self.txt_path.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                if row.get("type") != "final":
+                    continue
+                line = _render_txt_line(row)
+                if line:
+                    handle.write(line + "\n")
+
+    def cleanup_chunks(self) -> None:
+        shutil.rmtree(self.chunks_dir, ignore_errors=True)
 
     @staticmethod
     def make_runtime_session_id(base_session_id: str) -> str:
@@ -119,11 +148,40 @@ def format_srt(records: Iterable[dict]) -> str:
 
         lines.append(str(index))
         lines.append(f"{_fmt_srt_time(ts_start)} --> {_fmt_srt_time(ts_end)}")
-        lines.append(text)
+        speaker = str(rec.get("speaker", "")).strip()
+        if speaker:
+            lines.append(f"[{speaker}] {text}")
+        else:
+            lines.append(text)
         lines.append("")
         index += 1
 
     return "\n".join(lines)
+
+
+def _render_txt_line(rec: dict) -> str:
+    text = str(rec.get("text", "")).strip()
+    if not text:
+        return ""
+    speaker = str(rec.get("speaker", "")).strip()
+    if not speaker:
+        return text
+    return f"[{speaker}] {text}"
+
+
+def _ext_from_mime(mime_type: str) -> str:
+    lowered = (mime_type or "").lower()
+    if "wav" in lowered:
+        return ".wav"
+    if "webm" in lowered:
+        return ".webm"
+    if "ogg" in lowered or "opus" in lowered:
+        return ".ogg"
+    if "mp4" in lowered or "m4a" in lowered:
+        return ".m4a"
+    if "mpeg" in lowered or "mp3" in lowered:
+        return ".mp3"
+    return ".bin"
 
 
 

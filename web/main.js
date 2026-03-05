@@ -2,9 +2,18 @@ const $ = (selector) => document.querySelector(selector);
 
 const statusTextEl = $("#statusText");
 const connCountEl = $("#connCount");
+const bannersContainerEl = $("#bannersContainer");
 
 const languageEl = $("#language");
 const audioSourceEl = $("#audioSource");
+const diarizationToggleEl = $("#diarizationEnabled");
+const diarizationStateTextEl = $("#diarizationStateText");
+const diarizationConfigRowEl = $("#diarizationConfigRow");
+const diarizationSpeakerModeEl = $("#diarizationSpeakerMode");
+const diarizationSpeakerCountEl = $("#diarizationSpeakerCount");
+const diarizationMinSpeakersEl = $("#diarizationMinSpeakers");
+const diarizationMaxSpeakersEl = $("#diarizationMaxSpeakers");
+const diarizationSpeakerHintEl = $("#diarizationSpeakerHint");
 const chunkSecondsEl = $("#chunkSeconds");
 const promptEl = $("#prompt");
 const chunkHintEl = $("#chunkHint");
@@ -13,7 +22,9 @@ const presetButtons = Array.from(document.querySelectorAll("[data-chunk-preset]"
 const startBtn = $("#startBtn");
 const stopBtn = $("#stopBtn");
 const summaryBtn = $("#summaryBtn");
+const proofreadBtn = $("#proofreadBtn");
 const copyBtn = $("#copyBtn");
+const copyProofreadBtn = $("#copyProofreadBtn");
 const clearBtn = $("#clearBtn");
 
 const dlTxt = $("#dlTxt");
@@ -24,11 +35,15 @@ const logEl = $("#log");
 const segmentCountEl = $("#segmentCount");
 const summaryTextEl = $("#summaryText");
 const summaryMetaEl = $("#summaryMeta");
+const proofreadTextEl = $("#proofreadText");
+const proofreadMetaEl = $("#proofreadMeta");
 const toastContainer = $("#toastContainer");
 
 const CHUNK_MIN_SECONDS = 12;
 const CHUNK_MAX_SECONDS = 30;
 const CHUNK_DEFAULT_SECONDS = 20;
+const DIARIZATION_SPEAKER_MIN = 1;
+const DIARIZATION_SPEAKER_MAX = 12;
 
 const VAD_SAMPLE_MS = 80;
 const VAD_RMS_THRESHOLD = 0.01;
@@ -53,6 +68,18 @@ const state = {
   pendingSendChain: Promise.resolve(),
   log: [],
   summary: "",
+  proofread: "",
+  proofreadAvailable: true,
+  proofreadInFlight: false,
+  diarizationAvailable: true,
+  diarizationEnabled: true,
+  diarizationSpeakerMode: "auto",
+  diarizationSpeakerCount: 2,
+  diarizationMinSpeakers: 2,
+  diarizationMaxSpeakers: 4,
+  diarizationSpeakerCap: DIARIZATION_SPEAKER_MAX,
+  hasSavedDiarizationSpeakerSettings: false,
+  banners: [],
   audioContext: null,
   vadSource: null,
   vadAnalyser: null,
@@ -68,6 +95,255 @@ const state = {
 function setStatus(text) {
   statusTextEl.textContent = text;
   statusTextEl.dataset.state = String(text || "").toLowerCase();
+}
+
+function setProofreadButtonBusy(busy) {
+  if (!proofreadBtn) return;
+  proofreadBtn.disabled = busy;
+  proofreadBtn.textContent = busy ? "校正中..." : "校正";
+  proofreadBtn.setAttribute("aria-busy", busy ? "true" : "false");
+}
+
+function applyDiarizationEnabled(value, options = {}) {
+  const persist = options.persist !== false;
+  const enabled = !!value;
+  state.diarizationEnabled = enabled;
+
+  if (diarizationToggleEl) {
+    diarizationToggleEl.checked = enabled;
+  }
+
+  if (diarizationStateTextEl) {
+    if (!state.diarizationAvailable) {
+      diarizationStateTextEl.textContent = "利用不可";
+    } else {
+      diarizationStateTextEl.textContent = enabled ? "ON" : "OFF";
+    }
+  }
+
+  if (persist) {
+    try {
+      localStorage.setItem("whistx_diarization_enabled", enabled ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }
+  updateDiarizationSpeakerUi();
+  return enabled;
+}
+
+function clampSpeakerCount(value) {
+  const num = Number(value);
+  const cap = Math.max(DIARIZATION_SPEAKER_MIN, Number(state.diarizationSpeakerCap || DIARIZATION_SPEAKER_MAX));
+  if (!Number.isFinite(num)) return DIARIZATION_SPEAKER_MIN;
+  return Math.max(DIARIZATION_SPEAKER_MIN, Math.min(cap, Math.round(num)));
+}
+
+function normalizeSpeakerMode(value) {
+  if (value === "fixed" || value === "range") return value;
+  return "auto";
+}
+
+function updateDiarizationSpeakerUi() {
+  const available = !!state.diarizationAvailable;
+  const enabled = !!state.diarizationEnabled;
+  const mode = normalizeSpeakerMode(state.diarizationSpeakerMode);
+  const controlsEnabled = available && enabled;
+  const visible = controlsEnabled;
+
+  const autoMode = mode === "auto";
+  const fixedMode = mode === "fixed";
+  const rangeMode = mode === "range";
+
+  if (diarizationConfigRowEl) {
+    diarizationConfigRowEl.classList.toggle("is-hidden", !visible);
+    diarizationConfigRowEl.hidden = !visible;
+  }
+  if (diarizationSpeakerHintEl) {
+    diarizationSpeakerHintEl.classList.toggle("is-hidden", !visible);
+    diarizationSpeakerHintEl.hidden = !visible;
+  }
+
+  if (diarizationSpeakerModeEl) {
+    diarizationSpeakerModeEl.value = mode;
+    diarizationSpeakerModeEl.disabled = !controlsEnabled;
+  }
+
+  if (diarizationSpeakerCountEl) {
+    diarizationSpeakerCountEl.value = String(state.diarizationSpeakerCount);
+    diarizationSpeakerCountEl.disabled = !controlsEnabled || !fixedMode;
+  }
+
+  if (diarizationMinSpeakersEl) {
+    diarizationMinSpeakersEl.value = String(state.diarizationMinSpeakers);
+    diarizationMinSpeakersEl.disabled = !controlsEnabled || !rangeMode;
+  }
+
+  if (diarizationMaxSpeakersEl) {
+    diarizationMaxSpeakersEl.value = String(state.diarizationMaxSpeakers);
+    diarizationMaxSpeakersEl.disabled = !controlsEnabled || !rangeMode;
+  }
+
+  if (!visible) {
+    return;
+  }
+  if (!diarizationSpeakerHintEl) return;
+  if (autoMode) {
+    diarizationSpeakerHintEl.textContent = "自動推定: 発話内容から話者人数を推定します。";
+    return;
+  }
+  if (fixedMode) {
+    diarizationSpeakerHintEl.textContent = `固定人数: ${state.diarizationSpeakerCount}人として分離します。`;
+    return;
+  }
+  diarizationSpeakerHintEl.textContent = `範囲指定: ${state.diarizationMinSpeakers}〜${state.diarizationMaxSpeakers}人の範囲で推定します。`;
+}
+
+function applyDiarizationSpeakerSettings(value, options = {}) {
+  const persist = options.persist !== false;
+  const nextMode = normalizeSpeakerMode(value?.mode ?? state.diarizationSpeakerMode);
+  const nextCount = clampSpeakerCount(value?.count ?? state.diarizationSpeakerCount);
+  let nextMin = clampSpeakerCount(value?.min ?? state.diarizationMinSpeakers);
+  let nextMax = clampSpeakerCount(value?.max ?? state.diarizationMaxSpeakers);
+
+  if (nextMin > nextMax) {
+    const tmp = nextMin;
+    nextMin = nextMax;
+    nextMax = tmp;
+  }
+
+  state.diarizationSpeakerMode = nextMode;
+  state.diarizationSpeakerCount = nextCount;
+  state.diarizationMinSpeakers = nextMin;
+  state.diarizationMaxSpeakers = nextMax;
+
+  updateDiarizationSpeakerUi();
+
+  if (persist) {
+    try {
+      localStorage.setItem("whistx_diarization_speaker_mode", nextMode);
+      localStorage.setItem("whistx_diarization_speaker_count", String(nextCount));
+      localStorage.setItem("whistx_diarization_min_speakers", String(nextMin));
+      localStorage.setItem("whistx_diarization_max_speakers", String(nextMax));
+      state.hasSavedDiarizationSpeakerSettings = true;
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function resolveDiarizationStartOptions() {
+  const mode = normalizeSpeakerMode(state.diarizationSpeakerMode);
+  if (!state.diarizationAvailable || !state.diarizationEnabled) {
+    return {
+      diarizationNumSpeakers: 0,
+      diarizationMinSpeakers: 0,
+      diarizationMaxSpeakers: 0,
+    };
+  }
+  if (mode === "fixed") {
+    return {
+      diarizationNumSpeakers: clampSpeakerCount(state.diarizationSpeakerCount),
+      diarizationMinSpeakers: 0,
+      diarizationMaxSpeakers: 0,
+    };
+  }
+  if (mode === "range") {
+    const min = clampSpeakerCount(state.diarizationMinSpeakers);
+    const max = clampSpeakerCount(state.diarizationMaxSpeakers);
+    return {
+      diarizationNumSpeakers: 0,
+      diarizationMinSpeakers: Math.min(min, max),
+      diarizationMaxSpeakers: Math.max(min, max),
+    };
+  }
+  return {
+    diarizationNumSpeakers: 0,
+    diarizationMinSpeakers: 0,
+    diarizationMaxSpeakers: 0,
+  };
+}
+
+function normalizeBannerType(value) {
+  const type = String(value || "info").toLowerCase();
+  if (type === "success" || type === "warning" || type === "error") return type;
+  return "info";
+}
+
+function bannerDismissKey(id) {
+  return `whistx_banner_dismissed_${id}`;
+}
+
+function isBannerDismissed(id) {
+  try {
+    return localStorage.getItem(bannerDismissKey(id)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function dismissBanner(id) {
+  try {
+    localStorage.setItem(bannerDismissKey(id), "1");
+  } catch {
+    // ignore
+  }
+}
+
+function renderBanners(rawBanners) {
+  if (!bannersContainerEl) return;
+
+  const banners = Array.isArray(rawBanners) ? rawBanners : [];
+  state.banners = banners;
+  bannersContainerEl.innerHTML = "";
+
+  banners.forEach((banner, index) => {
+    const record = banner && typeof banner === "object" ? banner : {};
+    const id = String(record.id || `banner-${index + 1}`).trim() || `banner-${index + 1}`;
+    const type = normalizeBannerType(record.type);
+    const title = String(record.title || "").trim();
+    const message = String(record.message || "").trim();
+    const dismissible = record.dismissible !== false;
+
+    if (!message) return;
+    if (dismissible && isBannerDismissed(id)) return;
+
+    const node = document.createElement("article");
+    node.className = `notice-banner notice-${type}`;
+    node.setAttribute("role", "status");
+
+    const header = document.createElement("div");
+    header.className = "notice-banner-header";
+
+    const heading = document.createElement("strong");
+    heading.className = "notice-banner-title";
+    heading.textContent = title || type.toUpperCase();
+    header.appendChild(heading);
+
+    if (dismissible) {
+      const closeBtn = document.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.className = "notice-banner-close";
+      closeBtn.setAttribute("aria-label", "バナーを閉じる");
+      closeBtn.textContent = "×";
+      closeBtn.addEventListener("click", () => {
+        dismissBanner(id);
+        node.remove();
+        bannersContainerEl.hidden = bannersContainerEl.childElementCount === 0;
+      });
+      header.appendChild(closeBtn);
+    }
+
+    const body = document.createElement("p");
+    body.className = "notice-banner-body";
+    body.textContent = message;
+
+    node.appendChild(header);
+    node.appendChild(body);
+    bannersContainerEl.appendChild(node);
+  });
+
+  bannersContainerEl.hidden = bannersContainerEl.childElementCount === 0;
 }
 
 // Toast notification system
@@ -95,6 +371,15 @@ function showToast(message, type = "default", duration = 2500) {
 
 function updateSegmentCount() {
   segmentCountEl.textContent = `${state.log.length} segments`;
+}
+
+function extractTranscriptText() {
+  const fromState = state.log.join("\n").trim();
+  if (fromState) return fromState;
+
+  const rows = Array.from(logEl.querySelectorAll(".log-row .text"));
+  const fromDom = rows.map((node) => node.textContent || "").join("\n").trim();
+  return fromDom;
 }
 
 function updateDownloadLinks() {
@@ -127,7 +412,37 @@ function setSummary(text, meta) {
   summaryMetaEl.textContent = meta || "未生成";
 }
 
-function addLogLine(text, tsStart, tsEnd) {
+function setProofread(text, meta) {
+  state.proofread = text || "";
+
+  if (text) {
+    proofreadTextEl.innerHTML = "";
+    proofreadTextEl.textContent = text;
+  } else {
+    proofreadTextEl.innerHTML = `
+      <div class="empty-state small">
+        <p class="empty-description">「校正」ボタンで校正済みテキストを生成します</p>
+      </div>
+    `;
+  }
+
+  proofreadMetaEl.textContent = meta || "未生成";
+}
+
+function markProofreadStale() {
+  if (!state.proofread) return;
+  proofreadMetaEl.textContent = "更新が必要";
+}
+
+function renderTranscriptText(rawText, speaker) {
+  const clean = String(rawText || "").trim();
+  if (!clean) return "";
+  const label = String(speaker || "").trim();
+  if (!label) return clean;
+  return `[${label}] ${clean}`;
+}
+
+function addLogLine(text, tsStart, tsEnd, seq, speaker) {
   // Hide empty state on first log entry
   const emptyState = logEl.querySelector(".empty-state");
   if (emptyState) {
@@ -143,7 +458,15 @@ function addLogLine(text, tsStart, tsEnd) {
 
   const content = document.createElement("span");
   content.className = "text";
-  content.textContent = text;
+  content.dataset.rawText = text;
+  if (speaker) {
+    content.dataset.speaker = speaker;
+  }
+  content.textContent = renderTranscriptText(text, speaker);
+
+  if (Number.isFinite(Number(seq))) {
+    row.dataset.seq = String(Number(seq));
+  }
 
   row.append(range, content);
   logEl.appendChild(row);
@@ -151,9 +474,31 @@ function addLogLine(text, tsStart, tsEnd) {
 
   state.log.push(text);
   updateSegmentCount();
+  markProofreadStale();
 
   // Remove 'new' class after animation
   setTimeout(() => row.classList.remove("new"), 300);
+}
+
+function applySpeakerPatch(segments) {
+  if (!Array.isArray(segments) || !segments.length) return;
+
+  for (const seg of segments) {
+    const seq = Number(seg?.seq);
+    const speaker = String(seg?.speaker || "").trim();
+    if (!Number.isFinite(seq) || !speaker) continue;
+
+    const row = logEl.querySelector(`.log-row[data-seq="${seq}"]`);
+    if (!row) continue;
+
+    const textNode = row.querySelector(".text");
+    if (!textNode) continue;
+
+    const raw = String(textNode.dataset.rawText || textNode.textContent || "").trim();
+    textNode.dataset.rawText = raw;
+    textNode.dataset.speaker = speaker;
+    textNode.textContent = renderTranscriptText(raw, speaker);
+  }
 }
 
 function formatMs(ms) {
@@ -408,7 +753,18 @@ async function ensureSocket() {
     }
 
     if (data.type === "final") {
-      addLogLine(String(data.text || ""), Number(data.tsStart || 0), Number(data.tsEnd || 0));
+      addLogLine(
+        String(data.text || ""),
+        Number(data.tsStart || 0),
+        Number(data.tsEnd || 0),
+        Number(data.seq),
+        String(data.speaker || "")
+      );
+      return;
+    }
+
+    if (data.type === "speaker_patch") {
+      applySpeakerPatch(data.segments || []);
       return;
     }
 
@@ -755,6 +1111,7 @@ async function startRecording() {
     const mimeType = selectMimeType();
     state.recorderMimeType = mimeType || "audio/webm";
     state.recorderOptions = mimeType ? { mimeType } : {};
+    const diarizationOptions = resolveDiarizationStartOptions();
 
     ws.send(
       JSON.stringify({
@@ -762,6 +1119,10 @@ async function startRecording() {
         sessionId: generateSessionSeed(),
         language: languageEl.value,
         prompt: promptEl.value.trim(),
+        diarizationEnabled: !!(state.diarizationAvailable && state.diarizationEnabled),
+        diarizationNumSpeakers: diarizationOptions.diarizationNumSpeakers,
+        diarizationMinSpeakers: diarizationOptions.diarizationMinSpeakers,
+        diarizationMaxSpeakers: diarizationOptions.diarizationMaxSpeakers,
       })
     );
 
@@ -854,6 +1215,102 @@ async function copyAll() {
   }
 }
 
+async function copyProofread() {
+  const text = state.proofread.trim();
+  if (!text) {
+    showToast("コピーする校正結果がありません", "error");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("校正結果をコピーしました", "success");
+    setStatus("proofread_copied");
+  } catch {
+    showToast("コピーに失敗しました", "error");
+    setStatus("copy_failed");
+  }
+}
+
+async function proofreadAll() {
+  if (state.proofreadInFlight) {
+    return;
+  }
+  setStatus("proofread_requested");
+
+  const text = extractTranscriptText();
+  if (!text) {
+    showToast("校正する文字起こしがありません", "error");
+    setStatus("proofread_no_text");
+    return;
+  }
+
+  if (!state.proofreadAvailable) {
+    showToast("校正機能がサーバーで無効です", "error");
+    setProofread("", "利用不可");
+    setStatus("proofread_unavailable");
+    return;
+  }
+
+  state.proofreadInFlight = true;
+  setProofreadButtonBusy(true);
+  proofreadMetaEl.textContent = "処理中...";
+  setStatus("proofreading");
+  showToast("校正中...", "default", 5000);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+  try {
+    const response = await fetch("/api/proofread", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        language: languageEl.value || "ja",
+      }),
+      signal: controller.signal,
+    });
+
+    let payload = {};
+    try {
+      payload = await response.json();
+    } catch {
+      // ignore
+    }
+
+    if (!response.ok) {
+      const detail = payload.detail || payload.error || `http_${response.status}`;
+      throw new Error(String(detail));
+    }
+
+    const correctedText = String(payload.corrected || "").trim();
+    if (!correctedText) {
+      throw new Error("empty_corrected");
+    }
+
+    const metaParts = [];
+    if (payload.model) {
+      metaParts.push(`model: ${payload.model}`);
+    }
+    if (payload.truncated) {
+      metaParts.push("入力を末尾で切り詰め");
+    }
+
+    setProofread(correctedText, metaParts.join(" | ") || "生成完了");
+    setStatus("proofread_done");
+    showToast("校正結果を生成しました", "success");
+  } catch (err) {
+    const message = err?.name === "AbortError" ? "request_timeout" : err?.message || "unknown_error";
+    showToast(`校正に失敗: ${message}`, "error");
+    setProofread(`校正に失敗しました。\n${message}`, "エラー");
+    setStatus(`proofread_failed: ${message}`);
+  } finally {
+    clearTimeout(timeoutId);
+    state.proofreadInFlight = false;
+    setProofreadButtonBusy(false);
+  }
+}
+
 async function summarizeAll() {
   const text = state.log.join("\n").trim();
   if (!text) {
@@ -932,6 +1389,7 @@ function clearView() {
 
   updateSegmentCount();
   setSummary("", "未生成");
+  setProofread("", "未生成");
   showToast("クリアしました", "success");
 }
 
@@ -946,6 +1404,44 @@ chunkSecondsEl.addEventListener("input", () => {
 if (audioSourceEl) {
   audioSourceEl.addEventListener("change", () => {
     applyAudioSource(audioSourceEl.value);
+  });
+}
+
+if (diarizationToggleEl) {
+  diarizationToggleEl.addEventListener("change", () => {
+    applyDiarizationEnabled(!!diarizationToggleEl.checked);
+  });
+}
+
+if (diarizationSpeakerModeEl) {
+  diarizationSpeakerModeEl.addEventListener("change", () => {
+    applyDiarizationSpeakerSettings({
+      mode: diarizationSpeakerModeEl.value,
+    });
+  });
+}
+
+if (diarizationSpeakerCountEl) {
+  diarizationSpeakerCountEl.addEventListener("change", () => {
+    applyDiarizationSpeakerSettings({
+      count: diarizationSpeakerCountEl.value,
+    });
+  });
+}
+
+if (diarizationMinSpeakersEl) {
+  diarizationMinSpeakersEl.addEventListener("change", () => {
+    applyDiarizationSpeakerSettings({
+      min: diarizationMinSpeakersEl.value,
+    });
+  });
+}
+
+if (diarizationMaxSpeakersEl) {
+  diarizationMaxSpeakersEl.addEventListener("change", () => {
+    applyDiarizationSpeakerSettings({
+      max: diarizationMaxSpeakersEl.value,
+    });
   });
 }
 
@@ -968,22 +1464,107 @@ stopBtn.addEventListener("click", () => {
   stopRecording();
 });
 
-summaryBtn.addEventListener("click", () => {
-  summarizeAll();
+if (summaryBtn) {
+  summaryBtn.addEventListener("click", () => {
+    summarizeAll();
+  });
+}
+
+if (proofreadBtn) {
+  proofreadBtn.addEventListener("click", () => {
+    proofreadAll();
+  });
+}
+
+// Fallback: if direct binding fails due stale DOM/cache mismatch, still handle click.
+document.addEventListener("click", (event) => {
+  const target = event.target instanceof Element ? event.target.closest("#proofreadBtn") : null;
+  if (!target) return;
+  proofreadAll();
 });
 
 copyBtn.addEventListener("click", () => {
   copyAll();
 });
 
+if (copyProofreadBtn) {
+  copyProofreadBtn.addEventListener("click", () => {
+    copyProofread();
+  });
+}
+
 clearBtn.addEventListener("click", () => {
   clearView();
 });
+
+async function loadCapabilities() {
+  try {
+    const response = await fetch("/api/health");
+    if (!response.ok) return;
+    const health = await response.json();
+    renderBanners(health.banners);
+    state.proofreadAvailable = !!health.proofreadModel;
+    state.diarizationAvailable = !!health.diarizationEnabled;
+
+    if (!state.proofreadAvailable) {
+      setProofread(
+        "校正機能が無効です。\nサーバーの API キー設定（PROOFREAD_API_KEY / SUMMARY_API_KEY / OPENAI_API_KEY）を確認してください。",
+        "利用不可"
+      );
+      if (proofreadBtn) {
+        proofreadBtn.title = "校正機能はサーバーで無効";
+      }
+    } else if (proofreadBtn) {
+      proofreadBtn.title = "校正";
+    }
+
+    if (diarizationToggleEl) {
+      diarizationToggleEl.disabled = !state.diarizationAvailable;
+      diarizationToggleEl.title = state.diarizationAvailable
+        ? "話者分離を有効/無効"
+        : "サーバーで話者分離は無効";
+    }
+    state.diarizationSpeakerCap = Math.max(
+      DIARIZATION_SPEAKER_MIN,
+      Number(health.diarizationSpeakerCap || DIARIZATION_SPEAKER_MAX)
+    );
+
+    if (!state.hasSavedDiarizationSpeakerSettings) {
+      const defaultNum = Number(health.diarizationDefaultNumSpeakers || 0);
+      const defaultMin = Number(health.diarizationDefaultMinSpeakers || 0);
+      const defaultMax = Number(health.diarizationDefaultMaxSpeakers || 0);
+
+      let mode = "auto";
+      if (defaultNum > 0) {
+        mode = "fixed";
+      } else if (defaultMin > 0 || defaultMax > 0) {
+        mode = "range";
+      }
+
+      applyDiarizationSpeakerSettings(
+        {
+          mode,
+          count: defaultNum > 0 ? defaultNum : state.diarizationSpeakerCount,
+          min: defaultMin > 0 ? defaultMin : state.diarizationMinSpeakers,
+          max: defaultMax > 0 ? defaultMax : state.diarizationMaxSpeakers,
+        },
+        { persist: false }
+      );
+    } else {
+      updateDiarizationSpeakerUi();
+    }
+
+    applyDiarizationEnabled(state.diarizationEnabled, { persist: false });
+  } catch {
+    // ignore capability check errors
+  }
+}
 
 // Initialize empty states
 updateSegmentCount();
 updateDownloadLinks();
 setSummary("", "未生成");
+setProofread("", "未生成");
 setStatus("idle");
 
 // Show initial empty state for transcript
@@ -1024,3 +1605,54 @@ if (logEl && !logEl.querySelector(".log-row")) {
   }
   applyAudioSource(initial);
 })();
+
+(() => {
+  let initial = true;
+  try {
+    const saved = localStorage.getItem("whistx_diarization_enabled");
+    if (saved !== null) {
+      initial = saved === "1" || saved.toLowerCase() === "true";
+    }
+  } catch {
+    // ignore
+  }
+  applyDiarizationEnabled(initial, { persist: false });
+})();
+
+(() => {
+  let hasSaved = false;
+  let mode = "auto";
+  let count = state.diarizationSpeakerCount;
+  let min = state.diarizationMinSpeakers;
+  let max = state.diarizationMaxSpeakers;
+
+  try {
+    const savedMode = localStorage.getItem("whistx_diarization_speaker_mode");
+    const savedCount = localStorage.getItem("whistx_diarization_speaker_count");
+    const savedMin = localStorage.getItem("whistx_diarization_min_speakers");
+    const savedMax = localStorage.getItem("whistx_diarization_max_speakers");
+
+    if (savedMode !== null || savedCount !== null || savedMin !== null || savedMax !== null) {
+      hasSaved = true;
+      mode = savedMode || mode;
+      if (savedCount !== null) count = Number(savedCount);
+      if (savedMin !== null) min = Number(savedMin);
+      if (savedMax !== null) max = Number(savedMax);
+    }
+  } catch {
+    // ignore
+  }
+
+  state.hasSavedDiarizationSpeakerSettings = hasSaved;
+  applyDiarizationSpeakerSettings(
+    {
+      mode,
+      count,
+      min,
+      max,
+    },
+    { persist: false }
+  );
+})();
+
+loadCapabilities();

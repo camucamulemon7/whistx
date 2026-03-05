@@ -7,7 +7,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>whistx</title>
-    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/style.css?v=20260305h" />
   </head>
   <body>
     <div class="app">
@@ -42,6 +42,8 @@
 
       <!-- Main Content -->
       <main class="main-content">
+        <section id="bannersContainer" class="banners-container reveal" aria-label="お知らせ" hidden></section>
+
         <!-- Quick Settings Panel -->
         <section class="settings-panel glass-panel reveal" aria-label="設定">
           <div class="settings-row">
@@ -65,7 +67,67 @@
                 </select>
               </div>
             </div>
+            <div class="setting-group setting-group-toggle">
+              <span class="setting-label">話者分離</span>
+              <label for="diarizationEnabled" class="toggle-control">
+                <input id="diarizationEnabled" type="checkbox" checked />
+                <span class="toggle-track" aria-hidden="true"></span>
+                <span id="diarizationStateText" class="toggle-text">ON</span>
+              </label>
+            </div>
           </div>
+          <div id="diarizationConfigRow" class="diarization-config-row">
+            <div class="setting-group">
+              <label for="diarizationSpeakerMode" class="setting-label">話者数推定</label>
+              <div class="select-wrapper">
+                <select id="diarizationSpeakerMode">
+                  <option value="auto" selected>自動</option>
+                  <option value="fixed">固定人数</option>
+                  <option value="range">範囲指定</option>
+                </select>
+              </div>
+            </div>
+            <div class="setting-group">
+              <label for="diarizationSpeakerCount" class="setting-label">固定人数</label>
+              <input
+                id="diarizationSpeakerCount"
+                type="number"
+                min="1"
+                max="12"
+                step="1"
+                value="2"
+                class="setting-number-input"
+                aria-label="固定話者数"
+              />
+            </div>
+            <div class="setting-group">
+              <label for="diarizationMinSpeakers" class="setting-label">最小人数</label>
+              <input
+                id="diarizationMinSpeakers"
+                type="number"
+                min="1"
+                max="12"
+                step="1"
+                value="2"
+                class="setting-number-input"
+                aria-label="最小話者数"
+              />
+            </div>
+            <div class="setting-group">
+              <label for="diarizationMaxSpeakers" class="setting-label">最大人数</label>
+              <input
+                id="diarizationMaxSpeakers"
+                type="number"
+                min="1"
+                max="12"
+                step="1"
+                value="4"
+                class="setting-number-input"
+                aria-label="最大話者数"
+              />
+            </div>
+          </div>
+          <p id="diarizationSpeakerHint" class="setting-hint"></p>
           <p class="setting-hint">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"/>
@@ -148,91 +210,124 @@
           </div>
         </section>
 
-        <!-- Transcript Panel -->
-        <section class="transcript-panel glass-panel reveal delay-2" aria-label="文字起こし結果">
-          <header class="panel-header">
-            <div class="panel-title-group">
-              <h2 class="panel-title">Transcript</h2>
-              <span id="segmentCount" class="panel-badge">0 segments</span>
-            </div>
-            <div class="panel-actions">
-              <button id="copyBtn" type="button" class="icon-btn" aria-label="コピー" title="コピー">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                </svg>
-              </button>
-              <button id="clearBtn" type="button" class="icon-btn" aria-label="クリア" title="クリア">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M3 6h18"/>
-                  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
-                  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-                </svg>
-              </button>
-            </div>
-          </header>
-
-          <div id="log" class="log-container" role="log" aria-live="polite" aria-relevant="additions">
-            <div class="empty-state">
-              <div class="empty-icon">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                  <line x1="12" x2="12" y1="19" y2="22"/>
-                </svg>
+        <!-- Transcript + Proofread Grid -->
+        <section class="transcript-proofread-grid reveal delay-2" aria-label="文字起こしと校正結果">
+          <!-- Transcript Panel -->
+          <section class="transcript-panel glass-panel" aria-label="文字起こし結果">
+            <header class="panel-header">
+              <div class="panel-title-group">
+                <div class="panel-icon transcript-icon">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14,2 14,8 20,8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
+                  </svg>
+                </div>
+                <h2 class="panel-title">Transcript</h2>
+                <span id="segmentCount" class="panel-badge">0</span>
               </div>
-              <p class="empty-title">まだ文字起こしがありません</p>
-              <p class="empty-description">録音を開始すると、リアルタイムで文字起こしが表示されます</p>
-            </div>
-          </div>
+              <div class="panel-actions">
+                <button id="copyBtn" type="button" class="icon-btn" aria-label="コピー" title="コピー">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                </button>
+                <button id="clearBtn" type="button" class="icon-btn" aria-label="クリア" title="クリア">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 6h18"/>
+                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                  </svg>
+                </button>
+              </div>
+            </header>
 
-          <!-- Downloads -->
-          <div class="downloads-bar">
-            <span class="downloads-label">エクスポート:</span>
-            <a id="dlTxt" href="#" download class="download-link">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="7,10 12,15 17,10"/>
-                <line x1="12" x2="12" y1="15" y2="3"/>
-              </svg>
-              TXT
-            </a>
-            <a id="dlJsonl" href="#" download class="download-link">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="7,10 12,15 17,10"/>
-                <line x1="12" x2="12" y1="15" y2="3"/>
-              </svg>
-              JSONL
-            </a>
-            <a id="dlSrt" href="#" download class="download-link">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="7,10 12,15 17,10"/>
-                <line x1="12" x2="12" y1="15" y2="3"/>
-              </svg>
-              SRT
-            </a>
-          </div>
+            <div id="log" class="log-container" role="log" aria-live="polite" aria-relevant="additions">
+              <div class="empty-state">
+                <div class="empty-icon">
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                    <line x1="12" x2="12" y1="19" y2="22"/>
+                  </svg>
+                </div>
+                <p class="empty-title">文字起こしがありません</p>
+                <p class="empty-description">録音を開始するとここに表示されます</p>
+              </div>
+            </div>
+
+            <div class="downloads-bar">
+              <span class="downloads-label">Export</span>
+              <a id="dlTxt" href="#" download class="download-link">TXT</a>
+              <a id="dlJsonl" href="#" download class="download-link">JSONL</a>
+              <a id="dlSrt" href="#" download class="download-link">SRT</a>
+            </div>
+          </section>
+
+          <!-- Proofread Panel -->
+          <section class="proofread-panel glass-panel" aria-label="校正結果">
+            <header class="panel-header">
+              <div class="panel-title-group">
+                <div class="panel-icon proofread-icon">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 20h9"/>
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                  </svg>
+                </div>
+                <h2 class="panel-title">Proofread</h2>
+                <span id="proofreadMeta" class="panel-badge">未生成</span>
+              </div>
+              <div class="panel-actions">
+                <button id="proofreadBtn" type="button" class="btn-action" aria-label="校正を開始">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 20h9"/>
+                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                  </svg>
+                  <span>校正</span>
+                </button>
+                <button id="copyProofreadBtn" type="button" class="icon-btn" aria-label="校正結果をコピー" title="校正結果をコピー">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                </button>
+              </div>
+            </header>
+            <div id="proofreadText" class="proofread-content">
+              <div class="empty-state small">
+                <p class="empty-description">「校正」ボタンで校正済みテキストを生成します</p>
+              </div>
+            </div>
+          </section>
         </section>
 
         <!-- Summary Panel -->
         <section class="summary-panel glass-panel reveal delay-3" aria-label="要約">
           <header class="panel-header">
             <div class="panel-title-group">
+              <div class="panel-icon summary-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14,2 14,8 20,8"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/>
+                  <polyline points="10,17 8,17 8,17"/>
+                </svg>
+              </div>
               <h2 class="panel-title">Summary</h2>
               <span id="summaryMeta" class="panel-badge">未生成</span>
             </div>
-            <button id="summaryBtn" type="button" class="btn-secondary">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z"/>
+            <button id="summaryBtn" type="button" class="btn-action" aria-label="要約を生成">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="13,2 3,14 12,14 11,22 21,10 12,10 13,2"/>
               </svg>
-              要約生成
+              <span>要約</span>
             </button>
           </header>
           <div id="summaryText" class="summary-content">
             <div class="empty-state small">
-              <p class="empty-description">「要約生成」ボタンでAIによる要約を生成します</p>
+              <p class="empty-description">「要約」ボタンでAIによる要約を生成します</p>
             </div>
           </div>
         </section>
@@ -242,6 +337,6 @@
       <div id="toastContainer" class="toast-container" role="alert" aria-live="assertive"></div>
     </div>
 
-    <script type="module" src="/main.js"></script>
+    <script type="module" src="/main.js?v=20260305h"></script>
   </body>
 </html>

@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import settings
+from .diarizer import AudioChunk, PyannoteSpeakerDiarizer, SpeakerTurn
 from .openai_whisper import OpenAIWhisperTranscriber
 from .summarizer import OpenAISummarizer
 from .transcript_store import (
@@ -35,6 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="whistx", version="2.0.0")
+MAX_DIARIZATION_SPEAKERS = 12
 
 
 @dataclass(slots=True)
@@ -56,6 +58,11 @@ class LiveSession:
     context_max_chars: int
     context_text: str
     last_emitted_text: str
+    collect_audio_for_diarization: bool
+    diarization_num_speakers: int
+    diarization_min_speakers: int
+    diarization_max_speakers: int
+    audio_chunks: list[AudioChunk]
     store: TranscriptStore
     queue: asyncio.Queue[ChunkMessage | None]
 
@@ -65,14 +72,21 @@ class SummarizeRequest(BaseModel):
     language: str | None = None
 
 
+class ProofreadRequest(BaseModel):
+    text: str = Field(min_length=1)
+    language: str | None = None
+
+
 TRANSCRIBER: OpenAIWhisperTranscriber | None = None
 SUMMARIZER: OpenAISummarizer | None = None
+PROOFREADER: OpenAISummarizer | None = None
+DIARIZER: PyannoteSpeakerDiarizer | None = None
 ACTIVE_SOCKETS: set[WebSocket] = set()
 
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    global TRANSCRIBER, SUMMARIZER
+    global TRANSCRIBER, SUMMARIZER, PROOFREADER, DIARIZER
 
     TRANSCRIBER = OpenAIWhisperTranscriber(
         api_key=settings.openai_api_key,
@@ -90,6 +104,36 @@ async def on_startup() -> None:
         SUMMARIZER = None
         logger.warning("summary disabled: %s", exc)
 
+    try:
+        PROOFREADER = OpenAISummarizer(
+            api_key=settings.proofread_api_key,
+            base_url=settings.proofread_base_url,
+            model=settings.proofread_model,
+            temperature=settings.proofread_temperature,
+        )
+    except Exception as exc:  # noqa: BLE001
+        PROOFREADER = None
+        logger.warning("proofread disabled: %s", exc)
+
+    if settings.diarization_enabled:
+        try:
+            DIARIZER = PyannoteSpeakerDiarizer(
+                hf_token=settings.diarization_hf_token,
+                model=settings.diarization_model,
+                ffmpeg_bin=settings.ffmpeg_bin,
+                device=settings.diarization_device,
+                sample_rate=settings.diarization_sample_rate,
+                num_speakers=settings.diarization_num_speakers,
+                min_speakers=settings.diarization_min_speakers,
+                max_speakers=settings.diarization_max_speakers,
+            )
+            DIARIZER.preflight()
+        except Exception as exc:  # noqa: BLE001
+            DIARIZER = None
+            logger.warning("diarization disabled: %s", exc)
+    else:
+        DIARIZER = None
+
     logger.info("whistx started (model=%s, ws=%s)", settings.whisper_model, settings.ws_path)
 
 
@@ -100,6 +144,14 @@ async def health() -> JSONResponse:
             "status": "ok",
             "model": settings.whisper_model,
             "summaryModel": settings.summary_model if SUMMARIZER else None,
+            "proofreadModel": settings.proofread_model if PROOFREADER else None,
+            "diarizationEnabled": DIARIZER is not None,
+            "diarizationModel": settings.diarization_model if DIARIZER else None,
+            "diarizationDefaultNumSpeakers": settings.diarization_num_speakers,
+            "diarizationDefaultMinSpeakers": settings.diarization_min_speakers,
+            "diarizationDefaultMaxSpeakers": settings.diarization_max_speakers,
+            "diarizationSpeakerCap": MAX_DIARIZATION_SPEAKERS,
+            "banners": list(settings.ui_banners),
             "activeConnections": len(ACTIVE_SOCKETS),
         }
     )
@@ -134,6 +186,46 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
     return JSONResponse(
         {
             "summary": result.text,
+            "model": result.model,
+            "inputChars": len(text),
+            "truncated": truncated,
+        }
+    )
+
+
+@app.post("/api/proofread")
+async def proofread(payload: ProofreadRequest) -> JSONResponse:
+    if PROOFREADER is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "proofread_not_configured",
+                "detail": "PROOFREAD_API_KEY / SUMMARY_API_KEY / OPENAI_API_KEY is missing",
+            },
+        )
+
+    raw_text = payload.text.strip()
+    if not raw_text:
+        return JSONResponse(status_code=400, content={"error": "empty_text"})
+
+    truncated = False
+    text = raw_text
+    if len(text) > settings.proofread_input_max_chars:
+        text = text[-settings.proofread_input_max_chars :]
+        truncated = True
+
+    language = _as_str(payload.language) or settings.default_language
+    logger.info("Proofread requested: chars=%d language=%s", len(text), language)
+
+    try:
+        result = await asyncio.to_thread(PROOFREADER.proofread, text=text, language=language)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Proofread failed")
+        return JSONResponse(status_code=502, content={"error": "proofread_failed", "detail": str(exc)})
+
+    return JSONResponse(
+        {
+            "corrected": result.text,
             "model": result.model,
             "inputChars": len(text),
             "truncated": truncated,
@@ -181,6 +273,10 @@ async def ws_transcribe(ws: WebSocket) -> None:
                         "state": "ready",
                         "sessionId": session.session_id,
                         "backend": f"openai:{settings.whisper_model}",
+                        "diarizationEnabled": session.collect_audio_for_diarization,
+                        "diarizationNumSpeakers": session.diarization_num_speakers,
+                        "diarizationMinSpeakers": session.diarization_min_speakers,
+                        "diarizationMaxSpeakers": session.diarization_max_speakers,
                     },
                 )
                 await _broadcast_conn_count()
@@ -242,6 +338,9 @@ async def ws_transcribe(ws: WebSocket) -> None:
             except asyncio.TimeoutError:
                 worker_task.cancel()
 
+        if session is not None:
+            await _run_diarization_for_session(ws, session)
+
         ACTIVE_SOCKETS.discard(ws)
         await _broadcast_conn_count()
 
@@ -255,6 +354,29 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
         item = await session.queue.get()
         if item is None:
             break
+
+        if session.collect_audio_for_diarization:
+            try:
+                chunk_path = session.store.save_audio_chunk(
+                    seq=item.seq,
+                    mime_type=item.mime_type,
+                    audio_bytes=item.audio_bytes,
+                )
+                session.audio_chunks.append(
+                    AudioChunk(
+                        seq=item.seq,
+                        path=chunk_path,
+                        offset_ms=item.offset_ms,
+                        duration_ms=item.duration_ms,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Chunk save failed for diarization: session=%s seq=%s err=%s",
+                    session.session_id,
+                    item.seq,
+                    exc,
+                )
 
         try:
             prompt = _build_prompt(session)
@@ -326,6 +448,7 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 "text": record.text,
                 "tsStart": record.tsStart,
                 "tsEnd": record.tsEnd,
+                "speaker": record.speaker,
             },
         )
 
@@ -338,6 +461,10 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
     language = _as_str(payload.get("language")) or settings.default_language
     prompt = _as_str(payload.get("prompt")) or settings.default_prompt
     temperature = _as_float(payload.get("temperature"), settings.default_temperature)
+    diarization_requested = _as_bool(payload.get("diarizationEnabled"), True)
+    diarization_num_speakers, diarization_min_speakers, diarization_max_speakers = (
+        _parse_diarization_speaker_params(payload)
+    )
 
     return LiveSession(
         session_id=runtime_session_id,
@@ -348,6 +475,11 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         context_max_chars=settings.context_max_chars,
         context_text="",
         last_emitted_text="",
+        collect_audio_for_diarization=DIARIZER is not None and diarization_requested,
+        diarization_num_speakers=diarization_num_speakers,
+        diarization_min_speakers=diarization_min_speakers,
+        diarization_max_speakers=diarization_max_speakers,
+        audio_chunks=[],
         store=TranscriptStore(settings.transcripts_dir, runtime_session_id),
         queue=asyncio.Queue(maxsize=settings.max_queue_size),
     )
@@ -446,6 +578,145 @@ def _is_near_duplicate(current: str, previous: str) -> bool:
     return shorter >= 24 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.93
 
 
+async def _run_diarization_for_session(ws: WebSocket, session: LiveSession) -> None:
+    if DIARIZER is None:
+        session.store.cleanup_chunks()
+        return
+    if not session.collect_audio_for_diarization:
+        session.store.cleanup_chunks()
+        return
+    if not session.audio_chunks:
+        session.store.cleanup_chunks()
+        return
+
+    await _safe_send(ws, {"type": "info", "message": "diarization_started"})
+
+    try:
+        patch_map = await asyncio.to_thread(_apply_diarization_labels, session)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Diarization failed: session=%s", session.session_id)
+        await _safe_send(
+            ws,
+            {
+                "type": "error",
+                "message": "diarization_failed",
+                "detail": str(exc),
+            },
+        )
+        patch_map = {}
+
+    if patch_map:
+        payload = [{"seq": seq, "speaker": speaker} for seq, speaker in sorted(patch_map.items())]
+        await _safe_send(
+            ws,
+            {
+                "type": "speaker_patch",
+                "segments": payload,
+            },
+        )
+
+    await _safe_send(ws, {"type": "info", "message": "diarization_done"})
+    if not settings.diarization_keep_chunks:
+        session.store.cleanup_chunks()
+
+
+def _apply_diarization_labels(session: LiveSession) -> dict[int, str]:
+    if DIARIZER is None:
+        return {}
+
+    turns = DIARIZER.diarize(
+        session_id=session.session_id,
+        chunks=session.audio_chunks,
+        work_dir=settings.diarization_work_dir,
+        num_speakers=session.diarization_num_speakers,
+        min_speakers=session.diarization_min_speakers,
+        max_speakers=session.diarization_max_speakers,
+    )
+    if not turns:
+        return {}
+
+    records = read_jsonl_records(session.store.jsonl_path)
+    if not records:
+        return {}
+
+    patch_map: dict[int, str] = {}
+    updated = False
+
+    for rec in records:
+        if rec.get("type") != "final":
+            continue
+        start_ms = _as_int(rec.get("tsStart"), 0)
+        end_ms = _as_int(rec.get("tsEnd"), start_ms)
+        if end_ms < start_ms:
+            end_ms = start_ms
+
+        speaker = _pick_speaker(turns, start_ms, end_ms)
+        if not speaker:
+            continue
+
+        current = str(rec.get("speaker", "")).strip()
+        if current == speaker:
+            continue
+
+        rec["speaker"] = speaker
+        seq = _as_int(rec.get("seq"), -1)
+        if seq >= 0:
+            patch_map[seq] = speaker
+        updated = True
+
+    if updated:
+        session.store.rewrite_records(records)
+        logger.info(
+            "Diarization applied: session=%s speakers=%d segments=%d requested_num=%d requested_min=%d requested_max=%d",
+            session.session_id,
+            len({t.speaker for t in turns}),
+            len(patch_map),
+            session.diarization_num_speakers,
+            session.diarization_min_speakers,
+            session.diarization_max_speakers,
+        )
+
+    return patch_map
+
+
+def _pick_speaker(turns: list[SpeakerTurn], start_ms: int, end_ms: int) -> str | None:
+    if not turns:
+        return None
+
+    s = max(0, start_ms)
+    e = max(s + 1, end_ms)
+    overlap_by_speaker: dict[str, int] = {}
+
+    for turn in turns:
+        if turn.end_ms <= s:
+            continue
+        if turn.start_ms >= e:
+            break
+
+        overlap = min(e, turn.end_ms) - max(s, turn.start_ms)
+        if overlap <= 0:
+            continue
+        overlap_by_speaker[turn.speaker] = overlap_by_speaker.get(turn.speaker, 0) + overlap
+
+    if overlap_by_speaker:
+        return max(overlap_by_speaker.items(), key=lambda item: item[1])[0]
+
+    center = (s + e) // 2
+    nearest: SpeakerTurn | None = None
+    nearest_distance: int | None = None
+
+    for turn in turns:
+        turn_center = (turn.start_ms + turn.end_ms) // 2
+        distance = abs(turn_center - center)
+        if nearest is None or nearest_distance is None or distance < nearest_distance:
+            nearest = turn
+            nearest_distance = distance
+
+    if nearest is None or nearest_distance is None or nearest_distance > 3_000:
+        return None
+    return nearest.speaker
+
+
 
 def _parse_chunk_message(payload: dict[str, Any]) -> ChunkMessage | None:
     audio_b64 = _as_str(payload.get("audio"))
@@ -471,6 +742,30 @@ def _parse_chunk_message(payload: dict[str, Any]) -> ChunkMessage | None:
     )
 
 
+def _clamp_diarization_speakers(value: int) -> int:
+    return max(0, min(MAX_DIARIZATION_SPEAKERS, value))
+
+
+def _parse_diarization_speaker_params(payload: dict[str, Any]) -> tuple[int, int, int]:
+    num = _clamp_diarization_speakers(
+        _as_int(payload.get("diarizationNumSpeakers"), settings.diarization_num_speakers)
+    )
+    min_speakers = _clamp_diarization_speakers(
+        _as_int(payload.get("diarizationMinSpeakers"), settings.diarization_min_speakers)
+    )
+    max_speakers = _clamp_diarization_speakers(
+        _as_int(payload.get("diarizationMaxSpeakers"), settings.diarization_max_speakers)
+    )
+
+    if num > 0:
+        return (num, 0, 0)
+
+    if min_speakers > 0 and max_speakers > 0 and min_speakers > max_speakers:
+        min_speakers, max_speakers = max_speakers, min_speakers
+
+    return (0, min_speakers, max_speakers)
+
+
 def _as_str(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()
@@ -489,6 +784,20 @@ def _as_float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
 
 
 async def _broadcast_conn_count() -> None:
