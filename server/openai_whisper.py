@@ -1,23 +1,17 @@
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass
 from typing import Any
 
 from openai import OpenAI
 
-
-@dataclass(slots=True)
-class WhisperChunkResult:
-    text: str
-    start_ms: int | None
-    end_ms: int | None
+from .asr import ASRChunkResult
 
 
 class OpenAIWhisperTranscriber:
     def __init__(self, *, api_key: str, base_url: str | None, model: str):
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set")
+            raise RuntimeError("ASR_API_KEY (or OPENAI_API_KEY) is not set")
 
         kwargs: dict[str, Any] = {"api_key": api_key}
         if base_url:
@@ -34,7 +28,7 @@ class OpenAIWhisperTranscriber:
         language: str | None,
         prompt: str | None,
         temperature: float,
-    ) -> WhisperChunkResult:
+    ) -> ASRChunkResult:
         suffix = _ext_from_mime(mime_type)
         file_obj = io.BytesIO(audio_bytes)
         file_obj.name = f"chunk{suffix}"
@@ -52,7 +46,10 @@ class OpenAIWhisperTranscriber:
         if _should_drop_as_silence(response, text):
             text = ""
         start_ms, end_ms = _extract_bounds_ms(response)
-        return WhisperChunkResult(text=text, start_ms=start_ms, end_ms=end_ms)
+        return ASRChunkResult(text=text, start_ms=start_ms, end_ms=end_ms)
+
+    def close(self) -> None:
+        return None
 
 
 

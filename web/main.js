@@ -3,6 +3,11 @@ const $ = (selector) => document.querySelector(selector);
 const statusTextEl = $("#statusText");
 const connCountEl = $("#connCount");
 const bannersContainerEl = $("#bannersContainer");
+const brandTitleEl = $("#brandTitle");
+const brandTaglineEl = $("#brandTagline");
+const themeToggleBtn = $("#themeToggle");
+const audioLevelIndicatorEl = $("#audioLevelIndicator");
+const audioBarEls = Array.from(document.querySelectorAll("#audioLevelIndicator .audio-bar"));
 
 const languageEl = $("#language");
 const audioSourceEl = $("#audioSource");
@@ -16,11 +21,11 @@ const diarizationMaxSpeakersEl = $("#diarizationMaxSpeakers");
 const diarizationSpeakerHintEl = $("#diarizationSpeakerHint");
 const chunkSecondsEl = $("#chunkSeconds");
 const promptEl = $("#prompt");
+const promptTemplateButtonsEl = $("#promptTemplateButtons");
 const chunkHintEl = $("#chunkHint");
 const presetButtons = Array.from(document.querySelectorAll("[data-chunk-preset]"));
 
 const startBtn = $("#startBtn");
-const stopBtn = $("#stopBtn");
 const summaryBtn = $("#summaryBtn");
 const proofreadBtn = $("#proofreadBtn");
 const copyBtn = $("#copyBtn");
@@ -39,9 +44,9 @@ const proofreadTextEl = $("#proofreadText");
 const proofreadMetaEl = $("#proofreadMeta");
 const toastContainer = $("#toastContainer");
 
-const CHUNK_MIN_SECONDS = 12;
-const CHUNK_MAX_SECONDS = 30;
-const CHUNK_DEFAULT_SECONDS = 20;
+const CHUNK_MIN_SECONDS = 15;
+const CHUNK_MAX_SECONDS = 60;
+const CHUNK_DEFAULT_SECONDS = 30;
 const DIARIZATION_SPEAKER_MIN = 1;
 const DIARIZATION_SPEAKER_MAX = 12;
 
@@ -49,6 +54,10 @@ const VAD_SAMPLE_MS = 80;
 const VAD_RMS_THRESHOLD = 0.01;
 const VAD_MIN_SPEECH_RATIO = 0.06;
 const VAD_MIN_ACTIVE_MS = 160;
+const AUDIO_LEVEL_NOISE_FLOOR = 0.0025;
+const AUDIO_LEVEL_GAIN = 22;
+const AUDIO_LEVEL_EXPONENT = 0.65;
+const DEFAULT_SOC_PROMPT_TEMPLATE = `SoC, ASIC, chiplet, CPU, GPU, NPU, DSP, ISP, VPU, DPU, MCU, PMU, NoC, interconnect, AXI, AXI4, AXI-Lite, AHB, APB, ACE, CHI, UCIe, PCIe, CXL, DDR, DDR4, DDR5, LPDDR4, LPDDR5, HBM, SRAM, ROM, eMMC, UFS, PHY, SerDes, PLL, DLL, RC oscillator, clock, clock tree, clock gating, reset, async reset, sync reset, power domain, voltage island, retention, isolation, level shifter, DVFS, AVS, UPF, CPF, RTL, SystemVerilog, Verilog, VHDL, UVM, testbench, assertion, SVA, lint, SpyGlass, CDC, RDC, STA, MCMM, OCV, AOCV, POCV, derate, setup, hold, recovery, removal, skew, jitter, uncertainty, timing closure, timing path, false path, multicycle path, path group, endpoint, startpoint, slack, WNS, TNS, violating path, critical path, synthesis, logic synthesis, Design Compiler, Genus, netlist, mapped netlist, unmapped netlist, compile, incremental compile, retiming, boundary optimization, datapath optimization, resource sharing, register balancing, ECO, formal, equivalence check, LEC, Conformal, Formality, gate-level simulation, GLS, SDF, back annotation, place and route, place-and-route, PnR, floorplan, floorplanning, macro placement, standard cell, utilization, density, congestion, global placement, detailed placement, legalization, CTS, clock tree synthesis, useful skew, hold fixing, setup fixing, routing, global route, detailed route, track assignment, antenna, filler cell, decap, tap cell, endcap, spare cell, spare gate, metal fill, density fill, ECO route, route guide, signoff, sign-off, DRC, LVS, ERC, extraction, parasitic extraction, RC extraction, SPEF, DEF, LEF, Liberty, .lib, TLU+, QRC, StarRC, Quantus, IR drop, dynamic IR drop, static IR drop, EM, electromigration, voltage drop, power integrity, signal integrity, SI, crosstalk, noise, glitch, overshoot, undershoot, hotspot, thermal, leakage, dynamic power, switching power, internal power, leakage power, power analysis, PrimeTime PX, PrimePower, Voltus, RedHawk, vectorless, VCD, FSDB, SAIF, toggle rate, activity factor, inrush current, rush current, decoupling capacitor, decap cell, package model, bump, substrate, interposer, TSV, process node, 28nm, 16nm, 12nm, 7nm, 5nm, 4nm, 3nm, FinFET, GAA, foundry, TSMC, Samsung, Intel, PDK, DFM, manufacturability, yield, wafer, lot, mask, reticle, tape-out, respin, metal fix, MPW, shuttle, bring-up, validation, characterization, errata, workaround, DFT, scan, scan chain, scan compression, EDT, ATPG, stuck-at, transition fault, path delay fault, bridging fault, JTAG, boundary scan, MBIST, LBIST, BISR, repair, fuse, eFuse, OTP, secure boot, TrustZone, TEE, firmware, bootloader, NAND, NAND flash, Toggle NAND, ONFI, raw NAND, managed NAND, SLC, MLC, TLC, QLC, PLC, 3D NAND, V-NAND, charge trap, floating gate, page, block, plane, die, LUN, bad block, bad block management, BBT, ECC, BCH, LDPC, RAID, read disturb, program disturb, erase disturb, wear leveling, garbage collection, overprovisioning, endurance, retention, BER, bit error rate, read retry, soft decoding, threshold voltage, ISPP, incremental step pulse programming, erase verify, program verify, copyback, cache read, cache program, multi-plane, interleaving, channel, CE, RE, WE, ALE, CLE, R/B, spare area, OOB, metadata, FTL, flash translation layer, NVMe, SATA, controller, queue depth, throughput, latency, bandwidth, QoS, arbiter, scheduler, mux, demux, crossbar, SRAM compiler, memory compiler, register file, dual port RAM, single port RAM, SRAM macro, macro, hard macro, soft macro, black box, hierarchy, partition, block-level, top-level, full-chip, chip top, top module, hierarchy flattening, dont_touch, set_false_path, set_multicycle_path, create_clock, generated clock, propagated clock, ideal clock, set_input_delay, set_output_delay, set_clock_uncertainty, set_clock_groups, operating condition, corner, slow corner, fast corner, typical corner, SS, FF, TT, RCmax, RCmin, setup view, hold view.`;
 
 const state = {
   ws: null,
@@ -87,14 +96,44 @@ const state = {
   vadTimer: null,
   vadFrameCount: 0,
   vadSpeechFrameCount: 0,
+  audioLevel: 0,
   captureContext: null,
   captureSources: [],
   captureDestination: null,
+  promptTemplates: [
+    {
+      id: "soc-design",
+      label: "SoC設計テンプレート",
+      content: DEFAULT_SOC_PROMPT_TEMPLATE,
+    },
+  ],
 };
+
+function selectedLanguage() {
+  const value = String(languageEl?.value || "").trim().toLowerCase();
+  if (!value || value === "auto") {
+    return null;
+  }
+  return value;
+}
 
 function setStatus(text) {
   statusTextEl.textContent = text;
   statusTextEl.dataset.state = String(text || "").toLowerCase();
+}
+
+function applyBranding(title, tagline) {
+  const cleanTitle = String(title || "").trim();
+  const cleanTagline = String(tagline || "").trim();
+
+  if (brandTitleEl && cleanTitle) {
+    brandTitleEl.textContent = cleanTitle;
+    document.title = cleanTitle;
+  }
+
+  if (brandTaglineEl && cleanTagline) {
+    brandTaglineEl.textContent = cleanTagline;
+  }
 }
 
 function setProofreadButtonBusy(busy) {
@@ -370,7 +409,13 @@ function showToast(message, type = "default", duration = 2500) {
 }
 
 function updateSegmentCount() {
-  segmentCountEl.textContent = `${state.log.length} segments`;
+  const count = state.log.length;
+  segmentCountEl.textContent = `${count} segments`;
+
+  // Trigger animation
+  segmentCountEl.classList.remove("updated");
+  void segmentCountEl.offsetWidth; // Force reflow
+  segmentCountEl.classList.add("updated");
 }
 
 function extractTranscriptText() {
@@ -538,15 +583,15 @@ function normalizeChunkSeconds(value) {
 
 function updateChunkHint(seconds) {
   if (!chunkHintEl) return;
-  if (seconds <= 14) {
+  if (seconds <= 15) {
     chunkHintEl.textContent = "リアルタイム寄り（精度より応答速度優先）";
     return;
   }
-  if (seconds <= 19) {
+  if (seconds <= 30) {
     chunkHintEl.textContent = "バランス（精度と遅延の中間）";
     return;
   }
-  if (seconds <= 24) {
+  if (seconds <= 45) {
     chunkHintEl.textContent = "精度優先（推奨）";
     return;
   }
@@ -578,6 +623,14 @@ function applyChunkSeconds(value) {
 function setUiRecording(active) {
   state.recording = active;
 
+  // Audio level indicator
+  if (audioLevelIndicatorEl) {
+    audioLevelIndicatorEl.hidden = !active;
+  }
+  if (!active) {
+    renderAudioLevel(0);
+  }
+
   // Update record button state
   if (active) {
     startBtn.classList.add("is-recording");
@@ -585,10 +638,15 @@ function setUiRecording(active) {
   } else {
     startBtn.classList.remove("is-recording");
     startBtn.querySelector(".record-label").textContent = "録音開始";
+
+    // Brief completion feedback
+    if (state.log.length > 0) {
+      startBtn.classList.add("is-complete");
+      setTimeout(() => startBtn.classList.remove("is-complete"), 800);
+    }
   }
 
   startBtn.disabled = false; // Always enabled to allow stop
-  stopBtn.disabled = !active;
 }
 
 function normalizeAudioSource(value) {
@@ -836,6 +894,19 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+function renderAudioLevel(level) {
+  const normalized = Math.max(0, Math.min(1, Number(level) || 0));
+  state.audioLevel = normalized;
+  if (!audioBarEls.length) return;
+
+  audioBarEls.forEach((bar, index) => {
+    const offset = index * 0.08;
+    const shaped = Math.max(0.16, Math.min(1, normalized * (0.82 + offset)));
+    bar.style.setProperty("--level", shaped.toFixed(3));
+    bar.style.setProperty("--glow", Math.max(0.18, normalized).toFixed(3));
+  });
+}
+
 function sampleVad() {
   if (!state.vadAnalyser || !state.vadBuffer) return;
 
@@ -848,6 +919,10 @@ function sampleVad() {
   }
 
   const rms = Math.sqrt(sum / state.vadBuffer.length);
+  const leveled = Math.max(0, rms - AUDIO_LEVEL_NOISE_FLOOR);
+  const boosted = Math.min(1, Math.pow(leveled * AUDIO_LEVEL_GAIN, AUDIO_LEVEL_EXPONENT));
+  const smoothed = state.audioLevel * 0.72 + boosted * 0.28;
+  renderAudioLevel(smoothed);
   state.vadFrameCount += 1;
   if (rms >= VAD_RMS_THRESHOLD) {
     state.vadSpeechFrameCount += 1;
@@ -919,6 +994,8 @@ function stopVad() {
   state.vadBuffer = null;
   state.vadFrameCount = 0;
   state.vadSpeechFrameCount = 0;
+  state.audioLevel = 0;
+  renderAudioLevel(0);
 }
 
 function cleanupCaptureGraph() {
@@ -1117,7 +1194,7 @@ async function startRecording() {
       JSON.stringify({
         type: "start",
         sessionId: generateSessionSeed(),
-        language: languageEl.value,
+        language: selectedLanguage(),
         prompt: promptEl.value.trim(),
         diarizationEnabled: !!(state.diarizationAvailable && state.diarizationEnabled),
         diarizationNumSpeakers: diarizationOptions.diarizationNumSpeakers,
@@ -1207,8 +1284,10 @@ async function copyAll() {
 
   try {
     await navigator.clipboard.writeText(text);
+    copyBtn.classList.add("is-success");
     showToast("コピーしました", "success");
     setStatus("copied");
+    setTimeout(() => copyBtn.classList.remove("is-success"), 1200);
   } catch {
     showToast("コピーに失敗しました", "error");
     setStatus("copy_failed");
@@ -1224,8 +1303,10 @@ async function copyProofread() {
 
   try {
     await navigator.clipboard.writeText(text);
+    copyProofreadBtn.classList.add("is-success");
     showToast("校正結果をコピーしました", "success");
     setStatus("proofread_copied");
+    setTimeout(() => copyProofreadBtn.classList.remove("is-success"), 1200);
   } catch {
     showToast("コピーに失敗しました", "error");
     setStatus("copy_failed");
@@ -1266,7 +1347,7 @@ async function proofreadAll() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text,
-        language: languageEl.value || "ja",
+        language: selectedLanguage(),
       }),
       signal: controller.signal,
     });
@@ -1329,7 +1410,7 @@ async function summarizeAll() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text,
-        language: languageEl.value || "ja",
+        language: selectedLanguage(),
       }),
     });
 
@@ -1460,10 +1541,6 @@ startBtn.addEventListener("click", () => {
   }
 });
 
-stopBtn.addEventListener("click", () => {
-  stopRecording();
-});
-
 if (summaryBtn) {
   summaryBtn.addEventListener("click", () => {
     summarizeAll();
@@ -1475,13 +1552,6 @@ if (proofreadBtn) {
     proofreadAll();
   });
 }
-
-// Fallback: if direct binding fails due stale DOM/cache mismatch, still handle click.
-document.addEventListener("click", (event) => {
-  const target = event.target instanceof Element ? event.target.closest("#proofreadBtn") : null;
-  if (!target) return;
-  proofreadAll();
-});
 
 copyBtn.addEventListener("click", () => {
   copyAll();
@@ -1497,18 +1567,130 @@ clearBtn.addEventListener("click", () => {
   clearView();
 });
 
+function renderPromptTemplateButtons(rawTemplates) {
+  if (!promptTemplateButtonsEl || !promptEl) return;
+  const templates = Array.isArray(rawTemplates) && rawTemplates.length > 0
+    ? rawTemplates
+    : state.promptTemplates;
+
+  promptTemplateButtonsEl.innerHTML = "";
+  templates.forEach((template, index) => {
+    const label = String(template?.label || `Template ${index + 1}`).trim();
+    const content = String(template?.content || "").trim();
+    if (!content) return;
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "prompt-template-btn";
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      promptEl.value = content;
+      promptEl.dispatchEvent(new Event("input", { bubbles: true }));
+      promptEl.focus();
+      showToast(`${label}を入力しました`, "success");
+    });
+    promptTemplateButtonsEl.appendChild(button);
+  });
+}
+
+// Download link feedback
+[dlTxt, dlJsonl, dlSrt].forEach((link) => {
+  link.addEventListener("click", () => {
+    const format = link.textContent;
+    if (link.href && link.href !== "#") {
+      link.classList.add("is-downloaded");
+      setTimeout(() => link.classList.remove("is-downloaded"), 800);
+    }
+  });
+});
+
+/* --------------------------------------------------------------------------
+   Theme Toggle - Light/Dark Mode
+   -------------------------------------------------------------------------- */
+function normalizeTheme(value) {
+  return value === "dark" ? "dark" : "light";
+}
+
+function applyTheme(theme, options = {}) {
+  const persist = options.persist !== false;
+  const normalized = normalizeTheme(theme);
+  document.documentElement.setAttribute("data-theme", normalized);
+  if (persist) {
+    try {
+      localStorage.setItem("whistx_theme", normalized);
+    } catch {
+      // ignore
+    }
+  }
+  updateThemeColorMeta(normalized);
+  return normalized;
+}
+
+function initTheme() {
+  let savedTheme = "";
+  try {
+    savedTheme = localStorage.getItem("whistx_theme") || "";
+  } catch {
+    savedTheme = "";
+  }
+
+  if (savedTheme === "light" || savedTheme === "dark") {
+    applyTheme(savedTheme, { persist: false });
+    return;
+  }
+
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  applyTheme(prefersDark ? "dark" : "light", { persist: false });
+}
+
+function updateThemeColorMeta(theme) {
+  const color = theme === "dark" ? "#0a0a0a" : "#f5f5f7";
+  const metaThemeColors = document.querySelectorAll('meta[name="theme-color"]');
+  metaThemeColors.forEach((meta) => {
+    meta.setAttribute("content", color);
+  });
+}
+
+function toggleTheme() {
+  const currentTheme = normalizeTheme(document.documentElement.getAttribute("data-theme") || "light");
+  const newTheme = currentTheme === "dark" ? "light" : "dark";
+  applyTheme(newTheme, { persist: true });
+
+  // Show toast
+  const themeName = newTheme === "dark" ? "ダークモード" : "ライトモード";
+  showToast(`${themeName}に切り替えました`, "success");
+}
+
+if (themeToggleBtn) {
+  themeToggleBtn.addEventListener("click", toggleTheme);
+}
+
+// Initialize theme on load
+initTheme();
+
 async function loadCapabilities() {
   try {
     const response = await fetch("/api/health");
     if (!response.ok) return;
     const health = await response.json();
     renderBanners(health.banners);
+    applyBranding(health.uiBrandTitle, health.uiBrandTagline);
+    if (Array.isArray(health.uiPromptTemplates) && health.uiPromptTemplates.length > 0) {
+      state.promptTemplates = health.uiPromptTemplates
+        .map((template, index) => ({
+          id: String(template?.id || `template-${index + 1}`),
+          label: String(template?.label || `Template ${index + 1}`),
+          content: String(template?.content || "").trim(),
+        }))
+        .filter((template) => template.content);
+    }
+    renderPromptTemplateButtons(state.promptTemplates);
     state.proofreadAvailable = !!health.proofreadModel;
     state.diarizationAvailable = !!health.diarizationEnabled;
 
     if (!state.proofreadAvailable) {
       setProofread(
-        "校正機能が無効です。\nサーバーの API キー設定（PROOFREAD_API_KEY / SUMMARY_API_KEY / OPENAI_API_KEY）を確認してください。",
+        "校正機能が無効です。\nサーバーの API キー設定（PROOFREAD_API_KEY / SUMMARY_API_KEY / ASR_API_KEY）を確認してください。",
         "利用不可"
       );
       if (proofreadBtn) {
@@ -1555,10 +1737,12 @@ async function loadCapabilities() {
     }
 
     applyDiarizationEnabled(state.diarizationEnabled, { persist: false });
-  } catch {
-    // ignore capability check errors
-  }
+} catch {
+  // ignore capability check errors
 }
+}
+
+renderPromptTemplateButtons(state.promptTemplates);
 
 // Initialize empty states
 updateSegmentCount();

@@ -9,13 +9,15 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .asr import SessionTranscriber
+from .audio_pipeline import AudioPreprocessor
 from .config import settings
 from .diarizer import AudioChunk, PyannoteSpeakerDiarizer, SpeakerTurn
 from .openai_whisper import OpenAIWhisperTranscriber
@@ -27,6 +29,7 @@ from .transcript_store import (
     read_jsonl_records,
     resolve_transcript_path,
 )
+from .voxtral_realtime import VoxtralRealtimeTranscriber
 
 
 logging.basicConfig(
@@ -51,7 +54,7 @@ class ChunkMessage:
 @dataclass(slots=True)
 class LiveSession:
     session_id: str
-    language: str
+    language: str | None
     base_prompt: str
     temperature: float
     context_prompt_enabled: bool
@@ -65,6 +68,8 @@ class LiveSession:
     audio_chunks: list[AudioChunk]
     store: TranscriptStore
     queue: asyncio.Queue[ChunkMessage | None]
+    transcriber: SessionTranscriber
+    overlap_tail_pcm: bytes
 
 
 class SummarizeRequest(BaseModel):
@@ -77,7 +82,8 @@ class ProofreadRequest(BaseModel):
     language: str | None = None
 
 
-TRANSCRIBER: OpenAIWhisperTranscriber | None = None
+TRANSCRIBER_FACTORY: Callable[[], SessionTranscriber] | None = None
+AUDIO_PREPROCESSOR: AudioPreprocessor | None = None
 SUMMARIZER: OpenAISummarizer | None = None
 PROOFREADER: OpenAISummarizer | None = None
 DIARIZER: PyannoteSpeakerDiarizer | None = None
@@ -86,12 +92,14 @@ ACTIVE_SOCKETS: set[WebSocket] = set()
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    global TRANSCRIBER, SUMMARIZER, PROOFREADER, DIARIZER
+    global TRANSCRIBER_FACTORY, AUDIO_PREPROCESSOR, SUMMARIZER, PROOFREADER, DIARIZER
 
-    TRANSCRIBER = OpenAIWhisperTranscriber(
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
-        model=settings.whisper_model,
+    TRANSCRIBER_FACTORY = _build_transcriber_factory()
+    AUDIO_PREPROCESSOR = AudioPreprocessor(
+        ffmpeg_bin=settings.ffmpeg_bin,
+        sample_rate=settings.asr_preprocess_sample_rate,
+        overlap_ms=settings.asr_overlap_ms,
+        enabled=settings.asr_preprocess_enabled,
     )
     try:
         SUMMARIZER = OpenAISummarizer(
@@ -99,6 +107,10 @@ async def on_startup() -> None:
             base_url=settings.summary_base_url,
             model=settings.summary_model,
             temperature=settings.summary_temperature,
+            summary_system_prompt=settings.summary_system_prompt,
+            summary_prompt_template=settings.summary_prompt_template,
+            proofread_system_prompt=settings.proofread_system_prompt,
+            proofread_prompt_template=settings.proofread_prompt_template,
         )
     except Exception as exc:  # noqa: BLE001
         SUMMARIZER = None
@@ -110,6 +122,10 @@ async def on_startup() -> None:
             base_url=settings.proofread_base_url,
             model=settings.proofread_model,
             temperature=settings.proofread_temperature,
+            summary_system_prompt=settings.summary_system_prompt,
+            summary_prompt_template=settings.summary_prompt_template,
+            proofread_system_prompt=settings.proofread_system_prompt,
+            proofread_prompt_template=settings.proofread_prompt_template,
         )
     except Exception as exc:  # noqa: BLE001
         PROOFREADER = None
@@ -134,7 +150,7 @@ async def on_startup() -> None:
     else:
         DIARIZER = None
 
-    logger.info("whistx started (model=%s, ws=%s)", settings.whisper_model, settings.ws_path)
+    logger.info("whistx started (model=%s, ws=%s)", settings.asr_model, settings.ws_path)
 
 
 @app.get("/api/health")
@@ -142,7 +158,7 @@ async def health() -> JSONResponse:
     return JSONResponse(
         {
             "status": "ok",
-            "model": settings.whisper_model,
+            "model": settings.asr_model,
             "summaryModel": settings.summary_model if SUMMARIZER else None,
             "proofreadModel": settings.proofread_model if PROOFREADER else None,
             "diarizationEnabled": DIARIZER is not None,
@@ -152,6 +168,9 @@ async def health() -> JSONResponse:
             "diarizationDefaultMaxSpeakers": settings.diarization_max_speakers,
             "diarizationSpeakerCap": MAX_DIARIZATION_SPEAKERS,
             "banners": list(settings.ui_banners),
+            "uiBrandTitle": settings.app_brand_title,
+            "uiBrandTagline": settings.app_brand_tagline,
+            "uiPromptTemplates": list(settings.ui_prompt_templates),
             "activeConnections": len(ACTIVE_SOCKETS),
         }
     )
@@ -162,7 +181,10 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
     if SUMMARIZER is None:
         return JSONResponse(
             status_code=503,
-            content={"error": "summary_not_configured", "detail": "SUMMARY_API_KEY is missing"},
+            content={
+                "error": "summary_not_configured",
+                "detail": "SUMMARY_API_KEY (or ASR_API_KEY / OPENAI_API_KEY) is missing",
+            },
         )
 
     raw_text = payload.text.strip()
@@ -200,7 +222,7 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
             status_code=503,
             content={
                 "error": "proofread_not_configured",
-                "detail": "PROOFREAD_API_KEY / SUMMARY_API_KEY / OPENAI_API_KEY is missing",
+                "detail": "PROOFREAD_API_KEY / SUMMARY_API_KEY / ASR_API_KEY (or OPENAI_API_KEY) is missing",
             },
         )
 
@@ -262,7 +284,19 @@ async def ws_transcribe(ws: WebSocket) -> None:
                     await _safe_send(ws, {"type": "error", "message": "already_started"})
                     continue
 
-                session = _create_session(data)
+                try:
+                    session = _create_session(data)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Session creation failed")
+                    await _safe_send(
+                        ws,
+                        {
+                            "type": "error",
+                            "message": "session_create_failed",
+                            "detail": str(exc),
+                        },
+                    )
+                    continue
                 worker_task = asyncio.create_task(_session_worker(ws, session))
 
                 await _safe_send(
@@ -272,7 +306,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
                         "message": "ready",
                         "state": "ready",
                         "sessionId": session.session_id,
-                        "backend": f"openai:{settings.whisper_model}",
+                        "backend": f"openai:{settings.asr_model}",
                         "diarizationEnabled": session.collect_audio_for_diarization,
                         "diarizationNumSpeakers": session.diarization_num_speakers,
                         "diarizationMinSpeakers": session.diarization_min_speakers,
@@ -346,119 +380,126 @@ async def ws_transcribe(ws: WebSocket) -> None:
 
 
 async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
-    if TRANSCRIBER is None:
-        await _safe_send(ws, {"type": "error", "message": "transcriber_not_ready"})
-        return
+    try:
+        while True:
+            item = await session.queue.get()
+            if item is None:
+                break
 
-    while True:
-        item = await session.queue.get()
-        if item is None:
-            break
-
-        if session.collect_audio_for_diarization:
-            try:
-                chunk_path = session.store.save_audio_chunk(
-                    seq=item.seq,
-                    mime_type=item.mime_type,
-                    audio_bytes=item.audio_bytes,
-                )
-                session.audio_chunks.append(
-                    AudioChunk(
+            if session.collect_audio_for_diarization:
+                try:
+                    chunk_path = session.store.save_audio_chunk(
                         seq=item.seq,
-                        path=chunk_path,
-                        offset_ms=item.offset_ms,
-                        duration_ms=item.duration_ms,
+                        mime_type=item.mime_type,
+                        audio_bytes=item.audio_bytes,
                     )
+                    session.audio_chunks.append(
+                        AudioChunk(
+                            seq=item.seq,
+                            path=chunk_path,
+                            offset_ms=item.offset_ms,
+                            duration_ms=item.duration_ms,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Chunk save failed for diarization: session=%s seq=%s err=%s",
+                        session.session_id,
+                        item.seq,
+                        exc,
+                    )
+
+            try:
+                prepared = _prepare_audio_for_asr(session=session, item=item)
+                prompt = _build_prompt(session)
+                result = await asyncio.to_thread(
+                    session.transcriber.transcribe_chunk,
+                    prepared.audio_bytes,
+                    mime_type=prepared.mime_type,
+                    language=session.language,
+                    prompt=prompt,
+                    temperature=session.temperature,
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Chunk save failed for diarization: session=%s seq=%s err=%s",
-                    session.session_id,
-                    item.seq,
-                    exc,
+                logger.exception("Transcription failed: session=%s seq=%s", session.session_id, item.seq)
+                await _safe_send(
+                    ws,
+                    {
+                        "type": "error",
+                        "message": "transcription_failed",
+                        "seq": item.seq,
+                        "detail": str(exc),
+                    },
                 )
+                continue
 
-        try:
-            prompt = _build_prompt(session)
-            result = await asyncio.to_thread(
-                TRANSCRIBER.transcribe_chunk,
-                item.audio_bytes,
-                mime_type=item.mime_type,
+            text = result.text.strip()
+            text = _sanitize_transcript_text(text)
+            if not text:
+                await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
+                continue
+
+            if _is_near_duplicate(text, session.last_emitted_text):
+                await _safe_send(
+                    ws,
+                    {"type": "ack", "seq": item.seq, "duplicate": True},
+                )
+                continue
+
+            ts_base_offset = max(0, item.offset_ms - prepared.overlap_ms_used)
+            ts_start = ts_base_offset + (result.start_ms or 0)
+            if result.end_ms is not None:
+                ts_end = ts_base_offset + result.end_ms
+            else:
+                ts_end = item.offset_ms + max(item.duration_ms, 600)
+
+            if ts_end < ts_start:
+                ts_end = ts_start
+
+            record = TranscriptRecord(
+                type="final",
+                segmentId=f"{item.seq:06d}",
+                seq=item.seq,
+                text=text,
+                tsStart=ts_start,
+                tsEnd=ts_end,
+                chunkOffsetMs=item.offset_ms,
+                chunkDurationMs=item.duration_ms,
                 language=session.language,
-                prompt=prompt,
-                temperature=session.temperature,
+                createdAt=datetime.now(timezone.utc).isoformat(),
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Transcription failed: session=%s seq=%s", session.session_id, item.seq)
+            session.store.append_final(record)
+            session.last_emitted_text = text
+            _append_context(session, text)
+
             await _safe_send(
                 ws,
                 {
-                    "type": "error",
-                    "message": "transcription_failed",
-                    "seq": item.seq,
-                    "detail": str(exc),
+                    "type": "final",
+                    "segmentId": record.segmentId,
+                    "seq": record.seq,
+                    "text": record.text,
+                    "tsStart": record.tsStart,
+                    "tsEnd": record.tsEnd,
+                    "speaker": record.speaker,
                 },
             )
-            continue
-
-        text = result.text.strip()
-        text = _sanitize_transcript_text(text)
-        if not text:
-            await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
-            continue
-
-        if _is_near_duplicate(text, session.last_emitted_text):
-            await _safe_send(
-                ws,
-                {"type": "ack", "seq": item.seq, "duplicate": True},
-            )
-            continue
-
-        ts_start = item.offset_ms + (result.start_ms or 0)
-        if result.end_ms is not None:
-            ts_end = item.offset_ms + result.end_ms
-        else:
-            ts_end = item.offset_ms + max(item.duration_ms, 600)
-
-        if ts_end < ts_start:
-            ts_end = ts_start
-
-        record = TranscriptRecord(
-            type="final",
-            segmentId=f"{item.seq:06d}",
-            seq=item.seq,
-            text=text,
-            tsStart=ts_start,
-            tsEnd=ts_end,
-            chunkOffsetMs=item.offset_ms,
-            chunkDurationMs=item.duration_ms,
-            language=session.language,
-            createdAt=datetime.now(timezone.utc).isoformat(),
-        )
-        session.store.append_final(record)
-        session.last_emitted_text = text
-        _append_context(session, text)
-
-        await _safe_send(
-            ws,
-            {
-                "type": "final",
-                "segmentId": record.segmentId,
-                "seq": record.seq,
-                "text": record.text,
-                "tsStart": record.tsStart,
-                "tsEnd": record.tsEnd,
-                "speaker": record.speaker,
-            },
-        )
+    finally:
+        try:
+            await asyncio.to_thread(session.transcriber.close)
+        except Exception:  # noqa: BLE001
+            logger.debug("session transcriber close failed: session=%s", session.session_id, exc_info=True)
 
 
 
 def _create_session(payload: dict[str, Any]) -> LiveSession:
+    if TRANSCRIBER_FACTORY is None:
+        raise RuntimeError("transcriber_not_ready")
+
     base_session_id = TranscriptStore.sanitize_or_generate(_as_str(payload.get("sessionId")))
     runtime_session_id = TranscriptStore.make_runtime_session_id(base_session_id)
 
-    language = _as_str(payload.get("language")) or settings.default_language
+    language = _normalize_asr_language(_as_str(payload.get("language")))
     prompt = _as_str(payload.get("prompt")) or settings.default_prompt
     temperature = _as_float(payload.get("temperature"), settings.default_temperature)
     diarization_requested = _as_bool(payload.get("diarizationEnabled"), True)
@@ -482,7 +523,42 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         audio_chunks=[],
         store=TranscriptStore(settings.transcripts_dir, runtime_session_id),
         queue=asyncio.Queue(maxsize=settings.max_queue_size),
+        transcriber=TRANSCRIBER_FACTORY(),
+        overlap_tail_pcm=b"",
     )
+
+
+def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
+    if _use_realtime_asr(settings.asr_model):
+        return lambda: VoxtralRealtimeTranscriber(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+            model=settings.asr_model,
+            ffmpeg_bin=settings.ffmpeg_bin,
+        )
+
+    return lambda: OpenAIWhisperTranscriber(
+        api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
+        model=settings.asr_model,
+    )
+
+
+def _use_realtime_asr(model: str) -> bool:
+    lowered = (model or "").strip().lower()
+    return "voxtral" in lowered and "realtime" in lowered
+
+
+def _prepare_audio_for_asr(*, session: LiveSession, item: ChunkMessage):
+    if AUDIO_PREPROCESSOR is None:
+        raise RuntimeError("audio_preprocessor_not_ready")
+    prepared = AUDIO_PREPROCESSOR.prepare(
+        audio_bytes=item.audio_bytes,
+        mime_type=item.mime_type,
+        previous_tail_pcm=session.overlap_tail_pcm,
+    )
+    session.overlap_tail_pcm = prepared.tail_pcm
+    return prepared
 
 
 def _build_prompt(session: LiveSession) -> str | None:
@@ -491,8 +567,10 @@ def _build_prompt(session: LiveSession) -> str | None:
         parts.append(session.base_prompt.strip())
 
     if session.context_prompt_enabled and session.context_text:
-        if session.language.lower().startswith("en"):
+        if (session.language or "").lower().startswith("en"):
             header = "Recent transcript context:"
+        elif not session.language:
+            header = "Recent transcript context. Keep the same spoken language as the audio:"
         else:
             header = "直前の文字起こし文脈:"
         parts.append(f"{header}\n{session.context_text}")
@@ -798,6 +876,13 @@ def _as_bool(value: Any, default: bool) -> bool:
         if lowered in {"0", "false", "no", "off"}:
             return False
     return default
+
+
+def _normalize_asr_language(value: str) -> str | None:
+    lowered = (value or "").strip().lower()
+    if not lowered or lowered == "auto":
+        return None
+    return lowered
 
 
 async def _broadcast_conn_count() -> None:
