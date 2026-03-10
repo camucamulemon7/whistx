@@ -100,6 +100,14 @@ const state = {
   captureDestination: null,
 };
 
+function selectedLanguage() {
+  const value = String(languageEl?.value || "").trim().toLowerCase();
+  if (!value || value === "auto") {
+    return null;
+  }
+  return value;
+}
+
 function setStatus(text) {
   statusTextEl.textContent = text;
   statusTextEl.dataset.state = String(text || "").toLowerCase();
@@ -621,6 +629,12 @@ function setUiRecording(active) {
   } else {
     startBtn.classList.remove("is-recording");
     startBtn.querySelector(".record-label").textContent = "録音開始";
+
+    // Brief completion feedback
+    if (state.log.length > 0) {
+      startBtn.classList.add("is-complete");
+      setTimeout(() => startBtn.classList.remove("is-complete"), 800);
+    }
   }
 
   startBtn.disabled = false; // Always enabled to allow stop
@@ -1171,7 +1185,7 @@ async function startRecording() {
       JSON.stringify({
         type: "start",
         sessionId: generateSessionSeed(),
-        language: languageEl.value,
+        language: selectedLanguage(),
         prompt: promptEl.value.trim(),
         diarizationEnabled: !!(state.diarizationAvailable && state.diarizationEnabled),
         diarizationNumSpeakers: diarizationOptions.diarizationNumSpeakers,
@@ -1261,8 +1275,10 @@ async function copyAll() {
 
   try {
     await navigator.clipboard.writeText(text);
+    copyBtn.classList.add("is-success");
     showToast("コピーしました", "success");
     setStatus("copied");
+    setTimeout(() => copyBtn.classList.remove("is-success"), 1200);
   } catch {
     showToast("コピーに失敗しました", "error");
     setStatus("copy_failed");
@@ -1278,8 +1294,10 @@ async function copyProofread() {
 
   try {
     await navigator.clipboard.writeText(text);
+    copyProofreadBtn.classList.add("is-success");
     showToast("校正結果をコピーしました", "success");
     setStatus("proofread_copied");
+    setTimeout(() => copyProofreadBtn.classList.remove("is-success"), 1200);
   } catch {
     showToast("コピーに失敗しました", "error");
     setStatus("copy_failed");
@@ -1320,7 +1338,7 @@ async function proofreadAll() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text,
-        language: languageEl.value || "ja",
+        language: selectedLanguage(),
       }),
       signal: controller.signal,
     });
@@ -1383,7 +1401,7 @@ async function summarizeAll() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text,
-        language: languageEl.value || "ja",
+        language: selectedLanguage(),
       }),
     });
 
@@ -1538,6 +1556,17 @@ if (copyProofreadBtn) {
 
 clearBtn.addEventListener("click", () => {
   clearView();
+});
+
+// Download link feedback
+[dlTxt, dlJsonl, dlSrt].forEach((link) => {
+  link.addEventListener("click", () => {
+    const format = link.textContent;
+    if (link.href && link.href !== "#") {
+      link.classList.add("is-downloaded");
+      setTimeout(() => link.classList.remove("is-downloaded"), 800);
+    }
+  });
 });
 
 /* --------------------------------------------------------------------------

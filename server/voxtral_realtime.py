@@ -111,6 +111,7 @@ class VoxtralRealtimeTranscriber:
             event_type = str(event.get("type") or "").strip()
 
             if event_type in {
+                "transcription.delta",
                 "conversation.item.input_audio_transcription.delta",
                 "response.audio_transcript.delta",
                 "response.text.delta",
@@ -121,6 +122,7 @@ class VoxtralRealtimeTranscriber:
                 continue
 
             if event_type in {
+                "transcription.done",
                 "conversation.item.input_audio_transcription.completed",
                 "response.audio_transcript.done",
                 "response.text.done",
@@ -143,8 +145,7 @@ class VoxtralRealtimeTranscriber:
         self._connection.send(json.dumps(event, ensure_ascii=False))
 
     def _recv_event(self, *, timeout_sec: float) -> dict[str, Any]:
-        self._connection.settimeout(timeout_sec)
-        raw = self._connection.recv()
+        raw = self._connection.recv(timeout=timeout_sec)
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", errors="ignore")
         event = json.loads(raw)

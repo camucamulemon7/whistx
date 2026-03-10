@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .asr import SessionTranscriber
+from .audio_pipeline import AudioPreprocessor
 from .config import settings
 from .diarizer import AudioChunk, PyannoteSpeakerDiarizer, SpeakerTurn
 from .openai_whisper import OpenAIWhisperTranscriber
@@ -53,7 +54,7 @@ class ChunkMessage:
 @dataclass(slots=True)
 class LiveSession:
     session_id: str
-    language: str
+    language: str | None
     base_prompt: str
     temperature: float
     context_prompt_enabled: bool
@@ -68,6 +69,7 @@ class LiveSession:
     store: TranscriptStore
     queue: asyncio.Queue[ChunkMessage | None]
     transcriber: SessionTranscriber
+    overlap_tail_pcm: bytes
 
 
 class SummarizeRequest(BaseModel):
@@ -81,6 +83,7 @@ class ProofreadRequest(BaseModel):
 
 
 TRANSCRIBER_FACTORY: Callable[[], SessionTranscriber] | None = None
+AUDIO_PREPROCESSOR: AudioPreprocessor | None = None
 SUMMARIZER: OpenAISummarizer | None = None
 PROOFREADER: OpenAISummarizer | None = None
 DIARIZER: PyannoteSpeakerDiarizer | None = None
@@ -89,9 +92,15 @@ ACTIVE_SOCKETS: set[WebSocket] = set()
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    global TRANSCRIBER_FACTORY, SUMMARIZER, PROOFREADER, DIARIZER
+    global TRANSCRIBER_FACTORY, AUDIO_PREPROCESSOR, SUMMARIZER, PROOFREADER, DIARIZER
 
     TRANSCRIBER_FACTORY = _build_transcriber_factory()
+    AUDIO_PREPROCESSOR = AudioPreprocessor(
+        ffmpeg_bin=settings.ffmpeg_bin,
+        sample_rate=settings.asr_preprocess_sample_rate,
+        overlap_ms=settings.asr_overlap_ms,
+        enabled=settings.asr_preprocess_enabled,
+    )
     try:
         SUMMARIZER = OpenAISummarizer(
             api_key=settings.summary_api_key,
@@ -400,11 +409,12 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                     )
 
             try:
+                prepared = _prepare_audio_for_asr(session=session, item=item)
                 prompt = _build_prompt(session)
                 result = await asyncio.to_thread(
                     session.transcriber.transcribe_chunk,
-                    item.audio_bytes,
-                    mime_type=item.mime_type,
+                    prepared.audio_bytes,
+                    mime_type=prepared.mime_type,
                     language=session.language,
                     prompt=prompt,
                     temperature=session.temperature,
@@ -435,9 +445,10 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 )
                 continue
 
-            ts_start = item.offset_ms + (result.start_ms or 0)
+            ts_base_offset = max(0, item.offset_ms - prepared.overlap_ms_used)
+            ts_start = ts_base_offset + (result.start_ms or 0)
             if result.end_ms is not None:
-                ts_end = item.offset_ms + result.end_ms
+                ts_end = ts_base_offset + result.end_ms
             else:
                 ts_end = item.offset_ms + max(item.duration_ms, 600)
 
@@ -487,7 +498,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
     base_session_id = TranscriptStore.sanitize_or_generate(_as_str(payload.get("sessionId")))
     runtime_session_id = TranscriptStore.make_runtime_session_id(base_session_id)
 
-    language = _as_str(payload.get("language")) or settings.default_language
+    language = _normalize_asr_language(_as_str(payload.get("language")))
     prompt = _as_str(payload.get("prompt")) or settings.default_prompt
     temperature = _as_float(payload.get("temperature"), settings.default_temperature)
     diarization_requested = _as_bool(payload.get("diarizationEnabled"), True)
@@ -512,6 +523,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         store=TranscriptStore(settings.transcripts_dir, runtime_session_id),
         queue=asyncio.Queue(maxsize=settings.max_queue_size),
         transcriber=TRANSCRIBER_FACTORY(),
+        overlap_tail_pcm=b"",
     )
 
 
@@ -536,14 +548,28 @@ def _use_realtime_asr(model: str) -> bool:
     return "voxtral" in lowered and "realtime" in lowered
 
 
+def _prepare_audio_for_asr(*, session: LiveSession, item: ChunkMessage):
+    if AUDIO_PREPROCESSOR is None:
+        raise RuntimeError("audio_preprocessor_not_ready")
+    prepared = AUDIO_PREPROCESSOR.prepare(
+        audio_bytes=item.audio_bytes,
+        mime_type=item.mime_type,
+        previous_tail_pcm=session.overlap_tail_pcm,
+    )
+    session.overlap_tail_pcm = prepared.tail_pcm
+    return prepared
+
+
 def _build_prompt(session: LiveSession) -> str | None:
     parts: list[str] = []
     if session.base_prompt:
         parts.append(session.base_prompt.strip())
 
     if session.context_prompt_enabled and session.context_text:
-        if session.language.lower().startswith("en"):
+        if (session.language or "").lower().startswith("en"):
             header = "Recent transcript context:"
+        elif not session.language:
+            header = "Recent transcript context. Keep the same spoken language as the audio:"
         else:
             header = "直前の文字起こし文脈:"
         parts.append(f"{header}\n{session.context_text}")
@@ -849,6 +875,13 @@ def _as_bool(value: Any, default: bool) -> bool:
         if lowered in {"0", "false", "no", "off"}:
             return False
     return default
+
+
+def _normalize_asr_language(value: str) -> str | None:
+    lowered = (value or "").strip().lower()
+    if not lowered or lowered == "auto":
+        return None
+    return lowered
 
 
 async def _broadcast_conn_count() -> None:
