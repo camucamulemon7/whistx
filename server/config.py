@@ -54,6 +54,7 @@ class Settings:
     max_chunk_bytes: int
     app_brand_title: str
     app_brand_tagline: str
+    ui_prompt_templates: tuple[dict[str, str], ...]
     ui_banners: tuple[dict[str, Any], ...]
 
 
@@ -243,6 +244,122 @@ def _parse_ui_banners() -> tuple[dict[str, Any], ...]:
     return tuple(banners)
 
 
+DEFAULT_SOC_PROMPT_TEMPLATE = (
+    "SoC, ASIC, chiplet, CPU, GPU, NPU, DSP, ISP, VPU, DPU, MCU, PMU, NoC, interconnect, "
+    "AXI, AXI4, AXI-Lite, AHB, APB, ACE, CHI, UCIe, PCIe, CXL, DDR, DDR4, DDR5, LPDDR4, "
+    "LPDDR5, HBM, SRAM, ROM, eMMC, UFS, PHY, SerDes, PLL, DLL, RC oscillator, clock, "
+    "clock tree, clock gating, reset, async reset, sync reset, power domain, voltage island, "
+    "retention, isolation, level shifter, DVFS, AVS, UPF, CPF, RTL, SystemVerilog, Verilog, "
+    "VHDL, UVM, testbench, assertion, SVA, lint, SpyGlass, CDC, RDC, STA, MCMM, OCV, AOCV, "
+    "POCV, derate, setup, hold, recovery, removal, skew, jitter, uncertainty, timing closure, "
+    "timing path, false path, multicycle path, path group, endpoint, startpoint, slack, WNS, "
+    "TNS, violating path, critical path, synthesis, logic synthesis, Design Compiler, Genus, "
+    "netlist, mapped netlist, unmapped netlist, compile, incremental compile, retiming, "
+    "boundary optimization, datapath optimization, resource sharing, register balancing, ECO, "
+    "formal, equivalence check, LEC, Conformal, Formality, gate-level simulation, GLS, SDF, "
+    "back annotation, place and route, place-and-route, PnR, floorplan, floorplanning, macro "
+    "placement, standard cell, utilization, density, congestion, global placement, detailed "
+    "placement, legalization, CTS, clock tree synthesis, useful skew, hold fixing, setup fixing, "
+    "routing, global route, detailed route, track assignment, antenna, filler cell, decap, "
+    "tap cell, endcap, spare cell, spare gate, metal fill, density fill, ECO route, route guide, "
+    "signoff, sign-off, DRC, LVS, ERC, extraction, parasitic extraction, RC extraction, SPEF, "
+    "DEF, LEF, Liberty, .lib, TLU+, QRC, StarRC, Quantus, IR drop, dynamic IR drop, static IR drop, "
+    "EM, electromigration, voltage drop, power integrity, signal integrity, SI, crosstalk, noise, "
+    "glitch, overshoot, undershoot, hotspot, thermal, leakage, dynamic power, switching power, "
+    "internal power, leakage power, power analysis, PrimeTime PX, PrimePower, Voltus, RedHawk, "
+    "vectorless, VCD, FSDB, SAIF, toggle rate, activity factor, inrush current, rush current, "
+    "decoupling capacitor, decap cell, package model, bump, substrate, interposer, TSV, process "
+    "node, 28nm, 16nm, 12nm, 7nm, 5nm, 4nm, 3nm, FinFET, GAA, foundry, TSMC, Samsung, Intel, "
+    "PDK, DFM, manufacturability, yield, wafer, lot, mask, reticle, tape-out, respin, metal fix, "
+    "MPW, shuttle, bring-up, validation, characterization, errata, workaround, DFT, scan, scan chain, "
+    "scan compression, EDT, ATPG, stuck-at, transition fault, path delay fault, bridging fault, "
+    "JTAG, boundary scan, MBIST, LBIST, BISR, repair, fuse, eFuse, OTP, secure boot, TrustZone, "
+    "TEE, firmware, bootloader, NAND, NAND flash, Toggle NAND, ONFI, raw NAND, managed NAND, SLC, "
+    "MLC, TLC, QLC, PLC, 3D NAND, V-NAND, charge trap, floating gate, page, block, plane, die, LUN, "
+    "bad block, bad block management, BBT, ECC, BCH, LDPC, RAID, read disturb, program disturb, "
+    "erase disturb, wear leveling, garbage collection, overprovisioning, endurance, retention, BER, "
+    "bit error rate, read retry, soft decoding, threshold voltage, ISPP, incremental step pulse "
+    "programming, erase verify, program verify, copyback, cache read, cache program, multi-plane, "
+    "interleaving, channel, CE, RE, WE, ALE, CLE, R/B, spare area, OOB, metadata, FTL, flash "
+    "translation layer, NVMe, SATA, controller, queue depth, throughput, latency, bandwidth, QoS, "
+    "arbiter, scheduler, mux, demux, crossbar, SRAM compiler, memory compiler, register file, dual "
+    "port RAM, single port RAM, SRAM macro, macro, hard macro, soft macro, black box, hierarchy, "
+    "partition, block-level, top-level, full-chip, chip top, top module, hierarchy flattening, "
+    "dont_touch, set_false_path, set_multicycle_path, create_clock, generated clock, propagated "
+    "clock, ideal clock, set_input_delay, set_output_delay, set_clock_uncertainty, set_clock_groups, "
+    "operating condition, corner, slow corner, fast corner, typical corner, SS, FF, TT, RCmax, "
+    "RCmin, setup view, hold view."
+)
+
+
+def _parse_prompt_templates() -> tuple[dict[str, str], ...]:
+    raw = _env_first_non_empty("APP_PROMPT_TEMPLATES", "APP_SOC_PROMPT_TEMPLATE") or ""
+    if not raw:
+        return (
+            {
+                "id": "soc-design",
+                "label": "SoC設計テンプレート",
+                "content": DEFAULT_SOC_PROMPT_TEMPLATE,
+            },
+        )
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        content = _decode_env_text(raw).strip()
+        if not content:
+            return ()
+        return (
+            {
+                "id": "template-1",
+                "label": "Template 1",
+                "content": content,
+            },
+        )
+
+    items: list[Any]
+    if isinstance(parsed, list):
+        items = parsed
+    elif isinstance(parsed, dict):
+        items = [parsed]
+    elif isinstance(parsed, str):
+        items = [parsed]
+    else:
+        return ()
+
+    templates: list[dict[str, str]] = []
+    for index, item in enumerate(items, start=1):
+        if isinstance(item, str):
+            content = _decode_env_text(item).strip()
+            if not content:
+                continue
+            templates.append(
+                {
+                    "id": f"template-{index}",
+                    "label": f"Template {index}",
+                    "content": content,
+                }
+            )
+            continue
+
+        if not isinstance(item, dict):
+            continue
+        content = _decode_env_text(str(item.get("content") or item.get("prompt") or "")).strip()
+        if not content:
+            continue
+        label = str(item.get("label") or item.get("name") or f"Template {index}").strip() or f"Template {index}"
+        template_id = _sanitize_banner_id(str(item.get("id") or ""), f"template-{index}")
+        templates.append(
+            {
+                "id": template_id,
+                "label": label[:40],
+                "content": content,
+            }
+        )
+
+    return tuple(templates)
+
+
 
 def load_settings() -> Settings:
     app_data_dir_raw = _env_first_non_empty("APP_DATA_DIR", "DATA_DIR")
@@ -287,7 +404,6 @@ def load_settings() -> Settings:
         _env_first_non_empty("APP_BRAND_TAGLINE")
         or "高精度リアルタイム文字起こし"
     )
-
     return Settings(
         host=_env_first_non_empty("APP_HOST", "HOST") or "0.0.0.0",
         port=_to_int_alias(8005, "APP_PORT", "PORT"),
@@ -342,6 +458,7 @@ def load_settings() -> Settings:
         ),
         app_brand_title=app_brand_title,
         app_brand_tagline=app_brand_tagline,
+        ui_prompt_templates=_parse_prompt_templates(),
         ui_banners=_parse_ui_banners(),
     )
 

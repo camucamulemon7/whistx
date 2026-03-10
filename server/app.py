@@ -170,6 +170,7 @@ async def health() -> JSONResponse:
             "banners": list(settings.ui_banners),
             "uiBrandTitle": settings.app_brand_title,
             "uiBrandTagline": settings.app_brand_tagline,
+            "uiPromptTemplates": list(settings.ui_prompt_templates),
             "activeConnections": len(ACTIVE_SOCKETS),
         }
     )

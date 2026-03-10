@@ -8,8 +8,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>whistx</title>
-    <link rel="stylesheet" href="/style.css?v=20260305o" />
-    <script type="module" src="/main.js?v=20260305l"></script>
+    <link rel="stylesheet" href="/style.css?v=20260311a" />
+    <script type="module" src="/main.js?v=20260311a"></script>
   </head>
   <body>
     <div class="app">
@@ -204,19 +204,18 @@
                 <input
                   id="chunkSeconds"
                   type="number"
-                  min="12"
-                  max="30"
+                  min="15"
+                  max="60"
                   step="1"
-                  value="20"
+                  value="30"
                   class="chunk-input"
                   aria-label="チャンク秒数"
                 />
                 <div class="chunk-presets" role="group" aria-label="チャンクプリセット">
-                  <button type="button" class="chunk-chip" data-chunk-preset="12">12s</button>
-                  <button type="button" class="chunk-chip" data-chunk-preset="16">16s</button>
-                  <button type="button" class="chunk-chip is-active" data-chunk-preset="20">20s</button>
-                  <button type="button" class="chunk-chip" data-chunk-preset="24">24s</button>
-                  <button type="button" class="chunk-chip" data-chunk-preset="30">30s</button>
+                  <button type="button" class="chunk-chip" data-chunk-preset="15">15s</button>
+                  <button type="button" class="chunk-chip is-active" data-chunk-preset="30">30s</button>
+                  <button type="button" class="chunk-chip" data-chunk-preset="45">45s</button>
+                  <button type="button" class="chunk-chip" data-chunk-preset="60">60s</button>
                 </div>
               </div>
               <p class="chunk-description">長いほど精度向上・遅延増加</p>
@@ -224,12 +223,15 @@
 
             <!-- Prompt Input -->
             <div class="prompt-section glass-panel">
-              <label for="prompt" class="prompt-label">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                </svg>
-                コンテキストプロンプト
-              </label>
+              <div class="prompt-header">
+                <label for="prompt" class="prompt-label">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  </svg>
+                  コンテキストプロンプト
+                </label>
+                <div id="promptTemplateButtons" class="prompt-template-list" aria-label="プロンプトテンプレート"></div>
+              </div>
               <textarea
                 id="prompt"
                 rows="2"

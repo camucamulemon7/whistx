@@ -21,6 +21,7 @@ const diarizationMaxSpeakersEl = $("#diarizationMaxSpeakers");
 const diarizationSpeakerHintEl = $("#diarizationSpeakerHint");
 const chunkSecondsEl = $("#chunkSeconds");
 const promptEl = $("#prompt");
+const promptTemplateButtonsEl = $("#promptTemplateButtons");
 const chunkHintEl = $("#chunkHint");
 const presetButtons = Array.from(document.querySelectorAll("[data-chunk-preset]"));
 
@@ -43,9 +44,9 @@ const proofreadTextEl = $("#proofreadText");
 const proofreadMetaEl = $("#proofreadMeta");
 const toastContainer = $("#toastContainer");
 
-const CHUNK_MIN_SECONDS = 12;
-const CHUNK_MAX_SECONDS = 30;
-const CHUNK_DEFAULT_SECONDS = 20;
+const CHUNK_MIN_SECONDS = 15;
+const CHUNK_MAX_SECONDS = 60;
+const CHUNK_DEFAULT_SECONDS = 30;
 const DIARIZATION_SPEAKER_MIN = 1;
 const DIARIZATION_SPEAKER_MAX = 12;
 
@@ -56,6 +57,7 @@ const VAD_MIN_ACTIVE_MS = 160;
 const AUDIO_LEVEL_NOISE_FLOOR = 0.0025;
 const AUDIO_LEVEL_GAIN = 22;
 const AUDIO_LEVEL_EXPONENT = 0.65;
+const DEFAULT_SOC_PROMPT_TEMPLATE = `SoC, ASIC, chiplet, CPU, GPU, NPU, DSP, ISP, VPU, DPU, MCU, PMU, NoC, interconnect, AXI, AXI4, AXI-Lite, AHB, APB, ACE, CHI, UCIe, PCIe, CXL, DDR, DDR4, DDR5, LPDDR4, LPDDR5, HBM, SRAM, ROM, eMMC, UFS, PHY, SerDes, PLL, DLL, RC oscillator, clock, clock tree, clock gating, reset, async reset, sync reset, power domain, voltage island, retention, isolation, level shifter, DVFS, AVS, UPF, CPF, RTL, SystemVerilog, Verilog, VHDL, UVM, testbench, assertion, SVA, lint, SpyGlass, CDC, RDC, STA, MCMM, OCV, AOCV, POCV, derate, setup, hold, recovery, removal, skew, jitter, uncertainty, timing closure, timing path, false path, multicycle path, path group, endpoint, startpoint, slack, WNS, TNS, violating path, critical path, synthesis, logic synthesis, Design Compiler, Genus, netlist, mapped netlist, unmapped netlist, compile, incremental compile, retiming, boundary optimization, datapath optimization, resource sharing, register balancing, ECO, formal, equivalence check, LEC, Conformal, Formality, gate-level simulation, GLS, SDF, back annotation, place and route, place-and-route, PnR, floorplan, floorplanning, macro placement, standard cell, utilization, density, congestion, global placement, detailed placement, legalization, CTS, clock tree synthesis, useful skew, hold fixing, setup fixing, routing, global route, detailed route, track assignment, antenna, filler cell, decap, tap cell, endcap, spare cell, spare gate, metal fill, density fill, ECO route, route guide, signoff, sign-off, DRC, LVS, ERC, extraction, parasitic extraction, RC extraction, SPEF, DEF, LEF, Liberty, .lib, TLU+, QRC, StarRC, Quantus, IR drop, dynamic IR drop, static IR drop, EM, electromigration, voltage drop, power integrity, signal integrity, SI, crosstalk, noise, glitch, overshoot, undershoot, hotspot, thermal, leakage, dynamic power, switching power, internal power, leakage power, power analysis, PrimeTime PX, PrimePower, Voltus, RedHawk, vectorless, VCD, FSDB, SAIF, toggle rate, activity factor, inrush current, rush current, decoupling capacitor, decap cell, package model, bump, substrate, interposer, TSV, process node, 28nm, 16nm, 12nm, 7nm, 5nm, 4nm, 3nm, FinFET, GAA, foundry, TSMC, Samsung, Intel, PDK, DFM, manufacturability, yield, wafer, lot, mask, reticle, tape-out, respin, metal fix, MPW, shuttle, bring-up, validation, characterization, errata, workaround, DFT, scan, scan chain, scan compression, EDT, ATPG, stuck-at, transition fault, path delay fault, bridging fault, JTAG, boundary scan, MBIST, LBIST, BISR, repair, fuse, eFuse, OTP, secure boot, TrustZone, TEE, firmware, bootloader, NAND, NAND flash, Toggle NAND, ONFI, raw NAND, managed NAND, SLC, MLC, TLC, QLC, PLC, 3D NAND, V-NAND, charge trap, floating gate, page, block, plane, die, LUN, bad block, bad block management, BBT, ECC, BCH, LDPC, RAID, read disturb, program disturb, erase disturb, wear leveling, garbage collection, overprovisioning, endurance, retention, BER, bit error rate, read retry, soft decoding, threshold voltage, ISPP, incremental step pulse programming, erase verify, program verify, copyback, cache read, cache program, multi-plane, interleaving, channel, CE, RE, WE, ALE, CLE, R/B, spare area, OOB, metadata, FTL, flash translation layer, NVMe, SATA, controller, queue depth, throughput, latency, bandwidth, QoS, arbiter, scheduler, mux, demux, crossbar, SRAM compiler, memory compiler, register file, dual port RAM, single port RAM, SRAM macro, macro, hard macro, soft macro, black box, hierarchy, partition, block-level, top-level, full-chip, chip top, top module, hierarchy flattening, dont_touch, set_false_path, set_multicycle_path, create_clock, generated clock, propagated clock, ideal clock, set_input_delay, set_output_delay, set_clock_uncertainty, set_clock_groups, operating condition, corner, slow corner, fast corner, typical corner, SS, FF, TT, RCmax, RCmin, setup view, hold view.`;
 
 const state = {
   ws: null,
@@ -98,6 +100,13 @@ const state = {
   captureContext: null,
   captureSources: [],
   captureDestination: null,
+  promptTemplates: [
+    {
+      id: "soc-design",
+      label: "SoC設計テンプレート",
+      content: DEFAULT_SOC_PROMPT_TEMPLATE,
+    },
+  ],
 };
 
 function selectedLanguage() {
@@ -574,15 +583,15 @@ function normalizeChunkSeconds(value) {
 
 function updateChunkHint(seconds) {
   if (!chunkHintEl) return;
-  if (seconds <= 14) {
+  if (seconds <= 15) {
     chunkHintEl.textContent = "リアルタイム寄り（精度より応答速度優先）";
     return;
   }
-  if (seconds <= 19) {
+  if (seconds <= 30) {
     chunkHintEl.textContent = "バランス（精度と遅延の中間）";
     return;
   }
-  if (seconds <= 24) {
+  if (seconds <= 45) {
     chunkHintEl.textContent = "精度優先（推奨）";
     return;
   }
@@ -1558,6 +1567,32 @@ clearBtn.addEventListener("click", () => {
   clearView();
 });
 
+function renderPromptTemplateButtons(rawTemplates) {
+  if (!promptTemplateButtonsEl || !promptEl) return;
+  const templates = Array.isArray(rawTemplates) && rawTemplates.length > 0
+    ? rawTemplates
+    : state.promptTemplates;
+
+  promptTemplateButtonsEl.innerHTML = "";
+  templates.forEach((template, index) => {
+    const label = String(template?.label || `Template ${index + 1}`).trim();
+    const content = String(template?.content || "").trim();
+    if (!content) return;
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "prompt-template-btn";
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      promptEl.value = content;
+      promptEl.dispatchEvent(new Event("input", { bubbles: true }));
+      promptEl.focus();
+      showToast(`${label}を入力しました`, "success");
+    });
+    promptTemplateButtonsEl.appendChild(button);
+  });
+}
+
 // Download link feedback
 [dlTxt, dlJsonl, dlSrt].forEach((link) => {
   link.addEventListener("click", () => {
@@ -1640,6 +1675,16 @@ async function loadCapabilities() {
     const health = await response.json();
     renderBanners(health.banners);
     applyBranding(health.uiBrandTitle, health.uiBrandTagline);
+    if (Array.isArray(health.uiPromptTemplates) && health.uiPromptTemplates.length > 0) {
+      state.promptTemplates = health.uiPromptTemplates
+        .map((template, index) => ({
+          id: String(template?.id || `template-${index + 1}`),
+          label: String(template?.label || `Template ${index + 1}`),
+          content: String(template?.content || "").trim(),
+        }))
+        .filter((template) => template.content);
+    }
+    renderPromptTemplateButtons(state.promptTemplates);
     state.proofreadAvailable = !!health.proofreadModel;
     state.diarizationAvailable = !!health.diarizationEnabled;
 
@@ -1692,10 +1737,12 @@ async function loadCapabilities() {
     }
 
     applyDiarizationEnabled(state.diarizationEnabled, { persist: false });
-  } catch {
-    // ignore capability check errors
-  }
+} catch {
+  // ignore capability check errors
 }
+}
+
+renderPromptTemplateButtons(state.promptTemplates);
 
 // Initialize empty states
 updateSegmentCount();
