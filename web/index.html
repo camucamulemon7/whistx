@@ -8,8 +8,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>whistx</title>
-    <link rel="stylesheet" href="/style.css?v=20260305n" />
-    <script type="module" src="/main.js?v=20260305k"></script>
+    <link rel="stylesheet" href="/style.css?v=20260305o" />
+    <script type="module" src="/main.js?v=20260305l"></script>
   </head>
   <body>
     <div class="app">
@@ -162,82 +162,80 @@
 
         <!-- Record Control -->
         <section class="record-section reveal delay-1">
-          <!-- Audio Level Indicator -->
-          <div id="audioLevelIndicator" class="audio-level-indicator" hidden>
-            <div class="audio-bar" style="--delay: 0ms"></div>
-            <div class="audio-bar" style="--delay: 50ms"></div>
-            <div class="audio-bar" style="--delay: 100ms"></div>
-            <div class="audio-bar" style="--delay: 150ms"></div>
-            <div class="audio-bar" style="--delay: 200ms"></div>
-          </div>
-
-          <button
-            id="startBtn"
-            class="record-btn"
-            type="button"
-            aria-label="録音を開始"
-            aria-describedby="recordBtnHint"
-          >
-            <div class="record-btn-inner">
-              <svg class="record-icon" width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
-                <circle cx="12" cy="12" r="6"/>
-              </svg>
-              <svg class="stop-icon" width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="6" y="6" width="12" height="12" rx="2"/>
-              </svg>
+          <div class="record-hero">
+            <!-- Audio Level Indicator -->
+            <div id="audioLevelIndicator" class="audio-level-indicator" hidden>
+              <div class="audio-bar" style="--delay: 0ms"></div>
+              <div class="audio-bar" style="--delay: 50ms"></div>
+              <div class="audio-bar" style="--delay: 100ms"></div>
+              <div class="audio-bar" style="--delay: 150ms"></div>
+              <div class="audio-bar" style="--delay: 200ms"></div>
             </div>
-            <span class="record-label">録音開始</span>
-          </button>
-          <span id="recordBtnHint" class="sr-only">タップでマイクからの録音を開始します</span>
 
-          <button id="stopBtn" class="stop-btn hidden" type="button" aria-label="録音を停止">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="6" y="6" width="12" height="12" rx="2"/>
-            </svg>
-            <span>停止</span>
-          </button>
-
-          <!-- Chunk Settings -->
-          <div class="chunk-settings glass-panel">
-            <div class="chunk-header">
-              <span class="chunk-label">チャンク秒数</span>
-              <span id="chunkHint" class="chunk-hint">精度重視</span>
-            </div>
-            <div class="chunk-controls">
-              <input
-                id="chunkSeconds"
-                type="number"
-                min="12"
-                max="30"
-                step="1"
-                value="20"
-                class="chunk-input"
-                aria-label="チャンク秒数"
-              />
-              <div class="chunk-presets" role="group" aria-label="チャンクプリセット">
-                <button type="button" class="chunk-chip" data-chunk-preset="12">12s</button>
-                <button type="button" class="chunk-chip" data-chunk-preset="16">16s</button>
-                <button type="button" class="chunk-chip is-active" data-chunk-preset="20">20s</button>
-                <button type="button" class="chunk-chip" data-chunk-preset="24">24s</button>
-                <button type="button" class="chunk-chip" data-chunk-preset="30">30s</button>
+            <button
+              id="startBtn"
+              class="record-btn"
+              type="button"
+              aria-label="録音を開始"
+              aria-describedby="recordBtnHint"
+            >
+              <div class="record-btn-inner">
+                <svg class="record-icon" width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="12" cy="12" r="6"/>
+                </svg>
+                <svg class="stop-icon" width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="6" width="12" height="12" rx="2"/>
+                </svg>
               </div>
-            </div>
-            <p class="chunk-description">長いほど精度向上・遅延増加</p>
+              <span class="record-label">録音開始</span>
+            </button>
+            <span id="recordBtnHint" class="sr-only">タップでマイクからの録音を開始します</span>
           </div>
 
-          <!-- Prompt Input -->
-          <div class="prompt-section glass-panel">
-            <label for="prompt" class="prompt-label">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-              </svg>
-              コンテキストプロンプト
-            </label>
-            <textarea
-              id="prompt"
-              rows="2"
-              placeholder="固有名詞や専門用語を入力すると認識精度が向上します"
-            ></textarea>
+          <!-- Options Grid -->
+          <div class="record-options-grid">
+            <!-- Chunk Settings -->
+            <div class="chunk-settings glass-panel">
+              <div class="chunk-header">
+                <span class="chunk-label">チャンク秒数</span>
+                <span id="chunkHint" class="chunk-hint">精度重視</span>
+              </div>
+              <div class="chunk-controls">
+                <input
+                  id="chunkSeconds"
+                  type="number"
+                  min="12"
+                  max="30"
+                  step="1"
+                  value="20"
+                  class="chunk-input"
+                  aria-label="チャンク秒数"
+                />
+                <div class="chunk-presets" role="group" aria-label="チャンクプリセット">
+                  <button type="button" class="chunk-chip" data-chunk-preset="12">12s</button>
+                  <button type="button" class="chunk-chip" data-chunk-preset="16">16s</button>
+                  <button type="button" class="chunk-chip is-active" data-chunk-preset="20">20s</button>
+                  <button type="button" class="chunk-chip" data-chunk-preset="24">24s</button>
+                  <button type="button" class="chunk-chip" data-chunk-preset="30">30s</button>
+                </div>
+              </div>
+              <p class="chunk-description">長いほど精度向上・遅延増加</p>
+            </div>
+
+            <!-- Prompt Input -->
+            <div class="prompt-section glass-panel">
+              <label for="prompt" class="prompt-label">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                コンテキストプロンプト
+              </label>
+              <textarea
+                id="prompt"
+                rows="2"
+                placeholder="固有名詞や専門用語を入力すると認識精度が向上します"
+              ></textarea>
+            </div>
           </div>
         </section>
 

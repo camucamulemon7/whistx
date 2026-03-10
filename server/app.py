@@ -9,13 +9,14 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .asr import SessionTranscriber
 from .config import settings
 from .diarizer import AudioChunk, PyannoteSpeakerDiarizer, SpeakerTurn
 from .openai_whisper import OpenAIWhisperTranscriber
@@ -27,6 +28,7 @@ from .transcript_store import (
     read_jsonl_records,
     resolve_transcript_path,
 )
+from .voxtral_realtime import VoxtralRealtimeTranscriber
 
 
 logging.basicConfig(
@@ -65,6 +67,7 @@ class LiveSession:
     audio_chunks: list[AudioChunk]
     store: TranscriptStore
     queue: asyncio.Queue[ChunkMessage | None]
+    transcriber: SessionTranscriber
 
 
 class SummarizeRequest(BaseModel):
@@ -77,7 +80,7 @@ class ProofreadRequest(BaseModel):
     language: str | None = None
 
 
-TRANSCRIBER: OpenAIWhisperTranscriber | None = None
+TRANSCRIBER_FACTORY: Callable[[], SessionTranscriber] | None = None
 SUMMARIZER: OpenAISummarizer | None = None
 PROOFREADER: OpenAISummarizer | None = None
 DIARIZER: PyannoteSpeakerDiarizer | None = None
@@ -86,13 +89,9 @@ ACTIVE_SOCKETS: set[WebSocket] = set()
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    global TRANSCRIBER, SUMMARIZER, PROOFREADER, DIARIZER
+    global TRANSCRIBER_FACTORY, SUMMARIZER, PROOFREADER, DIARIZER
 
-    TRANSCRIBER = OpenAIWhisperTranscriber(
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
-        model=settings.asr_model,
-    )
+    TRANSCRIBER_FACTORY = _build_transcriber_factory()
     try:
         SUMMARIZER = OpenAISummarizer(
             api_key=settings.summary_api_key,
@@ -275,7 +274,19 @@ async def ws_transcribe(ws: WebSocket) -> None:
                     await _safe_send(ws, {"type": "error", "message": "already_started"})
                     continue
 
-                session = _create_session(data)
+                try:
+                    session = _create_session(data)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Session creation failed")
+                    await _safe_send(
+                        ws,
+                        {
+                            "type": "error",
+                            "message": "session_create_failed",
+                            "detail": str(exc),
+                        },
+                    )
+                    continue
                 worker_task = asyncio.create_task(_session_worker(ws, session))
 
                 await _safe_send(
@@ -359,115 +370,120 @@ async def ws_transcribe(ws: WebSocket) -> None:
 
 
 async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
-    if TRANSCRIBER is None:
-        await _safe_send(ws, {"type": "error", "message": "transcriber_not_ready"})
-        return
+    try:
+        while True:
+            item = await session.queue.get()
+            if item is None:
+                break
 
-    while True:
-        item = await session.queue.get()
-        if item is None:
-            break
-
-        if session.collect_audio_for_diarization:
-            try:
-                chunk_path = session.store.save_audio_chunk(
-                    seq=item.seq,
-                    mime_type=item.mime_type,
-                    audio_bytes=item.audio_bytes,
-                )
-                session.audio_chunks.append(
-                    AudioChunk(
+            if session.collect_audio_for_diarization:
+                try:
+                    chunk_path = session.store.save_audio_chunk(
                         seq=item.seq,
-                        path=chunk_path,
-                        offset_ms=item.offset_ms,
-                        duration_ms=item.duration_ms,
+                        mime_type=item.mime_type,
+                        audio_bytes=item.audio_bytes,
                     )
+                    session.audio_chunks.append(
+                        AudioChunk(
+                            seq=item.seq,
+                            path=chunk_path,
+                            offset_ms=item.offset_ms,
+                            duration_ms=item.duration_ms,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Chunk save failed for diarization: session=%s seq=%s err=%s",
+                        session.session_id,
+                        item.seq,
+                        exc,
+                    )
+
+            try:
+                prompt = _build_prompt(session)
+                result = await asyncio.to_thread(
+                    session.transcriber.transcribe_chunk,
+                    item.audio_bytes,
+                    mime_type=item.mime_type,
+                    language=session.language,
+                    prompt=prompt,
+                    temperature=session.temperature,
                 )
             except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Chunk save failed for diarization: session=%s seq=%s err=%s",
-                    session.session_id,
-                    item.seq,
-                    exc,
+                logger.exception("Transcription failed: session=%s seq=%s", session.session_id, item.seq)
+                await _safe_send(
+                    ws,
+                    {
+                        "type": "error",
+                        "message": "transcription_failed",
+                        "seq": item.seq,
+                        "detail": str(exc),
+                    },
                 )
+                continue
 
-        try:
-            prompt = _build_prompt(session)
-            result = await asyncio.to_thread(
-                TRANSCRIBER.transcribe_chunk,
-                item.audio_bytes,
-                mime_type=item.mime_type,
+            text = result.text.strip()
+            text = _sanitize_transcript_text(text)
+            if not text:
+                await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
+                continue
+
+            if _is_near_duplicate(text, session.last_emitted_text):
+                await _safe_send(
+                    ws,
+                    {"type": "ack", "seq": item.seq, "duplicate": True},
+                )
+                continue
+
+            ts_start = item.offset_ms + (result.start_ms or 0)
+            if result.end_ms is not None:
+                ts_end = item.offset_ms + result.end_ms
+            else:
+                ts_end = item.offset_ms + max(item.duration_ms, 600)
+
+            if ts_end < ts_start:
+                ts_end = ts_start
+
+            record = TranscriptRecord(
+                type="final",
+                segmentId=f"{item.seq:06d}",
+                seq=item.seq,
+                text=text,
+                tsStart=ts_start,
+                tsEnd=ts_end,
+                chunkOffsetMs=item.offset_ms,
+                chunkDurationMs=item.duration_ms,
                 language=session.language,
-                prompt=prompt,
-                temperature=session.temperature,
+                createdAt=datetime.now(timezone.utc).isoformat(),
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Transcription failed: session=%s seq=%s", session.session_id, item.seq)
+            session.store.append_final(record)
+            session.last_emitted_text = text
+            _append_context(session, text)
+
             await _safe_send(
                 ws,
                 {
-                    "type": "error",
-                    "message": "transcription_failed",
-                    "seq": item.seq,
-                    "detail": str(exc),
+                    "type": "final",
+                    "segmentId": record.segmentId,
+                    "seq": record.seq,
+                    "text": record.text,
+                    "tsStart": record.tsStart,
+                    "tsEnd": record.tsEnd,
+                    "speaker": record.speaker,
                 },
             )
-            continue
-
-        text = result.text.strip()
-        text = _sanitize_transcript_text(text)
-        if not text:
-            await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
-            continue
-
-        if _is_near_duplicate(text, session.last_emitted_text):
-            await _safe_send(
-                ws,
-                {"type": "ack", "seq": item.seq, "duplicate": True},
-            )
-            continue
-
-        ts_start = item.offset_ms + (result.start_ms or 0)
-        if result.end_ms is not None:
-            ts_end = item.offset_ms + result.end_ms
-        else:
-            ts_end = item.offset_ms + max(item.duration_ms, 600)
-
-        if ts_end < ts_start:
-            ts_end = ts_start
-
-        record = TranscriptRecord(
-            type="final",
-            segmentId=f"{item.seq:06d}",
-            seq=item.seq,
-            text=text,
-            tsStart=ts_start,
-            tsEnd=ts_end,
-            chunkOffsetMs=item.offset_ms,
-            chunkDurationMs=item.duration_ms,
-            language=session.language,
-            createdAt=datetime.now(timezone.utc).isoformat(),
-        )
-        session.store.append_final(record)
-        session.last_emitted_text = text
-        _append_context(session, text)
-
-        await _safe_send(
-            ws,
-            {
-                "type": "final",
-                "segmentId": record.segmentId,
-                "seq": record.seq,
-                "text": record.text,
-                "tsStart": record.tsStart,
-                "tsEnd": record.tsEnd,
-                "speaker": record.speaker,
-            },
-        )
+    finally:
+        try:
+            await asyncio.to_thread(session.transcriber.close)
+        except Exception:  # noqa: BLE001
+            logger.debug("session transcriber close failed: session=%s", session.session_id, exc_info=True)
 
 
 
 def _create_session(payload: dict[str, Any]) -> LiveSession:
+    if TRANSCRIBER_FACTORY is None:
+        raise RuntimeError("transcriber_not_ready")
+
     base_session_id = TranscriptStore.sanitize_or_generate(_as_str(payload.get("sessionId")))
     runtime_session_id = TranscriptStore.make_runtime_session_id(base_session_id)
 
@@ -495,7 +511,29 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         audio_chunks=[],
         store=TranscriptStore(settings.transcripts_dir, runtime_session_id),
         queue=asyncio.Queue(maxsize=settings.max_queue_size),
+        transcriber=TRANSCRIBER_FACTORY(),
     )
+
+
+def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
+    if _use_realtime_asr(settings.asr_model):
+        return lambda: VoxtralRealtimeTranscriber(
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+            model=settings.asr_model,
+            ffmpeg_bin=settings.ffmpeg_bin,
+        )
+
+    return lambda: OpenAIWhisperTranscriber(
+        api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
+        model=settings.asr_model,
+    )
+
+
+def _use_realtime_asr(model: str) -> bool:
+    lowered = (model or "").strip().lower()
+    return "voxtral" in lowered and "realtime" in lowered
 
 
 def _build_prompt(session: LiveSession) -> str | None:

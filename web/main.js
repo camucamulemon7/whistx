@@ -6,6 +6,8 @@ const bannersContainerEl = $("#bannersContainer");
 const brandTitleEl = $("#brandTitle");
 const brandTaglineEl = $("#brandTagline");
 const themeToggleBtn = $("#themeToggle");
+const audioLevelIndicatorEl = $("#audioLevelIndicator");
+const audioBarEls = Array.from(document.querySelectorAll("#audioLevelIndicator .audio-bar"));
 
 const languageEl = $("#language");
 const audioSourceEl = $("#audioSource");
@@ -23,7 +25,6 @@ const chunkHintEl = $("#chunkHint");
 const presetButtons = Array.from(document.querySelectorAll("[data-chunk-preset]"));
 
 const startBtn = $("#startBtn");
-const stopBtn = $("#stopBtn");
 const summaryBtn = $("#summaryBtn");
 const proofreadBtn = $("#proofreadBtn");
 const copyBtn = $("#copyBtn");
@@ -52,6 +53,9 @@ const VAD_SAMPLE_MS = 80;
 const VAD_RMS_THRESHOLD = 0.01;
 const VAD_MIN_SPEECH_RATIO = 0.06;
 const VAD_MIN_ACTIVE_MS = 160;
+const AUDIO_LEVEL_NOISE_FLOOR = 0.0025;
+const AUDIO_LEVEL_GAIN = 22;
+const AUDIO_LEVEL_EXPONENT = 0.65;
 
 const state = {
   ws: null,
@@ -90,6 +94,7 @@ const state = {
   vadTimer: null,
   vadFrameCount: 0,
   vadSpeechFrameCount: 0,
+  audioLevel: 0,
   captureContext: null,
   captureSources: [],
   captureDestination: null,
@@ -602,9 +607,11 @@ function setUiRecording(active) {
   state.recording = active;
 
   // Audio level indicator
-  const audioLevelIndicator = $("#audioLevelIndicator");
-  if (audioLevelIndicator) {
-    audioLevelIndicator.hidden = !active;
+  if (audioLevelIndicatorEl) {
+    audioLevelIndicatorEl.hidden = !active;
+  }
+  if (!active) {
+    renderAudioLevel(0);
   }
 
   // Update record button state
@@ -617,7 +624,6 @@ function setUiRecording(active) {
   }
 
   startBtn.disabled = false; // Always enabled to allow stop
-  stopBtn.disabled = !active;
 }
 
 function normalizeAudioSource(value) {
@@ -865,6 +871,19 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+function renderAudioLevel(level) {
+  const normalized = Math.max(0, Math.min(1, Number(level) || 0));
+  state.audioLevel = normalized;
+  if (!audioBarEls.length) return;
+
+  audioBarEls.forEach((bar, index) => {
+    const offset = index * 0.08;
+    const shaped = Math.max(0.16, Math.min(1, normalized * (0.82 + offset)));
+    bar.style.setProperty("--level", shaped.toFixed(3));
+    bar.style.setProperty("--glow", Math.max(0.18, normalized).toFixed(3));
+  });
+}
+
 function sampleVad() {
   if (!state.vadAnalyser || !state.vadBuffer) return;
 
@@ -877,6 +896,10 @@ function sampleVad() {
   }
 
   const rms = Math.sqrt(sum / state.vadBuffer.length);
+  const leveled = Math.max(0, rms - AUDIO_LEVEL_NOISE_FLOOR);
+  const boosted = Math.min(1, Math.pow(leveled * AUDIO_LEVEL_GAIN, AUDIO_LEVEL_EXPONENT));
+  const smoothed = state.audioLevel * 0.72 + boosted * 0.28;
+  renderAudioLevel(smoothed);
   state.vadFrameCount += 1;
   if (rms >= VAD_RMS_THRESHOLD) {
     state.vadSpeechFrameCount += 1;
@@ -948,6 +971,8 @@ function stopVad() {
   state.vadBuffer = null;
   state.vadFrameCount = 0;
   state.vadSpeechFrameCount = 0;
+  state.audioLevel = 0;
+  renderAudioLevel(0);
 }
 
 function cleanupCaptureGraph() {
@@ -1489,10 +1514,6 @@ startBtn.addEventListener("click", () => {
   }
 });
 
-stopBtn.addEventListener("click", () => {
-  stopRecording();
-});
-
 if (summaryBtn) {
   summaryBtn.addEventListener("click", () => {
     summarizeAll();
@@ -1522,37 +1543,54 @@ clearBtn.addEventListener("click", () => {
 /* --------------------------------------------------------------------------
    Theme Toggle - Light/Dark Mode
    -------------------------------------------------------------------------- */
-function initTheme() {
-  const savedTheme = localStorage.getItem("whistx_theme");
-  if (savedTheme) {
-    document.documentElement.setAttribute("data-theme", savedTheme);
-    updateThemeColorMeta(savedTheme);
-  } else {
-    // Use system preference
-    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const systemTheme = prefersDark ? "dark" : "light";
-    document.documentElement.setAttribute("data-theme", systemTheme);
-    updateThemeColorMeta(systemTheme);
+function normalizeTheme(value) {
+  return value === "dark" ? "dark" : "light";
+}
+
+function applyTheme(theme, options = {}) {
+  const persist = options.persist !== false;
+  const normalized = normalizeTheme(theme);
+  document.documentElement.setAttribute("data-theme", normalized);
+  if (persist) {
+    try {
+      localStorage.setItem("whistx_theme", normalized);
+    } catch {
+      // ignore
+    }
   }
+  updateThemeColorMeta(normalized);
+  return normalized;
+}
+
+function initTheme() {
+  let savedTheme = "";
+  try {
+    savedTheme = localStorage.getItem("whistx_theme") || "";
+  } catch {
+    savedTheme = "";
+  }
+
+  if (savedTheme === "light" || savedTheme === "dark") {
+    applyTheme(savedTheme, { persist: false });
+    return;
+  }
+
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  applyTheme(prefersDark ? "dark" : "light", { persist: false });
 }
 
 function updateThemeColorMeta(theme) {
-  const metaThemeColor = document.querySelector('meta[name="theme-color"][media*="(prefers-color-scheme: light)"]');
-  if (metaThemeColor) {
-    metaThemeColor.setAttribute(
-      "content",
-      theme === "dark" ? "#0a0a0a" : "#f5f5f7"
-    );
-  }
+  const color = theme === "dark" ? "#0a0a0a" : "#f5f5f7";
+  const metaThemeColors = document.querySelectorAll('meta[name="theme-color"]');
+  metaThemeColors.forEach((meta) => {
+    meta.setAttribute("content", color);
+  });
 }
 
 function toggleTheme() {
-  const currentTheme = document.documentElement.getAttribute("data-theme") || "light";
+  const currentTheme = normalizeTheme(document.documentElement.getAttribute("data-theme") || "light");
   const newTheme = currentTheme === "dark" ? "light" : "dark";
-
-  document.documentElement.setAttribute("data-theme", newTheme);
-  localStorage.setItem("whistx_theme", newTheme);
-  updateThemeColorMeta(newTheme);
+  applyTheme(newTheme, { persist: true });
 
   // Show toast
   const themeName = newTheme === "dark" ? "ダークモード" : "ライトモード";

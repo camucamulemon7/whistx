@@ -190,6 +190,49 @@
   }
 }
 
+/* Manual Theme Priority (override system preference when toggled) */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-primary: var(--white);
+  --bg-secondary: var(--gray-50);
+  --bg-tertiary: var(--gray-100);
+  --bg-elevated: var(--white);
+  --bg-backdrop: rgba(255, 255, 255, 0.8);
+  --text-primary: var(--gray-900);
+  --text-secondary: var(--gray-600);
+  --text-tertiary: var(--gray-400);
+  --text-placeholder: var(--gray-400);
+  --border-primary: var(--gray-200);
+  --border-secondary: var(--gray-100);
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.5);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.04);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-primary: var(--gray-950);
+  --bg-secondary: var(--gray-900);
+  --bg-tertiary: var(--gray-800);
+  --bg-elevated: var(--gray-900);
+  --bg-backdrop: rgba(10, 10, 10, 0.85);
+  --text-primary: var(--gray-50);
+  --text-secondary: var(--gray-400);
+  --text-tertiary: var(--gray-500);
+  --text-placeholder: var(--gray-600);
+  --border-primary: var(--gray-800);
+  --border-secondary: var(--gray-700);
+  --glass-bg: rgba(23, 23, 23, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.2);
+}
+
 /* --------------------------------------------------------------------------
    Base Reset - World Class Foundation
    -------------------------------------------------------------------------- */
@@ -737,6 +780,53 @@ body {
   .notice-error { color: #fca5a5; }
 }
 
+html[data-theme="dark"] .notice-info,
+html[data-theme="dark"] .notice-success,
+html[data-theme="dark"] .notice-warning,
+html[data-theme="dark"] .notice-error {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+html[data-theme="dark"] .notice-info {
+  background: rgba(37, 99, 235, 0.18);
+  border-color: rgba(96, 165, 250, 0.28);
+  color: #bfdbfe;
+}
+
+html[data-theme="dark"] .notice-success {
+  background: rgba(22, 163, 74, 0.18);
+  border-color: rgba(74, 222, 128, 0.28);
+  color: #bbf7d0;
+}
+
+html[data-theme="dark"] .notice-warning {
+  background: rgba(217, 119, 6, 0.18);
+  border-color: rgba(251, 191, 36, 0.28);
+  color: #fde68a;
+}
+
+html[data-theme="dark"] .notice-error {
+  background: rgba(220, 38, 38, 0.18);
+  border-color: rgba(248, 113, 113, 0.28);
+  color: #fecaca;
+}
+
+html[data-theme="dark"] .notice-banner-body {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+html[data-theme="dark"] .notice-banner-title {
+  color: currentColor;
+}
+
+html[data-theme="dark"] .notice-banner-close {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+html[data-theme="dark"] .notice-banner-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 /* --------------------------------------------------------------------------
    Settings Panel - Clean & Organized
    -------------------------------------------------------------------------- */
@@ -930,8 +1020,25 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-8);
-  padding: var(--space-6) 0;
+  gap: var(--space-6);
+  padding: var(--space-8) 0;
+}
+
+/* Record Hero - Centered Button Area */
+.record-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* Record Options Grid - Side by Side */
+.record-options-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: 900px;
 }
 
 .record-btn {
@@ -1660,6 +1767,11 @@ body {
   .downloads-bar {
     flex-wrap: wrap;
   }
+
+  /* Record Options Grid - Stack on Mobile */
+  .record-options-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 480px) {
@@ -1970,9 +2082,10 @@ img, svg {
 .audio-level-indicator {
   display: flex;
   align-items: center;
-  gap: 3px;
-  height: 32px;
-  padding: 0 var(--space-4);
+  justify-content: center;
+  gap: 4px;
+  height: 24px;
+  margin-top: var(--space-3);
 }
 
 .audio-level-indicator[hidden] {
@@ -1980,29 +2093,27 @@ img, svg {
 }
 
 .audio-bar {
+  --level: 0.18;
+  --glow: 0.18;
   width: 4px;
   height: 100%;
   background: linear-gradient(180deg, var(--accent-400), var(--accent-600));
-  border-radius: 2px;
+  border-radius: 999px;
   transform-origin: bottom;
-  animation: audioWave 1.2s ease-in-out infinite;
-  animation-delay: var(--delay, 0ms);
-}
-
-@keyframes audioWave {
-  0%, 100% {
-    transform: scaleY(0.3);
-    opacity: 0.5;
-  }
-  50% {
-    transform: scaleY(1);
-    opacity: 1;
-  }
+  transform: scaleY(var(--level));
+  opacity: calc(0.28 + var(--glow) * 0.72);
+  box-shadow: 0 0 calc(10px * var(--glow)) rgba(59, 130, 246, 0.45);
+  transition:
+    transform 90ms linear,
+    opacity 90ms linear,
+    box-shadow 120ms ease-out,
+    background 180ms ease-out;
 }
 
 /* Recording state audio indicator */
-.record-btn.is-recording ~ .audio-level-indicator .audio-bar {
+.record-section:has(.record-btn.is-recording) .audio-bar {
   background: linear-gradient(180deg, #fca5a5, #ef4444);
+  box-shadow: 0 0 calc(12px * var(--glow)) rgba(239, 68, 68, 0.42);
 }
 
 /* Brand Icon Pulse Animation */
@@ -2075,7 +2186,11 @@ body:has(.record-btn.is-recording) .brand-icon-pulse {
 
 /* Smooth Dark Mode Transition */
 html {
-  color-scheme: light dark;
+  color-scheme: light;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 body,
