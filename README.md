@@ -1,56 +1,84 @@
 # whistx
 
-`whistx` is a real-time transcription app built on an OpenAI-compatible transcription API.
-It captures browser audio, sends chunked audio over WebSocket, transcribes on the server, and streams finalized segments back to the UI.
+`whistx` is a browser-based transcription app built around an OpenAI-compatible ASR API.
+It records microphone audio, shared screen audio, or both, sends chunked audio to a FastAPI backend, and streams finalized transcript segments back to the UI.
 
-## Features
+## What It Does
 
-- Real-time chunk-based transcription using an OpenAI-compatible ASR model
-- Context carry-over between chunks for better continuity
-- Built-in silence handling
-  - Client-side lightweight VAD (skip silent chunks)
-  - Server-side hallucination suppression for common silence artifacts
-- Audio source selection in UI
+- Real-time chunk-based transcription over WebSocket
+- OpenAI-compatible ASR backend support
+  - OpenAI `whisper-1`
+  - OpenAI-compatible Whisper deployments
+  - Other compatible backends configured via `ASR_BASE_URL` / `ASR_MODEL`
+- Audio source selection
   - Microphone
-  - Display audio (screen/tab share audio)
-  - Microphone + display audio mix
+  - Screen/tab audio
+  - Microphone + screen audio mix
+- Context carry-over between chunks
+- Client-side VAD-assisted chunk finalization
+- Audio preprocessing before ASR
 - Transcript export
-  - TXT
-  - JSONL
-  - SRT
-- Optional speaker diarization using `pyannote.audio`
-  - Segment-level speaker labels (`SPK_00`, `SPK_01`, ...)
-  - Speaker labels are applied after recording stops
-  - UI toggle to enable/disable diarization per session
-- One-click LLM summary from transcript text (`/api/summarize`)
-- One-click LLM proofreading/correction (`/api/proofread`)
-  - Rendered in a separate panel next to Transcript (desktop layout)
+  - `txt`
+  - `jsonl`
+  - `srt`
+- Optional speaker diarization with `pyannote.audio`
+- Optional transcript summarization with an LLM backend
+- Optional transcript proofreading with an LLM backend
 
-## Architecture
+## Current Architecture
 
-- **Frontend**: static files in `web/`
-  - Uses `MediaRecorder` + WebSocket
-  - Creates fixed-size chunks (default 20s, configurable 12-30s)
-- **Backend**: FastAPI in `server/`
-  - `/ws/transcribe`: receives chunks, calls OpenAI transcription API, emits final segments
-  - `/api/summarize`: summarizes transcript text with a chat model
-  - `/api/proofread`: proofreads transcript text with a chat model
-  - `/api/transcript/{session_id}.{txt|jsonl|srt}`: download outputs
+### Frontend
+
+Files: [`web/`](./web)
+
+- Uses `MediaRecorder` and WebSocket
+- Captures audio from the selected source
+- Uses lightweight RMS-based VAD in the browser
+- Finalizes chunks with this policy:
+  - keep recording until a minimum segment length is reached
+  - cut earlier when silence is detected
+  - force cut at the configured max chunk length
+- Sends `start`, `chunk`, and `stop` messages to the backend
+
+### Backend
+
+Files: [`server/`](./server)
+
+- FastAPI application
+- `ws://.../ws/transcribe` receives audio chunks and returns finalized transcript segments
+- Applies audio preprocessing with `ffmpeg`
+- Maintains short context memory per session
+  - recent transcript lines
+  - extracted key terms
+- Writes transcript artifacts to disk
+- Can run post-session diarization
+- Exposes REST endpoints for summary and proofreading
+
+### ASR Flow
+
+1. Browser records a chunk
+2. Backend decodes and preprocesses audio
+3. Backend appends a small overlap from the previous chunk
+4. Backend sends the chunk to the configured ASR API
+5. Finalized text is normalized and stored
+6. UI updates immediately with final segments
 
 ## Requirements
 
 - Python 3.10+
-- Chrome or Edge (latest recommended)
-- ASR API key (`ASR_API_KEY`, OpenAI-compatible)
-- (Optional for diarization) Hugging Face token with access to `pyannote/speaker-diarization-3.1`
+- `ffmpeg`
+- Chrome or Edge recommended
+- OpenAI-compatible ASR API key
+- Optional for diarization:
+  - Hugging Face token with access to `pyannote/speaker-diarization-3.1`
+  - compatible `torch` / `torchaudio`
 
-## Quick Start (Local)
+## Quick Start
+
+### Local
 
 ```bash
-# from repository root
 cp .env.example .env
-# Set ASR_API_KEY in .env
-# If you use local vLLM, set ASR_BASE_URL and ASR_MODEL as well
 ./run.sh
 ```
 
@@ -58,193 +86,137 @@ Then open:
 
 - `http://localhost:8005`
 
-## Quick Start (Docker)
+### Docker
 
 ```bash
-# from repository root
 cp .env.example .env
-# Set ASR_API_KEY in .env
-# If you use local vLLM, set ASR_BASE_URL and ASR_MODEL as well
 ./start.sh
 ```
 
-For Podman:
+### Podman (rootless)
 
 ```bash
+cp .env.example .env
 ./podman-run.sh
 ```
 
-`podman-run.sh` is prepared for rootless Podman.
+## Minimal Configuration
 
-## Environment Variables
+At minimum, set these in `.env`:
 
-Required:
+```env
+ASR_API_KEY=your_api_key
+```
+
+If you use an OpenAI-compatible local or self-hosted backend, also set:
+
+```env
+ASR_BASE_URL=http://localhost:8000/v1
+ASR_MODEL=whisper-1
+```
+
+## Important Environment Variables
+
+### ASR
 
 - `ASR_API_KEY`
-
-Important optional settings:
-
-- `ASR_BASE_URL` (default: OpenAI)
-- `ASR_MODEL` (default: `mistralai/Voxtral-Mini-4B-Realtime-2602`)
-- `ASR_DEFAULT_LANGUAGE` (default: `ja`)
+- `ASR_BASE_URL`
+- `ASR_MODEL`
+- `ASR_DEFAULT_LANGUAGE`
 - `ASR_DEFAULT_PROMPT`
-- `ASR_DEFAULT_TEMPERATURE` (default: `0.0`)
-- `ASR_CONTEXT_PROMPT_ENABLED` (default: `1`)
-- `ASR_CONTEXT_MAX_CHARS` (default: `1000`)
-- `ASR_MAX_QUEUE_SIZE` (default: `8`)
-- `ASR_MAX_CHUNK_BYTES` (default: `12582912`)
+- `ASR_DEFAULT_TEMPERATURE`
+- `ASR_PREPROCESS_ENABLED`
+- `ASR_PREPROCESS_SAMPLE_RATE`
+- `ASR_OVERLAP_MS`
+- `ASR_CONTEXT_PROMPT_ENABLED`
+- `ASR_CONTEXT_MAX_CHARS`
+- `ASR_CONTEXT_RECENT_LINES`
+- `ASR_CONTEXT_TERM_LIMIT`
+- `ASR_MAX_QUEUE_SIZE`
+- `ASR_MAX_CHUNK_BYTES`
 
-Summary settings:
+### UI
 
-- `SUMMARY_API_KEY` (falls back to `ASR_API_KEY`)
-- `SUMMARY_BASE_URL` (falls back to `ASR_BASE_URL`)
-- `SUMMARY_MODEL` (default: `gpt-4o-mini`)
-- `SUMMARY_TEMPERATURE` (default: `0.2`)
-- `SUMMARY_INPUT_MAX_CHARS` (default: `16000`)
-- `SUMMARY_SYSTEM_PROMPT` (optional, override system prompt)
-- `SUMMARY_PROMPT_TEMPLATE` (optional, placeholders: `{text}`, `{language}`)
+- `APP_BRAND_TITLE`
+- `APP_BRAND_TAGLINE`
+- `APP_UI_BANNERS`
+- `APP_PROMPT_TEMPLATES`
 
-Proofread settings:
+### Summary
 
-- `PROOFREAD_API_KEY` (falls back to `SUMMARY_API_KEY`, then `ASR_API_KEY`)
-- `PROOFREAD_BASE_URL` (falls back to `SUMMARY_BASE_URL`, then `ASR_BASE_URL`)
-- `PROOFREAD_MODEL` (default: `gpt-4o-mini`)
-- `PROOFREAD_TEMPERATURE` (default: `0.0`)
-- `PROOFREAD_INPUT_MAX_CHARS` (default: `24000`)
-- `PROOFREAD_SYSTEM_PROMPT` (optional, override system prompt)
-- `PROOFREAD_PROMPT_TEMPLATE` (optional, placeholders: `{text}`, `{language}`)
+- `SUMMARY_API_KEY`
+- `SUMMARY_BASE_URL`
+- `SUMMARY_MODEL`
+- `SUMMARY_TEMPERATURE`
+- `SUMMARY_INPUT_MAX_CHARS`
+- `SUMMARY_SYSTEM_PROMPT`
+- `SUMMARY_PROMPT_TEMPLATE`
 
-Prompt template notes:
-- `SUMMARY_PROMPT_TEMPLATE` / `PROOFREAD_PROMPT_TEMPLATE` can use `{text}` and `{language}`.
-- You can write line breaks as `\\n` in `.env`.
+### Proofread
 
-UI banner settings:
+- `PROOFREAD_API_KEY`
+- `PROOFREAD_BASE_URL`
+- `PROOFREAD_MODEL`
+- `PROOFREAD_TEMPERATURE`
+- `PROOFREAD_INPUT_MAX_CHARS`
+- `PROOFREAD_SYSTEM_PROMPT`
+- `PROOFREAD_PROMPT_TEMPLATE`
 
-- `APP_UI_BANNERS` (JSON array, default: empty)
-- `APP_BRAND_TITLE` (default: `whistx`)
-- `APP_BRAND_TAGLINE` (default: `高精度リアルタイム文字起こし`)
+### Diarization
+
+- `DIARIZATION_ENABLED`
+- `DIARIZATION_HF_TOKEN`
+- `DIARIZATION_MODEL`
+- `DIARIZATION_DEVICE`
+- `DIARIZATION_SAMPLE_RATE`
+- `DIARIZATION_NUM_SPEAKERS`
+- `DIARIZATION_MIN_SPEAKERS`
+- `DIARIZATION_MAX_SPEAKERS`
+- `DIARIZATION_WORK_DIR`
+- `DIARIZATION_KEEP_CHUNKS`
+- `DIARIZATION_FFMPEG_BIN`
+- `HF_HUB_DISABLE_XET`
+
+See [`.env.example`](./.env.example) for the full template.
+
+## Prompt Templates
+
+You can define prompt template buttons from `.env`.
 
 Example:
 
 ```env
-APP_UI_BANNERS=[{"id":"notice-1","type":"warning","title":"Notice","message":"Do not input confidential information.","dismissible":true}]
+APP_PROMPT_TEMPLATES=[
+  {"id":"soc","label":"SoC Design","content":"SoC, ASIC, AXI, STA, PnR"},
+  {"id":"nand","label":"NAND","content":"NAND, ONFI, LDPC, BBT"}
+]
 ```
 
-You can also set plain text (non-JSON). In that case it is shown as a single info banner:
+Use `\n` for line breaks inside `.env` values.
 
-```env
-APP_UI_BANNERS=Do not share confidential content in this workspace.
-```
+## Diarization Setup
 
-Diarization settings (`pyannote.audio`):
+To enable speaker diarization:
 
-- `DIARIZATION_ENABLED` (default: `0`)
-- `DIARIZATION_HF_TOKEN` (required when diarization is enabled)
-- `DIARIZATION_MODEL` (default: `pyannote/speaker-diarization-3.1`)
-- `DIARIZATION_DEVICE` (default: `auto`)
-- `DIARIZATION_SAMPLE_RATE` (default: `16000`)
-- `DIARIZATION_NUM_SPEAKERS` (default: `0`, auto)
-- `DIARIZATION_MIN_SPEAKERS` (default: `0`)
-- `DIARIZATION_MAX_SPEAKERS` (default: `0`)
-- `DIARIZATION_WORK_DIR` (default: `data/diarization`)
-- `DIARIZATION_KEEP_CHUNKS` (default: `0`)
-- `HF_HUB_DISABLE_XET` (default: `1` inside app when diarization is used)
-- `DIARIZATION_FFMPEG_BIN` (default: `ffmpeg`)
-
-Runtime settings:
-
-- `APP_HOST` (default: `0.0.0.0`)
-- `APP_PORT` (default: `8005`)
-- `APP_WS_PATH` (default: `/ws/transcribe`)
-- `APP_ENTRYPOINT` (default: `server.app:app`)
-- `APP_DATA_DIR` (default: `./data`)
-- `APP_TRANSCRIPTS_DIR` (optional, default: `APP_DATA_DIR/transcripts`)
-- `CONTAINER_IMAGE_NAME` (default: `whistx:latest`)
-- `PODMAN_USERNS` (default: `keep-id`, used by `podman-run.sh`)
-- `PODMAN_VOLUME_OPTS` (default: `Z`, used by `podman-run.sh`)
-
-Backward-compatible legacy aliases are still supported in the app:
-`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `WHISPER_MODEL`, `HOST`, `PORT`, `WS_PATH`, `DATA_DIR`,
-`DEFAULT_LANGUAGE`, `DEFAULT_PROMPT`, `DEFAULT_TEMPERATURE`, `CONTEXT_PROMPT_ENABLED`,
-`CONTEXT_MAX_CHARS`, `MAX_QUEUE_SIZE`, `MAX_CHUNK_BYTES`, `FFMPEG_BIN`, `UI_BANNERS`,
-`WEBUI_BANNERS`, `APP`, `IMAGE_NAME`, `VENV_DIR`, `SKIP_PIP_INSTALL`.
-
-## Speaker Diarization Setup (pyannote.audio)
-
-1. Accept model terms on Hugging Face for:
+1. Accept the gated model terms on Hugging Face for:
    - `pyannote/speaker-diarization-3.1`
    - `pyannote/segmentation-3.0`
-2. Set `.env`:
+2. Set:
 
 ```env
 DIARIZATION_ENABLED=1
 DIARIZATION_HF_TOKEN=hf_xxx
-# Optional tuning
-DIARIZATION_NUM_SPEAKERS=0
-DIARIZATION_MIN_SPEAKERS=0
-DIARIZATION_MAX_SPEAKERS=0
 ```
 
-3. Restart server (`./run.sh` or container scripts).
+3. Restart the app
 
-You can control speaker count from UI per session:
+Notes:
 
-- `Auto`: let pyannote estimate number of speakers
-- `Fixed`: force a fixed count (e.g. 2)
-- `Range`: constrain min/max speakers
+- Diarization is applied after recording stops
+- Speaker labels are patched into stored transcript records after batch processing
+- When diarization is disabled, speaker-count controls are hidden in the UI
 
-When diarization is OFF, speaker-count controls are hidden in the UI.
-
-When enabled, transcript lines are emitted in real time as before, then speaker labels are patched in after `stop`.
-Exports (`.txt`, `.jsonl`, `.srt`) include speaker labels once diarization completes.
-
-### Troubleshooting diarization
-
-If you see an error related to `torchaudio.AudioMetaData`, your local `torch/torchaudio` is too new for the current pyannote stack.
-
-```bash
-# from repository root
-source .venv/bin/activate
-pip install --upgrade "torch>=2.2,<2.9" "torchaudio>=2.2,<2.9"
-```
-
-Then restart the app.
-
-If you still see `hf_hub_download() got an unexpected keyword argument 'use_auth_token'`
-after updating this repository, reinstall dependencies:
-
-```bash
-# from repository root
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-If diarization fails with `Weights only load failed` / `_pickle.UnpicklingError`
-on `torch>=2.6`, reinstall dependencies and restart:
-
-```bash
-# from repository root
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-If it still fails, remove cached pyannote checkpoints and retry:
-
-```bash
-rm -rf ~/.cache/torch/pyannote
-rm -rf ~/.cache/huggingface/hub/models--pyannote--*
-```
-
-If diarization fails with errors around `NoneType` / `eval` or model download,
-your Hugging Face token likely does not have access to one of the gated models.
-Accept terms for both:
-
-- `pyannote/speaker-diarization-3.1`
-- `pyannote/segmentation-3.0`
-
-Then restart the server.
-
-## API
+## API Endpoints
 
 ### Health
 
@@ -252,32 +224,13 @@ Then restart the server.
 
 ### WebSocket Transcription
 
-- `ws://<host>:<port>/ws/transcribe` (`wss://` when HTTPS)
+- `ws://<host>:<port>/ws/transcribe`
 
 Client messages:
 
-- `start`
-
 ```json
-{"type":"start","sessionId":"sess-xxx","language":"ja","prompt":"domain terms","diarizationEnabled":true}
+{"type":"start","sessionId":"sess-xxx","language":"ja","audioSource":"mic","prompt":"domain terms"}
 ```
-
-Optional diarization parameters in `start`:
-
-```json
-{
-  "type": "start",
-  "diarizationEnabled": true,
-  "diarizationNumSpeakers": 0,
-  "diarizationMinSpeakers": 0,
-  "diarizationMaxSpeakers": 0
-}
-```
-
-- `diarizationNumSpeakers > 0`: fixed speaker count
-- otherwise `diarizationMinSpeakers` / `diarizationMaxSpeakers` are used as range
-
-- `chunk`
 
 ```json
 {
@@ -290,53 +243,42 @@ Optional diarization parameters in `start`:
 }
 ```
 
-- `stop`
-
 ```json
 {"type":"stop"}
 ```
-
-Server messages:
-
-- `info`
-- `final`
-- `error`
-- `conn`
 
 ### Summary
 
 - `POST /api/summarize`
 
-```json
-{
-  "text": "full transcript text",
-  "language": "ja"
-}
-```
-
 ### Proofread
 
 - `POST /api/proofread`
 
-```json
-{
-  "text": "full transcript text",
-  "language": "ja"
-}
-```
+### Transcript Downloads
 
-## Zoom / Webex Notes
+- `/api/transcript/{session_id}.txt`
+- `/api/transcript/{session_id}.jsonl`
+- `/api/transcript/{session_id}.srt`
 
-- Choose **Display audio** or **Mic + Display audio** in the UI.
-- In the browser share dialog, enable audio sharing (for tab share: "Share tab audio").
-- If display sharing stops, recording stops automatically.
+## Notes on Accuracy
+
+Current accuracy-oriented measures include:
+
+- source-aware preprocessing for `mic`, `display`, and `both`
+- overlap between adjacent chunks
+- VAD-assisted chunk finalization
+- short context memory instead of unbounded transcript concatenation
+- Japanese spacing normalization for transcript cleanup
+- repetition suppression for obvious ASR failure cases
 
 ## Security Notes
 
-- Do not commit `.env`.
-- Use `.env.example` as a template.
-- Rotate API keys if accidentally exposed.
+- Do not commit `.env`
+- Treat transcript data as sensitive if it contains internal conversations
+- Rotate API keys immediately if they are exposed
+- Review any banner text or prompt templates before publishing screenshots or demos
 
 ## License
 
-MIT License. See [LICENSE](./LICENSE).
+MIT. See [LICENSE](./LICENSE).
