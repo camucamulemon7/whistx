@@ -55,6 +55,7 @@ class ChunkMessage:
 class LiveSession:
     session_id: str
     language: str | None
+    audio_source: str
     base_prompt: str
     temperature: float
     context_prompt_enabled: bool
@@ -503,6 +504,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
     runtime_session_id = TranscriptStore.make_runtime_session_id(base_session_id)
 
     language = _normalize_asr_language(_as_str(payload.get("language")))
+    audio_source = _normalize_audio_source(_as_str(payload.get("audioSource")))
     prompt = _as_str(payload.get("prompt")) or settings.default_prompt
     temperature = _as_float(payload.get("temperature"), settings.default_temperature)
     diarization_requested = _as_bool(payload.get("diarizationEnabled"), True)
@@ -513,6 +515,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
     return LiveSession(
         session_id=runtime_session_id,
         language=language,
+        audio_source=audio_source,
         base_prompt=prompt,
         temperature=temperature,
         context_prompt_enabled=settings.context_prompt_enabled,
@@ -562,6 +565,8 @@ def _prepare_audio_for_asr(*, session: LiveSession, item: ChunkMessage):
         audio_bytes=item.audio_bytes,
         mime_type=item.mime_type,
         previous_tail_pcm=session.overlap_tail_pcm,
+        chunk_duration_ms=item.duration_ms,
+        source_mode=session.audio_source,
     )
     session.overlap_tail_pcm = prepared.tail_pcm
     return prepared
@@ -965,6 +970,13 @@ def _normalize_asr_language(value: str) -> str | None:
     if not lowered or lowered == "auto":
         return None
     return lowered
+
+
+def _normalize_audio_source(value: str) -> str:
+    lowered = (value or "").strip().lower()
+    if lowered in {"display", "both"}:
+        return lowered
+    return "mic"
 
 
 async def _broadcast_conn_count() -> None:

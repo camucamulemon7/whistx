@@ -447,7 +447,7 @@ def load_settings() -> Settings:
         ),
         asr_preprocess_enabled=_to_bool_alias(True, "ASR_PREPROCESS_ENABLED"),
         asr_preprocess_sample_rate=max(8_000, _to_int_alias(16_000, "ASR_PREPROCESS_SAMPLE_RATE")),
-        asr_overlap_ms=max(0, _to_int_alias(2_500, "ASR_OVERLAP_MS")),
+        asr_overlap_ms=max(0, _to_int_alias(3_500, "ASR_OVERLAP_MS")),
         default_language=_env_first_non_empty("ASR_DEFAULT_LANGUAGE", "DEFAULT_LANGUAGE") or "ja",
         default_prompt=_env_first_non_empty("ASR_DEFAULT_PROMPT", "DEFAULT_PROMPT") or "",
         default_temperature=_to_float_alias(0.0, "ASR_DEFAULT_TEMPERATURE", "DEFAULT_TEMPERATURE"),

@@ -51,7 +51,6 @@ const DIARIZATION_SPEAKER_MIN = 1;
 const DIARIZATION_SPEAKER_MAX = 12;
 
 const VAD_SAMPLE_MS = 80;
-const VAD_RMS_THRESHOLD = 0.01;
 const VAD_MIN_SPEECH_RATIO = 0.06;
 const VAD_MIN_ACTIVE_MS = 160;
 const VAD_SEGMENT_MIN_MS = 12_000;
@@ -100,6 +99,7 @@ const state = {
   vadFrameCount: 0,
   vadSpeechFrameCount: 0,
   vadLastSpeechAt: 0,
+  vadRmsThreshold: 0.01,
   audioLevel: 0,
   segmentStartedAt: 0,
   captureContext: null,
@@ -641,6 +641,7 @@ function applyAudioSource(value) {
   if (audioSourceEl) {
     audioSourceEl.value = source;
   }
+  state.vadRmsThreshold = vadThresholdForSource(source);
   try {
     localStorage.setItem("whistx_audio_source", source);
   } catch {
@@ -649,16 +650,23 @@ function applyAudioSource(value) {
   return source;
 }
 
+function vadThresholdForSource(source) {
+  if (source === "display") return 0.006;
+  if (source === "both") return 0.008;
+  return 0.01;
+}
+
 function hasAudioTrack(stream) {
   return !!stream && stream.getAudioTracks().length > 0;
 }
 
-async function requestMicStream() {
+async function requestMicStream(sourceMode = "mic") {
+  const mixed = sourceMode === "both";
   return navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
+      noiseSuppression: !mixed,
+      autoGainControl: !mixed,
     },
   });
 }
@@ -730,7 +738,7 @@ async function prepareInputStream(sourceMode) {
   const mode = normalizeAudioSource(sourceMode);
 
   if (mode === "mic") {
-    const micStream = await requestMicStream();
+    const micStream = await requestMicStream(mode);
     state.micStream = micStream;
     return micStream;
   }
@@ -751,7 +759,7 @@ async function prepareInputStream(sourceMode) {
   }
   bindDisplayEndEvents(displayStream);
 
-  const micStream = await requestMicStream();
+  const micStream = await requestMicStream(mode);
   state.displayStream = displayStream;
   state.micStream = micStream;
   return buildMixedAudioStream([displayStream, micStream]);
@@ -906,7 +914,7 @@ function sampleVad() {
   const smoothed = state.audioLevel * 0.72 + boosted * 0.28;
   renderAudioLevel(smoothed);
   state.vadFrameCount += 1;
-  if (rms >= VAD_RMS_THRESHOLD) {
+  if (rms >= state.vadRmsThreshold) {
     state.vadSpeechFrameCount += 1;
     state.vadLastSpeechAt = performance.now();
   }
@@ -1218,6 +1226,7 @@ async function startRecording() {
         type: "start",
         sessionId: generateSessionSeed(),
         language: selectedLanguage(),
+        audioSource: selectedAudioSource,
         prompt: promptEl.value.trim(),
         diarizationEnabled: !!(state.diarizationAvailable && state.diarizationEnabled),
         diarizationNumSpeakers: diarizationOptions.diarizationNumSpeakers,

@@ -41,12 +41,14 @@ class AudioPreprocessor:
         audio_bytes: bytes,
         mime_type: str,
         previous_tail_pcm: bytes,
+        chunk_duration_ms: int | None = None,
+        source_mode: str = "mic",
     ) -> PreparedAudio:
-        pcm = self._decode_to_pcm(audio_bytes=audio_bytes, mime_type=mime_type)
-        overlap_pcm = self._trim_tail(previous_tail_pcm)
+        pcm = self._decode_to_pcm(audio_bytes=audio_bytes, mime_type=mime_type, source_mode=source_mode)
+        overlap_pcm = self._trim_tail(previous_tail_pcm, target_ms=self._resolve_overlap_ms(chunk_duration_ms))
         merged_pcm = overlap_pcm + pcm if overlap_pcm else pcm
         overlap_ms_used = self._pcm_bytes_to_ms(len(overlap_pcm))
-        tail_pcm = self._trim_tail(pcm)
+        tail_pcm = self._trim_tail(pcm, target_ms=self._resolve_overlap_ms(chunk_duration_ms))
         wav_bytes = self._encode_wav(merged_pcm)
         return PreparedAudio(
             audio_bytes=wav_bytes,
@@ -55,16 +57,9 @@ class AudioPreprocessor:
             tail_pcm=tail_pcm,
         )
 
-    def _decode_to_pcm(self, *, audio_bytes: bytes, mime_type: str) -> bytes:
+    def _decode_to_pcm(self, *, audio_bytes: bytes, mime_type: str, source_mode: str) -> bytes:
         suffix = _ext_from_mime(mime_type)
-        filters = ["highpass=f=120", "lowpass=f=7600"]
-        if self.enabled:
-            filters.extend(
-                [
-                    "afftdn=nf=-25",
-                    "dynaudnorm=f=150:g=9",
-                ]
-            )
+        filters = self._build_filters(source_mode)
 
         cmd = [
             self.ffmpeg_bin,
@@ -92,13 +87,54 @@ class AudioPreprocessor:
             raise RuntimeError(f"ffmpeg preprocess failed: {stderr or 'unknown error'}")
         return proc.stdout
 
-    def _trim_tail(self, pcm_bytes: bytes) -> bytes:
-        if self.overlap_ms <= 0 or not pcm_bytes:
+    def _build_filters(self, source_mode: str) -> list[str]:
+        mode = (source_mode or "mic").strip().lower()
+        if mode == "display":
+            filters = ["highpass=f=50", "lowpass=f=10000", "volume=1.15"]
+            if self.enabled:
+                filters.append("acompressor=threshold=0.12:ratio=2.2:attack=20:release=180:makeup=1")
+            return filters
+
+        if mode == "both":
+            filters = ["highpass=f=80", "lowpass=f=9200"]
+            if self.enabled:
+                filters.extend(
+                    [
+                        "afftdn=nf=-20",
+                        "dynaudnorm=f=120:g=7",
+                        "acompressor=threshold=0.10:ratio=2.0:attack=15:release=160:makeup=1",
+                    ]
+                )
+            return filters
+
+        filters = ["highpass=f=120", "lowpass=f=7600"]
+        if self.enabled:
+            filters.extend(
+                [
+                    "afftdn=nf=-25",
+                    "dynaudnorm=f=150:g=9",
+                ]
+            )
+        return filters
+
+    def _trim_tail(self, pcm_bytes: bytes, *, target_ms: int) -> bytes:
+        if target_ms <= 0 or not pcm_bytes:
             return b""
-        tail_bytes = self._ms_to_pcm_bytes(self.overlap_ms)
+        tail_bytes = self._ms_to_pcm_bytes(target_ms)
         if tail_bytes <= 0:
             return b""
         return pcm_bytes[-tail_bytes:]
+
+    def _resolve_overlap_ms(self, chunk_duration_ms: int | None) -> int:
+        if self.overlap_ms <= 0:
+            return 0
+        if not chunk_duration_ms or chunk_duration_ms <= 0:
+            return self.overlap_ms
+
+        adaptive = int(round(chunk_duration_ms * 0.14))
+        lower_bound = min(self.overlap_ms, 2_500)
+        upper_bound = max(self.overlap_ms, 4_000)
+        return max(lower_bound, min(upper_bound, adaptive))
 
     def _encode_wav(self, pcm_bytes: bytes) -> bytes:
         with io.BytesIO() as buffer:
