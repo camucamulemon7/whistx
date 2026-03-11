@@ -50,6 +50,8 @@ class Settings:
     default_temperature: float
     context_prompt_enabled: bool
     context_max_chars: int
+    context_recent_lines: int
+    context_term_limit: int
     max_queue_size: int
     max_chunk_bytes: int
     app_brand_title: str
@@ -451,6 +453,8 @@ def load_settings() -> Settings:
         default_temperature=_to_float_alias(0.0, "ASR_DEFAULT_TEMPERATURE", "DEFAULT_TEMPERATURE"),
         context_prompt_enabled=_to_bool_alias(True, "ASR_CONTEXT_PROMPT_ENABLED", "CONTEXT_PROMPT_ENABLED"),
         context_max_chars=max(0, _to_int_alias(1000, "ASR_CONTEXT_MAX_CHARS", "CONTEXT_MAX_CHARS")),
+        context_recent_lines=max(1, _to_int_alias(2, "ASR_CONTEXT_RECENT_LINES")),
+        context_term_limit=max(8, _to_int_alias(48, "ASR_CONTEXT_TERM_LIMIT")),
         max_queue_size=max(1, _to_int_alias(8, "ASR_MAX_QUEUE_SIZE", "MAX_QUEUE_SIZE")),
         max_chunk_bytes=max(
             1024,

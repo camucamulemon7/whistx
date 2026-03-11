@@ -59,7 +59,10 @@ class LiveSession:
     temperature: float
     context_prompt_enabled: bool
     context_max_chars: int
-    context_text: str
+    context_recent_lines: int
+    context_term_limit: int
+    context_history: list[str]
+    context_terms: list[str]
     last_emitted_text: str
     collect_audio_for_diarization: bool
     diarization_num_speakers: int
@@ -514,7 +517,10 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         temperature=temperature,
         context_prompt_enabled=settings.context_prompt_enabled,
         context_max_chars=settings.context_max_chars,
-        context_text="",
+        context_recent_lines=settings.context_recent_lines,
+        context_term_limit=settings.context_term_limit,
+        context_history=[],
+        context_terms=[],
         last_emitted_text="",
         collect_audio_for_diarization=DIARIZER is not None and diarization_requested,
         diarization_num_speakers=diarization_num_speakers,
@@ -566,16 +572,24 @@ def _build_prompt(session: LiveSession) -> str | None:
     if session.base_prompt:
         parts.append(session.base_prompt.strip())
 
-    if session.context_prompt_enabled and session.context_text:
+    if session.context_prompt_enabled and (session.context_history or session.context_terms):
         if (session.language or "").lower().startswith("en"):
             header = "Recent transcript context:"
+            terms_header = "Key terms:"
         elif not session.language:
             header = "Recent transcript context. Keep the same spoken language as the audio:"
+            terms_header = "Key terms from recent transcript:"
         else:
             header = "直前の文字起こし文脈:"
-        parts.append(f"{header}\n{session.context_text}")
+            terms_header = "直前の重要語:"
+        if session.context_history:
+            parts.append(f"{header}\n" + "\n".join(session.context_history))
+        if session.context_terms:
+            parts.append(f"{terms_header}\n" + ", ".join(session.context_terms))
 
     merged = "\n\n".join(part for part in parts if part).strip()
+    if session.context_max_chars > 0 and len(merged) > session.context_max_chars:
+        merged = merged[-session.context_max_chars :].lstrip()
     return merged or None
 
 
@@ -590,14 +604,82 @@ def _append_context(session: LiveSession, text: str) -> None:
     if not cleaned:
         return
 
-    if session.context_text:
-        merged = f"{session.context_text}\n{cleaned}"
-    else:
-        merged = cleaned
+    session.context_history.append(cleaned)
+    session.context_history = session.context_history[-session.context_recent_lines :]
 
-    if len(merged) > session.context_max_chars:
-        merged = merged[-session.context_max_chars :].lstrip()
-    session.context_text = merged
+    merged_terms = _merge_context_terms(
+        existing=session.context_terms,
+        new_terms=_extract_context_terms(cleaned),
+        limit=session.context_term_limit,
+    )
+    session.context_terms = _trim_context_terms_to_budget(
+        terms=merged_terms,
+        max_chars=session.context_max_chars,
+        history=session.context_history,
+    )
+
+
+CONTEXT_LATIN_TERM_RE = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9.+/_-]{1,31}\b")
+CONTEXT_KATAKANA_TERM_RE = re.compile(r"[ァ-ヶー]{3,}")
+CONTEXT_CJK_TERM_RE = re.compile(r"[\u4e00-\u9fff]{2,12}")
+
+
+def _extract_context_terms(text: str) -> list[str]:
+    tokens: list[str] = []
+    for pattern in (CONTEXT_LATIN_TERM_RE, CONTEXT_KATAKANA_TERM_RE, CONTEXT_CJK_TERM_RE):
+        for match in pattern.finditer(text):
+            token = match.group(0).strip(".,:;()[]{}<>\"'")
+            if len(token) < 2:
+                continue
+            if token.isdigit():
+                continue
+            if token.lower() in {"recent", "transcript", "context"}:
+                continue
+            tokens.append(token)
+
+    ranked = sorted(
+        set(tokens),
+        key=lambda item: (
+            0 if re.search(r"[A-Z0-9]", item) else 1,
+            -len(item),
+            item.lower(),
+        ),
+    )
+    return ranked
+
+
+def _merge_context_terms(*, existing: list[str], new_terms: list[str], limit: int) -> list[str]:
+    merged = list(existing)
+    for term in new_terms:
+        merged = [item for item in merged if item != term]
+        merged.append(term)
+    return merged[-limit:]
+
+
+def _trim_context_terms_to_budget(
+    *,
+    terms: list[str],
+    max_chars: int,
+    history: list[str],
+) -> list[str]:
+    if max_chars <= 0:
+        return terms
+
+    history_text = "\n".join(history)
+    budget = max(160, max_chars // 2) - len(history_text)
+    if budget <= 0:
+        return []
+
+    kept: list[str] = []
+    used = 0
+    for term in reversed(terms):
+        add = len(term) + (2 if kept else 0)
+        if used + add > budget:
+            continue
+        kept.append(term)
+        used += add
+    kept.reverse()
+    return kept
 
 
 REPEAT_COLLAPSE_RE = re.compile(r"(.{2,16}?)\1{3,}")

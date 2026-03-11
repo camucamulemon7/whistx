@@ -54,6 +54,9 @@ const VAD_SAMPLE_MS = 80;
 const VAD_RMS_THRESHOLD = 0.01;
 const VAD_MIN_SPEECH_RATIO = 0.06;
 const VAD_MIN_ACTIVE_MS = 160;
+const VAD_SEGMENT_MIN_MS = 12_000;
+const VAD_SEGMENT_MAX_SILENCE_MS = 1_100;
+const VAD_SEGMENT_MIN_SILENCE_MS = 450;
 const AUDIO_LEVEL_NOISE_FLOOR = 0.0025;
 const AUDIO_LEVEL_GAIN = 22;
 const AUDIO_LEVEL_EXPONENT = 0.65;
@@ -96,7 +99,9 @@ const state = {
   vadTimer: null,
   vadFrameCount: 0,
   vadSpeechFrameCount: 0,
+  vadLastSpeechAt: 0,
   audioLevel: 0,
+  segmentStartedAt: 0,
   captureContext: null,
   captureSources: [],
   captureDestination: null,
@@ -309,26 +314,6 @@ function normalizeBannerType(value) {
   return "info";
 }
 
-function bannerDismissKey(id) {
-  return `whistx_banner_dismissed_${id}`;
-}
-
-function isBannerDismissed(id) {
-  try {
-    return localStorage.getItem(bannerDismissKey(id)) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function dismissBanner(id) {
-  try {
-    localStorage.setItem(bannerDismissKey(id), "1");
-  } catch {
-    // ignore
-  }
-}
-
 function renderBanners(rawBanners) {
   if (!bannersContainerEl) return;
 
@@ -345,8 +330,6 @@ function renderBanners(rawBanners) {
     const dismissible = record.dismissible !== false;
 
     if (!message) return;
-    if (dismissible && isBannerDismissed(id)) return;
-
     const node = document.createElement("article");
     node.className = `notice-banner notice-${type}`;
     node.setAttribute("role", "status");
@@ -366,7 +349,6 @@ function renderBanners(rawBanners) {
       closeBtn.setAttribute("aria-label", "バナーを閉じる");
       closeBtn.textContent = "×";
       closeBtn.addEventListener("click", () => {
-        dismissBanner(id);
         node.remove();
         bannersContainerEl.hidden = bannersContainerEl.childElementCount === 0;
       });
@@ -584,18 +566,18 @@ function normalizeChunkSeconds(value) {
 function updateChunkHint(seconds) {
   if (!chunkHintEl) return;
   if (seconds <= 15) {
-    chunkHintEl.textContent = "リアルタイム寄り（精度より応答速度優先）";
+    chunkHintEl.textContent = "短め上限。無音で早めに確定";
     return;
   }
   if (seconds <= 30) {
-    chunkHintEl.textContent = "バランス（精度と遅延の中間）";
+    chunkHintEl.textContent = "バランス。無音で自然に区切る";
     return;
   }
   if (seconds <= 45) {
-    chunkHintEl.textContent = "精度優先（推奨）";
+    chunkHintEl.textContent = "精度優先。長めに文脈を保持";
     return;
   }
-  chunkHintEl.textContent = "最大精度寄り（遅延増）";
+  chunkHintEl.textContent = "最大長。無音が少ない会話向け";
 }
 
 function updatePresetActive(seconds) {
@@ -926,6 +908,7 @@ function sampleVad() {
   state.vadFrameCount += 1;
   if (rms >= VAD_RMS_THRESHOLD) {
     state.vadSpeechFrameCount += 1;
+    state.vadLastSpeechAt = performance.now();
   }
 }
 
@@ -957,6 +940,7 @@ async function setupVad(stream) {
   state.vadBuffer = new Float32Array(analyser.fftSize);
   state.vadFrameCount = 0;
   state.vadSpeechFrameCount = 0;
+  state.vadLastSpeechAt = performance.now();
   state.vadTimer = setInterval(sampleVad, VAD_SAMPLE_MS);
 }
 
@@ -994,6 +978,7 @@ function stopVad() {
   state.vadBuffer = null;
   state.vadFrameCount = 0;
   state.vadSpeechFrameCount = 0;
+  state.vadLastSpeechAt = 0;
   state.audioLevel = 0;
   renderAudioLevel(0);
 }
@@ -1090,18 +1075,53 @@ function clearChunkTimer() {
   }
 }
 
+function minSegmentMs() {
+  return Math.max(Math.min(VAD_SEGMENT_MIN_MS, state.chunkMs), Math.round(state.chunkMs * 0.45));
+}
+
+function shouldCutChunkOnSilence() {
+  if (!state.vadAnalyser || !state.segmentStartedAt) return false;
+
+  const now = performance.now();
+  const elapsedMs = now - state.segmentStartedAt;
+  if (elapsedMs < minSegmentMs()) return false;
+
+  const silenceMs = Math.max(0, now - (state.vadLastSpeechAt || state.segmentStartedAt));
+  if (silenceMs < VAD_SEGMENT_MIN_SILENCE_MS) return false;
+
+  return silenceMs >= Math.min(VAD_SEGMENT_MAX_SILENCE_MS, Math.max(700, Math.round(elapsedMs * 0.18)));
+}
+
+function requestChunkFlush(recorder) {
+  if (!state.recording) return;
+  if (state.recorder !== recorder) return;
+  if (recorder.state !== "recording") return;
+
+  try {
+    recorder.stop();
+  } catch {
+    // ignore
+  }
+}
+
 function scheduleChunkStop(recorder) {
   clearChunkTimer();
-  state.chunkTimer = setTimeout(() => {
-    if (!state.recording) return;
-    if (state.recorder !== recorder) return;
-    if (recorder.state !== "recording") return;
-    try {
-      recorder.stop();
-    } catch {
-      // ignore
+  const check = () => {
+    if (!state.recording || state.recorder !== recorder || recorder.state !== "recording") {
+      clearChunkTimer();
+      return;
     }
-  }, state.chunkMs);
+
+    const elapsedMs = Math.max(0, performance.now() - state.segmentStartedAt);
+    if (elapsedMs >= state.chunkMs || shouldCutChunkOnSilence()) {
+      requestChunkFlush(recorder);
+      return;
+    }
+
+    state.chunkTimer = setTimeout(check, Math.min(250, Math.max(120, VAD_SAMPLE_MS)));
+  };
+
+  state.chunkTimer = setTimeout(check, Math.min(250, Math.max(120, VAD_SAMPLE_MS)));
 }
 
 function startRecorderCycle() {
@@ -1110,6 +1130,8 @@ function startRecorderCycle() {
   const recorder = new MediaRecorder(state.stream, state.recorderOptions || {});
   state.recorder = recorder;
   const cycleStartedAt = performance.now();
+  state.segmentStartedAt = cycleStartedAt;
+  state.vadLastSpeechAt = cycleStartedAt;
   const vadSnapshot = snapshotVadCounters();
 
   recorder.addEventListener("dataavailable", (event) => {
@@ -1158,6 +1180,7 @@ async function finalizeStop() {
     }
     cleanupMedia();
     setUiRecording(false);
+    state.segmentStartedAt = 0;
     state.finalizingStop = false;
   }
 }

@@ -12,10 +12,7 @@ APP_WS_PATH="${APP_WS_PATH:-${WS_PATH:-/ws/transcribe}}"
 DATA_DIR="${APP_DATA_DIR:-${DATA_DIR:-${SCRIPT_DIR}/data}}"
 
 if [[ -f "${ENV_FILE}" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "${ENV_FILE}"
-  set +a
+  eval "$("python3" "${SCRIPT_DIR}/scripts/load_env.py" "${ENV_FILE}")"
 fi
 
 if [[ "${DATA_DIR}" != /* ]]; then
