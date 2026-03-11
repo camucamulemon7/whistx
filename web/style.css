@@ -3,7 +3,7 @@
    Inspired by Apple, Linear, Vercel, Stripe
    ========================================================================== */
 
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
 
 /* --------------------------------------------------------------------------
    Design Tokens - Apple/Linear Grade
@@ -27,17 +27,17 @@
   --gray-900: #171717;
   --gray-950: #0a0a0a;
 
-  /* Accent - Sophisticated Indigo (shifted from generic AI blue) */
-  --accent-50: oklch(0.97 0.02 276);
-  --accent-100: oklch(0.93 0.05 276);
-  --accent-200: oklch(0.85 0.10 276);
-  --accent-300: oklch(0.76 0.14 276);
-  --accent-400: oklch(0.68 0.17 276);
-  --accent-500: oklch(0.61 0.20 276);
-  --accent-600: oklch(0.55 0.22 276);
-  --accent-700: oklch(0.49 0.23 276);
-  --accent-800: oklch(0.43 0.22 276);
-  --accent-900: oklch(0.37 0.20 276);
+  /* Accent - restrained business teal */
+  --accent-50: #eef7f6;
+  --accent-100: #d6ebe7;
+  --accent-200: #b0d8d1;
+  --accent-300: #7fbcb2;
+  --accent-400: #4f9d92;
+  --accent-500: #2f7d73;
+  --accent-600: #24665d;
+  --accent-700: #1d514a;
+  --accent-800: #173f3a;
+  --accent-900: #102d29;
 
   /* Semantic Colors */
   --success: #22c55e;
@@ -49,15 +49,15 @@
   --info: #3b82f6;
   --info-bg: #dbeafe;
 
-  /* Purple for Proofread */
-  --purple-500: #8b5cf6;
-  --purple-600: #7c3aed;
-  --purple-bg: rgba(139, 92, 246, 0.08);
+  /* Proofread accent */
+  --purple-500: #465d7a;
+  --purple-600: #33475f;
+  --purple-bg: rgba(70, 93, 122, 0.08);
 
-  /* Orange for Summary */
-  --orange-500: #f97316;
-  --orange-600: #ea580c;
-  --orange-bg: rgba(249, 115, 22, 0.08);
+  /* Summary accent */
+  --orange-500: #8a5a1f;
+  --orange-600: #6f4717;
+  --orange-bg: rgba(138, 90, 31, 0.08);
 
   /* Theme Colors */
   --bg-primary: var(--white);
@@ -112,8 +112,8 @@
   --space-20: 80px;
 
   /* Typography */
-  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "SF Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+  --font-sans: "IBM Plex Sans JP", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", Consolas, monospace;
 
   --text-2xs: 10px;
   --text-xs: 11px;
@@ -522,6 +522,11 @@ body {
 
 .theme-toggle-btn:active {
   transform: translateY(0) scale(0.95);
+}
+
+.theme-toggle-btn:focus-visible {
+  outline: 2px solid var(--accent-500);
+  outline-offset: 2px;
 }
 
 .theme-icon {
@@ -971,6 +976,11 @@ html[data-theme="dark"] .notice-banner-close:hover {
   transform: translateY(0) scale(0.98);
 }
 
+.record-btn:focus-visible {
+  outline: 3px solid rgba(255, 255, 255, 0.5);
+  outline-offset: 3px;
+}
+
 .record-btn.is-recording {
   background: var(--error);
   box-shadow:
@@ -1075,7 +1085,7 @@ html[data-theme="dark"] .notice-banner-close:hover {
 }
 
 .stop-btn:hover {
-  background: #dc2626;
+  background: var(--error);
   transform: translateY(-1px);
 }
 
@@ -1170,6 +1180,11 @@ html[data-theme="dark"] .notice-banner-close:hover {
   border-color: var(--accent-600);
 }
 
+.chunk-chip:focus-visible {
+  outline: 2px solid var(--accent-500);
+  outline-offset: 2px;
+}
+
 .chunk-description {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
@@ -1177,83 +1192,83 @@ html[data-theme="dark"] .notice-banner-close:hover {
 }
 
 html[data-theme="dark"] .chunk-label {
-  color: #e5e7eb;
+  color: var(--text-primary);
 }
 
 html[data-theme="dark"] .chunk-hint {
-  color: #c4b5fd;
+  color: var(--accent-300);
 }
 
 html[data-theme="dark"] .chunk-input {
-  background: #1f2937;
-  border-color: #4b5563;
-  color: #f9fafb;
+  background: var(--bg-tertiary);
+  border-color: var(--border-primary);
+  color: var(--text-primary);
 }
 
 html[data-theme="dark"] .chunk-input:hover {
-  border-color: #6b7280;
+  border-color: var(--gray-500);
 }
 
 html[data-theme="dark"] .chunk-input:focus {
-  border-color: #8b5cf6;
-  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+  border-color: var(--accent-400);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
 }
 
 html[data-theme="dark"] .chunk-chip {
-  background: #1f2937;
-  border-color: #374151;
-  color: #d1d5db;
+  background: var(--bg-tertiary);
+  border-color: var(--border-secondary);
+  color: var(--text-secondary);
 }
 
 html[data-theme="dark"] .chunk-chip:hover {
-  background: #374151;
-  border-color: #6b7280;
-  color: #f9fafb;
+  background: var(--bg-secondary);
+  border-color: var(--gray-500);
+  color: var(--text-primary);
 }
 
 html[data-theme="dark"] .chunk-chip.is-active {
-  background: #7c3aed;
-  border-color: #8b5cf6;
-  color: #ffffff;
+  background: var(--accent-600);
+  border-color: var(--accent-500);
+  color: var(--white);
 }
 
 html[data-theme="dark"] .chunk-description {
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 
 html[data-theme="dark"] .prompt-label {
-  color: #e5e7eb;
+  color: var(--text-primary);
 }
 
 html[data-theme="dark"] .prompt-template-btn {
-  background: #1f2937;
-  border-color: #374151;
-  color: #d1d5db;
+  background: var(--bg-tertiary);
+  border-color: var(--border-secondary);
+  color: var(--text-secondary);
 }
 
 html[data-theme="dark"] .prompt-template-btn:hover {
-  background: #374151;
-  border-color: #6b7280;
-  color: #f9fafb;
+  background: var(--bg-secondary);
+  border-color: var(--gray-500);
+  color: var(--text-primary);
 }
 
 html[data-theme="dark"] .prompt-section textarea {
-  background: #1f2937;
-  border-color: #4b5563;
-  color: #f9fafb;
+  background: var(--bg-tertiary);
+  border-color: var(--border-primary);
+  color: var(--text-primary);
 }
 
 html[data-theme="dark"] .prompt-section textarea:hover {
-  border-color: #6b7280;
+  border-color: var(--gray-500);
 }
 
 html[data-theme="dark"] .prompt-section textarea:focus {
-  border-color: #8b5cf6;
-  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+  border-color: var(--accent-400);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
 }
 
 html[data-theme="dark"] .prompt-section textarea::placeholder {
-  color: #94a3b8;
+  color: var(--text-placeholder);
 }
 
 /* Prompt Section */
@@ -1328,6 +1343,11 @@ html[data-theme="dark"] .prompt-section textarea::placeholder {
   transform: scale(0.98);
 }
 
+.prompt-template-btn:focus-visible {
+  outline: 2px solid var(--accent-500);
+  outline-offset: 2px;
+}
+
 .prompt-section textarea {
   width: 100%;
   padding: var(--space-4);
@@ -1364,6 +1384,35 @@ html[data-theme="dark"] .prompt-section textarea::placeholder {
   grid-template-columns: 1.25fr 0.75fr;
   gap: var(--space-5);
   align-items: stretch;
+}
+
+/* Narrow Window (Zoom side-by-side) */
+@media (max-width: 960px) {
+  .settings-row {
+    flex-wrap: wrap;
+  }
+
+  .setting-group-toggle {
+    min-width: 140px;
+  }
+
+  .diarization-config-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .record-section {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  .record-hero {
+    position: static;
+    top: auto;
+  }
+
+  .record-options-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 900px) {
@@ -1464,6 +1513,11 @@ html[data-theme="dark"] .prompt-section textarea::placeholder {
   transform: scale(0.95);
 }
 
+.icon-btn:focus-visible {
+  outline: 2px solid var(--accent-500);
+  outline-offset: 2px;
+}
+
 /* Copy Success State */
 .icon-btn.is-success {
   color: var(--accent-600);
@@ -1498,6 +1552,11 @@ html[data-theme="dark"] .prompt-section textarea::placeholder {
 
 .btn-action:active {
   transform: scale(0.98);
+}
+
+.btn-action:focus-visible {
+  outline: 2px solid var(--accent-500);
+  outline-offset: 2px;
 }
 
 .btn-action:disabled {
@@ -1658,14 +1717,19 @@ html[data-theme="dark"] .prompt-section textarea::placeholder {
   transform: scale(0.95);
 }
 
+.download-link:focus-visible {
+  outline: 2px solid var(--accent-500);
+  outline-offset: 2px;
+}
+
 .download-link.is-downloaded {
   color: var(--accent-600);
   background: var(--accent-50);
 }
 
 html[data-theme="dark"] .icon-btn.is-success {
-  color: #c4b5fd;
-  background: rgba(124, 58, 237, 0.16);
+  color: var(--accent-200);
+  background: rgba(47, 125, 115, 0.16);
 }
 
 html[data-theme="dark"] .downloads-label {
@@ -1678,12 +1742,12 @@ html[data-theme="dark"] .download-link {
 
 html[data-theme="dark"] .download-link:hover {
   background: rgba(255, 255, 255, 0.06);
-  color: #ddd6fe;
+  color: var(--accent-200);
 }
 
 html[data-theme="dark"] .download-link.is-downloaded {
-  color: #e9d5ff;
-  background: rgba(124, 58, 237, 0.2);
+  color: var(--accent-200);
+  background: rgba(47, 125, 115, 0.2);
 }
 
 /* Proofread Content */
@@ -1748,13 +1812,13 @@ html[data-theme="dark"] .download-link.is-downloaded {
 .toast.success {
   background: var(--success-bg);
   border-color: rgba(34, 197, 94, 0.2);
-  color: #15803d;
+  color: var(--gray-800);
 }
 
 .toast.error {
   background: var(--error-bg);
   border-color: rgba(239, 68, 68, 0.2);
-  color: #b91c1c;
+  color: var(--gray-800);
 }
 
 @keyframes toastIn {
@@ -2121,8 +2185,8 @@ img, svg {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  height: 24px;
+  width: 100%;
+  height: 40px;
   margin-top: var(--space-3);
 }
 
@@ -2130,22 +2194,92 @@ img, svg {
   display: none;
 }
 
-/* Audio Bar - Functional, Not Decorative */
-.audio-bar {
-  --level: 0.18;
-  width: 4px;
-  height: 100%;
-  background: var(--accent-500);
+.audio-level-shell {
+  width: 100%;
+  max-width: 220px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 8px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
   border-radius: 999px;
-  transform-origin: bottom;
-  transform: scaleY(var(--level));
-  opacity: calc(0.3 + var(--level) * 0.7);
-  transition: transform 90ms linear, opacity 90ms linear;
 }
 
-/* Recording state audio indicator - Solid color only */
-.record-section:has(.record-btn.is-recording) .audio-bar {
-  background: var(--error);
+.audio-level-label {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  letter-spacing: 0.08em;
+}
+
+.audio-level-matrix {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 2px;
+  height: 26px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.audio-level-column {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+}
+
+.audio-level-stack {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 2px;
+  height: 100%;
+  width: 100%;
+}
+
+.audio-level-cell {
+  width: 100%;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+  transition: background-color 90ms linear, opacity 90ms linear, transform 90ms linear;
+  opacity: 0.5;
+}
+
+.audio-level-cell.is-active {
+  background: #0f172a;
+  opacity: 1;
+  transform: translateZ(0);
+}
+
+.record-section:has(.record-btn.is-recording) .audio-level-cell.is-active {
+  background: #b91c1c;
+}
+
+html[data-theme="dark"] .audio-level-shell {
+  background: #111827;
+  border-color: #374151;
+}
+
+html[data-theme="dark"] .audio-level-label {
+  color: #94a3b8;
+}
+
+html[data-theme="dark"] .audio-level-cell {
+  background: rgba(71, 85, 105, 0.34);
+}
+
+html[data-theme="dark"] .audio-level-cell.is-active {
+  background: #f8fafc;
+}
+
+html[data-theme="dark"] .record-section:has(.record-btn.is-recording) .audio-level-cell.is-active {
+  background: #fca5a5;
 }
 
 /* Brand Icon - Static, No Animation */
@@ -2215,4 +2349,355 @@ body,
     background-color var(--duration-200) var(--ease-out-quart),
     border-color var(--duration-200) var(--ease-out-quart),
     color var(--duration-200) var(--ease-out-quart);
+}
+
+/* --------------------------------------------------------------------------
+   Business UI Overrides
+   Remove "AI product" styling in favor of a practical workstation look.
+   -------------------------------------------------------------------------- */
+
+body::before,
+.brand-icon-pulse {
+  display: none !important;
+}
+
+.reveal,
+.reveal.delay-1,
+.reveal.delay-2,
+.reveal.delay-3,
+.notice-banner,
+.log-row,
+.toast,
+#segmentCount.updated,
+.record-btn.is-recording,
+.record-btn.is-recording .record-btn-inner {
+  animation: none !important;
+}
+
+.reveal,
+.reveal.delay-1,
+.reveal.delay-2,
+.reveal.delay-3 {
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+.app {
+  max-width: 1360px;
+  padding: var(--space-5);
+  gap: var(--space-5);
+}
+
+.glass-panel,
+.header.glass-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.header {
+  top: 0;
+}
+
+.header-content {
+  padding: var(--space-4) var(--space-5);
+}
+
+.brand {
+  gap: var(--space-3);
+}
+
+.brand-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  color: var(--accent-700);
+  box-shadow: none;
+  border: 1px solid var(--border-primary);
+}
+
+.brand-text h1 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.brand-tagline {
+  margin-top: 0;
+  font-size: var(--text-xs);
+  letter-spacing: 0;
+}
+
+.status-group {
+  align-items: stretch;
+}
+
+.status-item {
+  align-items: flex-start;
+  min-width: 108px;
+  padding: var(--space-2) var(--space-4);
+  background: transparent;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  box-shadow: none;
+}
+
+.status-item:hover {
+  transform: none;
+  background: var(--bg-elevated);
+  box-shadow: none;
+}
+
+.status-label,
+.setting-label,
+.chunk-label,
+.prompt-label,
+.notice-banner-title,
+.downloads-label {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.settings-panel,
+.chunk-settings,
+.prompt-section,
+.summary-panel {
+  padding: var(--space-4);
+}
+
+.setting-hint {
+  color: var(--text-secondary);
+}
+
+.record-section {
+  padding: 0;
+  align-items: stretch;
+  gap: var(--space-4);
+}
+
+.record-hero {
+  top: calc(var(--space-4) + 72px);
+  gap: var(--space-3);
+}
+
+.record-btn {
+  width: 100%;
+  min-width: 180px;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-4);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+.record-btn:hover {
+  background: var(--bg-secondary);
+  transform: none;
+  box-shadow: none;
+}
+
+.record-btn:active {
+  transform: none;
+}
+
+.record-btn-inner {
+  width: 52px;
+  height: 52px;
+  background: var(--accent-50);
+  color: var(--accent-700);
+}
+
+.record-btn.is-recording {
+  background: var(--error-bg);
+  border-color: var(--error);
+  color: var(--gray-800);
+  box-shadow: none;
+}
+
+.record-btn.is-recording .record-btn-inner {
+  background: var(--error);
+  color: var(--white);
+}
+
+.record-label {
+  font-size: var(--text-base);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.chunk-controls {
+  align-items: flex-start;
+}
+
+.chunk-hint {
+  color: var(--text-secondary);
+}
+
+.chunk-input,
+.chunk-chip,
+.prompt-template-btn,
+.select-wrapper select,
+.setting-number-input,
+.prompt-section textarea,
+.downloads-bar,
+.log-row {
+  border-radius: var(--radius-md);
+}
+
+.chunk-input,
+.select-wrapper select,
+.setting-number-input,
+.prompt-section textarea {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  box-shadow: none;
+}
+
+.chunk-chip,
+.prompt-template-btn,
+.btn-action,
+.icon-btn,
+.theme-toggle-btn {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  box-shadow: none;
+}
+
+.chunk-chip:hover,
+.prompt-template-btn:hover,
+.btn-action:hover,
+.icon-btn:hover,
+.theme-toggle-btn:hover {
+  background: var(--bg-secondary);
+  border-color: var(--border-primary);
+  transform: none;
+  box-shadow: none;
+}
+
+.chunk-chip.is-active {
+  background: var(--accent-50);
+  color: var(--accent-700);
+  border-color: var(--accent-200);
+}
+
+.panel-header {
+  padding: var(--space-3) var(--space-4);
+}
+
+.panel-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+}
+
+.transcript-icon {
+  background: var(--accent-50);
+  color: var(--accent-700);
+}
+
+.proofread-icon {
+  background: rgba(70, 93, 122, 0.12);
+  color: var(--purple-600);
+}
+
+.summary-icon {
+  background: rgba(138, 90, 31, 0.12);
+  color: var(--orange-600);
+}
+
+.panel-title {
+  font-size: var(--text-base);
+}
+
+.panel-badge {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  color: var(--text-secondary);
+}
+
+.log-container,
+.proofread-content,
+.summary-content {
+  background: var(--bg-primary);
+}
+
+.log-row {
+  padding: var(--space-3);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-secondary);
+}
+
+.log-row:hover {
+  background: var(--bg-primary);
+}
+
+.downloads-bar {
+  background: var(--bg-primary);
+}
+
+.download-link.is-downloaded {
+  background: var(--accent-50);
+  color: var(--accent-700);
+}
+
+.toast {
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+html[data-theme="dark"] .brand-icon,
+html[data-theme="dark"] .record-btn,
+html[data-theme="dark"] .chunk-input,
+html[data-theme="dark"] .chunk-chip,
+html[data-theme="dark"] .prompt-template-btn,
+html[data-theme="dark"] .prompt-section textarea,
+html[data-theme="dark"] .select-wrapper select,
+html[data-theme="dark"] .setting-number-input,
+html[data-theme="dark"] .icon-btn,
+html[data-theme="dark"] .btn-action,
+html[data-theme="dark"] .theme-toggle-btn,
+html[data-theme="dark"] .downloads-bar,
+html[data-theme="dark"] .status-item,
+html[data-theme="dark"] .log-row,
+html[data-theme="dark"] .panel-badge {
+  background: var(--bg-tertiary);
+  border-color: var(--border-secondary);
+}
+
+html[data-theme="dark"] .record-btn:hover,
+html[data-theme="dark"] .chunk-chip:hover,
+html[data-theme="dark"] .prompt-template-btn:hover,
+html[data-theme="dark"] .btn-action:hover,
+html[data-theme="dark"] .icon-btn:hover,
+html[data-theme="dark"] .theme-toggle-btn:hover {
+  background: var(--bg-secondary);
+}
+
+html[data-theme="dark"] .record-btn.is-recording {
+  background: rgba(127, 29, 29, 0.28);
+  border-color: rgba(248, 113, 113, 0.42);
+  color: var(--error-bg);
+}
+
+html[data-theme="dark"] .record-btn-inner {
+  background: rgba(47, 125, 115, 0.18);
+  color: var(--accent-200);
+}
+
+html[data-theme="dark"] .record-btn.is-recording .record-btn-inner {
+  background: var(--error);
+  color: var(--white);
+}
+
+html[data-theme="dark"] .chunk-chip.is-active,
+html[data-theme="dark"] .download-link.is-downloaded {
+  background: rgba(47, 125, 115, 0.2);
+  border-color: rgba(79, 157, 146, 0.42);
+  color: var(--accent-200);
 }

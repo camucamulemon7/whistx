@@ -7,7 +7,7 @@ const brandTitleEl = $("#brandTitle");
 const brandTaglineEl = $("#brandTagline");
 const themeToggleBtn = $("#themeToggle");
 const audioLevelIndicatorEl = $("#audioLevelIndicator");
-const audioBarEls = Array.from(document.querySelectorAll("#audioLevelIndicator .audio-bar"));
+const audioLevelMatrixEl = $("#audioLevelMatrix");
 
 const languageEl = $("#language");
 const audioSourceEl = $("#audioSource");
@@ -51,12 +51,16 @@ const DIARIZATION_SPEAKER_MIN = 1;
 const DIARIZATION_SPEAKER_MAX = 12;
 
 const VAD_SAMPLE_MS = 80;
-const VAD_RMS_THRESHOLD = 0.01;
 const VAD_MIN_SPEECH_RATIO = 0.06;
 const VAD_MIN_ACTIVE_MS = 160;
+const VAD_SEGMENT_MIN_MS = 12_000;
+const VAD_SEGMENT_MAX_SILENCE_MS = 1_100;
+const VAD_SEGMENT_MIN_SILENCE_MS = 450;
 const AUDIO_LEVEL_NOISE_FLOOR = 0.0025;
 const AUDIO_LEVEL_GAIN = 22;
 const AUDIO_LEVEL_EXPONENT = 0.65;
+const AUDIO_LEVEL_COLUMNS = 21;
+const AUDIO_LEVEL_SEGMENTS = 10;
 const DEFAULT_SOC_PROMPT_TEMPLATE = `SoC, ASIC, chiplet, CPU, GPU, NPU, DSP, ISP, VPU, DPU, MCU, PMU, NoC, interconnect, AXI, AXI4, AXI-Lite, AHB, APB, ACE, CHI, UCIe, PCIe, CXL, DDR, DDR4, DDR5, LPDDR4, LPDDR5, HBM, SRAM, ROM, eMMC, UFS, PHY, SerDes, PLL, DLL, RC oscillator, clock, clock tree, clock gating, reset, async reset, sync reset, power domain, voltage island, retention, isolation, level shifter, DVFS, AVS, UPF, CPF, RTL, SystemVerilog, Verilog, VHDL, UVM, testbench, assertion, SVA, lint, SpyGlass, CDC, RDC, STA, MCMM, OCV, AOCV, POCV, derate, setup, hold, recovery, removal, skew, jitter, uncertainty, timing closure, timing path, false path, multicycle path, path group, endpoint, startpoint, slack, WNS, TNS, violating path, critical path, synthesis, logic synthesis, Design Compiler, Genus, netlist, mapped netlist, unmapped netlist, compile, incremental compile, retiming, boundary optimization, datapath optimization, resource sharing, register balancing, ECO, formal, equivalence check, LEC, Conformal, Formality, gate-level simulation, GLS, SDF, back annotation, place and route, place-and-route, PnR, floorplan, floorplanning, macro placement, standard cell, utilization, density, congestion, global placement, detailed placement, legalization, CTS, clock tree synthesis, useful skew, hold fixing, setup fixing, routing, global route, detailed route, track assignment, antenna, filler cell, decap, tap cell, endcap, spare cell, spare gate, metal fill, density fill, ECO route, route guide, signoff, sign-off, DRC, LVS, ERC, extraction, parasitic extraction, RC extraction, SPEF, DEF, LEF, Liberty, .lib, TLU+, QRC, StarRC, Quantus, IR drop, dynamic IR drop, static IR drop, EM, electromigration, voltage drop, power integrity, signal integrity, SI, crosstalk, noise, glitch, overshoot, undershoot, hotspot, thermal, leakage, dynamic power, switching power, internal power, leakage power, power analysis, PrimeTime PX, PrimePower, Voltus, RedHawk, vectorless, VCD, FSDB, SAIF, toggle rate, activity factor, inrush current, rush current, decoupling capacitor, decap cell, package model, bump, substrate, interposer, TSV, process node, 28nm, 16nm, 12nm, 7nm, 5nm, 4nm, 3nm, FinFET, GAA, foundry, TSMC, Samsung, Intel, PDK, DFM, manufacturability, yield, wafer, lot, mask, reticle, tape-out, respin, metal fix, MPW, shuttle, bring-up, validation, characterization, errata, workaround, DFT, scan, scan chain, scan compression, EDT, ATPG, stuck-at, transition fault, path delay fault, bridging fault, JTAG, boundary scan, MBIST, LBIST, BISR, repair, fuse, eFuse, OTP, secure boot, TrustZone, TEE, firmware, bootloader, NAND, NAND flash, Toggle NAND, ONFI, raw NAND, managed NAND, SLC, MLC, TLC, QLC, PLC, 3D NAND, V-NAND, charge trap, floating gate, page, block, plane, die, LUN, bad block, bad block management, BBT, ECC, BCH, LDPC, RAID, read disturb, program disturb, erase disturb, wear leveling, garbage collection, overprovisioning, endurance, retention, BER, bit error rate, read retry, soft decoding, threshold voltage, ISPP, incremental step pulse programming, erase verify, program verify, copyback, cache read, cache program, multi-plane, interleaving, channel, CE, RE, WE, ALE, CLE, R/B, spare area, OOB, metadata, FTL, flash translation layer, NVMe, SATA, controller, queue depth, throughput, latency, bandwidth, QoS, arbiter, scheduler, mux, demux, crossbar, SRAM compiler, memory compiler, register file, dual port RAM, single port RAM, SRAM macro, macro, hard macro, soft macro, black box, hierarchy, partition, block-level, top-level, full-chip, chip top, top module, hierarchy flattening, dont_touch, set_false_path, set_multicycle_path, create_clock, generated clock, propagated clock, ideal clock, set_input_delay, set_output_delay, set_clock_uncertainty, set_clock_groups, operating condition, corner, slow corner, fast corner, typical corner, SS, FF, TT, RCmax, RCmin, setup view, hold view.`;
 
 const state = {
@@ -96,7 +100,11 @@ const state = {
   vadTimer: null,
   vadFrameCount: 0,
   vadSpeechFrameCount: 0,
+  vadLastSpeechAt: 0,
+  vadRmsThreshold: 0.01,
   audioLevel: 0,
+  audioLevelColumns: [],
+  segmentStartedAt: 0,
   captureContext: null,
   captureSources: [],
   captureDestination: null,
@@ -309,26 +317,6 @@ function normalizeBannerType(value) {
   return "info";
 }
 
-function bannerDismissKey(id) {
-  return `whistx_banner_dismissed_${id}`;
-}
-
-function isBannerDismissed(id) {
-  try {
-    return localStorage.getItem(bannerDismissKey(id)) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function dismissBanner(id) {
-  try {
-    localStorage.setItem(bannerDismissKey(id), "1");
-  } catch {
-    // ignore
-  }
-}
-
 function renderBanners(rawBanners) {
   if (!bannersContainerEl) return;
 
@@ -345,8 +333,6 @@ function renderBanners(rawBanners) {
     const dismissible = record.dismissible !== false;
 
     if (!message) return;
-    if (dismissible && isBannerDismissed(id)) return;
-
     const node = document.createElement("article");
     node.className = `notice-banner notice-${type}`;
     node.setAttribute("role", "status");
@@ -366,7 +352,6 @@ function renderBanners(rawBanners) {
       closeBtn.setAttribute("aria-label", "バナーを閉じる");
       closeBtn.textContent = "×";
       closeBtn.addEventListener("click", () => {
-        dismissBanner(id);
         node.remove();
         bannersContainerEl.hidden = bannersContainerEl.childElementCount === 0;
       });
@@ -584,18 +569,18 @@ function normalizeChunkSeconds(value) {
 function updateChunkHint(seconds) {
   if (!chunkHintEl) return;
   if (seconds <= 15) {
-    chunkHintEl.textContent = "リアルタイム寄り（精度より応答速度優先）";
+    chunkHintEl.textContent = "短め上限。無音で早めに確定";
     return;
   }
   if (seconds <= 30) {
-    chunkHintEl.textContent = "バランス（精度と遅延の中間）";
+    chunkHintEl.textContent = "バランス。無音で自然に区切る";
     return;
   }
   if (seconds <= 45) {
-    chunkHintEl.textContent = "精度優先（推奨）";
+    chunkHintEl.textContent = "精度優先。長めに文脈を保持";
     return;
   }
-  chunkHintEl.textContent = "最大精度寄り（遅延増）";
+  chunkHintEl.textContent = "最大長。無音が少ない会話向け";
 }
 
 function updatePresetActive(seconds) {
@@ -659,6 +644,7 @@ function applyAudioSource(value) {
   if (audioSourceEl) {
     audioSourceEl.value = source;
   }
+  state.vadRmsThreshold = vadThresholdForSource(source);
   try {
     localStorage.setItem("whistx_audio_source", source);
   } catch {
@@ -667,16 +653,23 @@ function applyAudioSource(value) {
   return source;
 }
 
+function vadThresholdForSource(source) {
+  if (source === "display") return 0.006;
+  if (source === "both") return 0.008;
+  return 0.01;
+}
+
 function hasAudioTrack(stream) {
   return !!stream && stream.getAudioTracks().length > 0;
 }
 
-async function requestMicStream() {
+async function requestMicStream(sourceMode = "mic") {
+  const mixed = sourceMode === "both";
   return navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
+      noiseSuppression: !mixed,
+      autoGainControl: !mixed,
     },
   });
 }
@@ -748,7 +741,7 @@ async function prepareInputStream(sourceMode) {
   const mode = normalizeAudioSource(sourceMode);
 
   if (mode === "mic") {
-    const micStream = await requestMicStream();
+    const micStream = await requestMicStream(mode);
     state.micStream = micStream;
     return micStream;
   }
@@ -769,7 +762,7 @@ async function prepareInputStream(sourceMode) {
   }
   bindDisplayEndEvents(displayStream);
 
-  const micStream = await requestMicStream();
+  const micStream = await requestMicStream(mode);
   state.displayStream = displayStream;
   state.micStream = micStream;
   return buildMixedAudioStream([displayStream, micStream]);
@@ -894,16 +887,61 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+function ensureAudioLevelMatrix() {
+  if (!audioLevelMatrixEl) return [];
+  if (state.audioLevelColumns.length) return state.audioLevelColumns;
+
+  const columns = [];
+  audioLevelMatrixEl.innerHTML = "";
+
+  for (let i = 0; i < AUDIO_LEVEL_COLUMNS; i += 1) {
+    const column = document.createElement("div");
+    column.className = "audio-level-column";
+
+    const stack = document.createElement("div");
+    stack.className = "audio-level-stack";
+
+    const cells = [];
+
+    for (let j = 0; j < AUDIO_LEVEL_SEGMENTS; j += 1) {
+      const cell = document.createElement("span");
+      cell.className = "audio-level-cell";
+      stack.appendChild(cell);
+      cells.push(cell);
+    }
+
+    column.appendChild(stack);
+    audioLevelMatrixEl.appendChild(column);
+    columns.push({ cells });
+  }
+
+  state.audioLevelColumns = columns;
+  return columns;
+}
+
 function renderAudioLevel(level) {
   const normalized = Math.max(0, Math.min(1, Number(level) || 0));
   state.audioLevel = normalized;
-  if (!audioBarEls.length) return;
+  const columns = ensureAudioLevelMatrix();
+  if (!columns.length) return;
 
-  audioBarEls.forEach((bar, index) => {
-    const offset = index * 0.08;
-    const shaped = Math.max(0.16, Math.min(1, normalized * (0.82 + offset)));
-    bar.style.setProperty("--level", shaped.toFixed(3));
-    bar.style.setProperty("--glow", Math.max(0.18, normalized).toFixed(3));
+  const now = performance.now();
+  const center = (columns.length - 1) / 2;
+
+  columns.forEach((column, index) => {
+    const distance = Math.abs(index - center);
+    const profile = 1 - distance / Math.max(1, center + 0.5);
+    const ripple = 0.84 + 0.24 * Math.sin(now / 240 + index * 0.55);
+    const shaped = Math.max(0, Math.min(1, normalized * (0.62 + profile * 0.55) * ripple));
+    const activeCount = Math.max(
+      normalized > 0.03 ? 1 : 0,
+      Math.min(AUDIO_LEVEL_SEGMENTS, Math.round(shaped * AUDIO_LEVEL_SEGMENTS))
+    );
+
+    column.cells.forEach((cell, cellIndex) => {
+      const active = cellIndex >= AUDIO_LEVEL_SEGMENTS - activeCount;
+      cell.classList.toggle("is-active", active);
+    });
   });
 }
 
@@ -924,8 +962,9 @@ function sampleVad() {
   const smoothed = state.audioLevel * 0.72 + boosted * 0.28;
   renderAudioLevel(smoothed);
   state.vadFrameCount += 1;
-  if (rms >= VAD_RMS_THRESHOLD) {
+  if (rms >= state.vadRmsThreshold) {
     state.vadSpeechFrameCount += 1;
+    state.vadLastSpeechAt = performance.now();
   }
 }
 
@@ -957,6 +996,7 @@ async function setupVad(stream) {
   state.vadBuffer = new Float32Array(analyser.fftSize);
   state.vadFrameCount = 0;
   state.vadSpeechFrameCount = 0;
+  state.vadLastSpeechAt = performance.now();
   state.vadTimer = setInterval(sampleVad, VAD_SAMPLE_MS);
 }
 
@@ -994,6 +1034,7 @@ function stopVad() {
   state.vadBuffer = null;
   state.vadFrameCount = 0;
   state.vadSpeechFrameCount = 0;
+  state.vadLastSpeechAt = 0;
   state.audioLevel = 0;
   renderAudioLevel(0);
 }
@@ -1090,18 +1131,53 @@ function clearChunkTimer() {
   }
 }
 
+function minSegmentMs() {
+  return Math.max(Math.min(VAD_SEGMENT_MIN_MS, state.chunkMs), Math.round(state.chunkMs * 0.45));
+}
+
+function shouldCutChunkOnSilence() {
+  if (!state.vadAnalyser || !state.segmentStartedAt) return false;
+
+  const now = performance.now();
+  const elapsedMs = now - state.segmentStartedAt;
+  if (elapsedMs < minSegmentMs()) return false;
+
+  const silenceMs = Math.max(0, now - (state.vadLastSpeechAt || state.segmentStartedAt));
+  if (silenceMs < VAD_SEGMENT_MIN_SILENCE_MS) return false;
+
+  return silenceMs >= Math.min(VAD_SEGMENT_MAX_SILENCE_MS, Math.max(700, Math.round(elapsedMs * 0.18)));
+}
+
+function requestChunkFlush(recorder) {
+  if (!state.recording) return;
+  if (state.recorder !== recorder) return;
+  if (recorder.state !== "recording") return;
+
+  try {
+    recorder.stop();
+  } catch {
+    // ignore
+  }
+}
+
 function scheduleChunkStop(recorder) {
   clearChunkTimer();
-  state.chunkTimer = setTimeout(() => {
-    if (!state.recording) return;
-    if (state.recorder !== recorder) return;
-    if (recorder.state !== "recording") return;
-    try {
-      recorder.stop();
-    } catch {
-      // ignore
+  const check = () => {
+    if (!state.recording || state.recorder !== recorder || recorder.state !== "recording") {
+      clearChunkTimer();
+      return;
     }
-  }, state.chunkMs);
+
+    const elapsedMs = Math.max(0, performance.now() - state.segmentStartedAt);
+    if (elapsedMs >= state.chunkMs || shouldCutChunkOnSilence()) {
+      requestChunkFlush(recorder);
+      return;
+    }
+
+    state.chunkTimer = setTimeout(check, Math.min(250, Math.max(120, VAD_SAMPLE_MS)));
+  };
+
+  state.chunkTimer = setTimeout(check, Math.min(250, Math.max(120, VAD_SAMPLE_MS)));
 }
 
 function startRecorderCycle() {
@@ -1110,6 +1186,8 @@ function startRecorderCycle() {
   const recorder = new MediaRecorder(state.stream, state.recorderOptions || {});
   state.recorder = recorder;
   const cycleStartedAt = performance.now();
+  state.segmentStartedAt = cycleStartedAt;
+  state.vadLastSpeechAt = cycleStartedAt;
   const vadSnapshot = snapshotVadCounters();
 
   recorder.addEventListener("dataavailable", (event) => {
@@ -1158,6 +1236,7 @@ async function finalizeStop() {
     }
     cleanupMedia();
     setUiRecording(false);
+    state.segmentStartedAt = 0;
     state.finalizingStop = false;
   }
 }
@@ -1195,6 +1274,7 @@ async function startRecording() {
         type: "start",
         sessionId: generateSessionSeed(),
         language: selectedLanguage(),
+        audioSource: selectedAudioSource,
         prompt: promptEl.value.trim(),
         diarizationEnabled: !!(state.diarizationAvailable && state.diarizationEnabled),
         diarizationNumSpeakers: diarizationOptions.diarizationNumSpeakers,

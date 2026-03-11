@@ -16,10 +16,7 @@ PODMAN_USERNS="${PODMAN_USERNS:-keep-id}"
 PODMAN_VOLUME_OPTS="${PODMAN_VOLUME_OPTS:-Z}"
 
 if [[ -f "${ENV_FILE}" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "${ENV_FILE}"
-  set +a
+  eval "$("python3" "${SCRIPT_DIR}/scripts/load_env.py" "${ENV_FILE}")"
 fi
 
 if [[ "${DATA_DIR}" != /* ]]; then

@@ -55,11 +55,15 @@ class ChunkMessage:
 class LiveSession:
     session_id: str
     language: str | None
+    audio_source: str
     base_prompt: str
     temperature: float
     context_prompt_enabled: bool
     context_max_chars: int
-    context_text: str
+    context_recent_lines: int
+    context_term_limit: int
+    context_history: list[str]
+    context_terms: list[str]
     last_emitted_text: str
     collect_audio_for_diarization: bool
     diarization_num_speakers: int
@@ -434,7 +438,7 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 continue
 
             text = result.text.strip()
-            text = _sanitize_transcript_text(text)
+            text = _sanitize_transcript_text(text, language=session.language)
             if not text:
                 await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
                 continue
@@ -500,6 +504,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
     runtime_session_id = TranscriptStore.make_runtime_session_id(base_session_id)
 
     language = _normalize_asr_language(_as_str(payload.get("language")))
+    audio_source = _normalize_audio_source(_as_str(payload.get("audioSource")))
     prompt = _as_str(payload.get("prompt")) or settings.default_prompt
     temperature = _as_float(payload.get("temperature"), settings.default_temperature)
     diarization_requested = _as_bool(payload.get("diarizationEnabled"), True)
@@ -510,11 +515,15 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
     return LiveSession(
         session_id=runtime_session_id,
         language=language,
+        audio_source=audio_source,
         base_prompt=prompt,
         temperature=temperature,
         context_prompt_enabled=settings.context_prompt_enabled,
         context_max_chars=settings.context_max_chars,
-        context_text="",
+        context_recent_lines=settings.context_recent_lines,
+        context_term_limit=settings.context_term_limit,
+        context_history=[],
+        context_terms=[],
         last_emitted_text="",
         collect_audio_for_diarization=DIARIZER is not None and diarization_requested,
         diarization_num_speakers=diarization_num_speakers,
@@ -556,6 +565,8 @@ def _prepare_audio_for_asr(*, session: LiveSession, item: ChunkMessage):
         audio_bytes=item.audio_bytes,
         mime_type=item.mime_type,
         previous_tail_pcm=session.overlap_tail_pcm,
+        chunk_duration_ms=item.duration_ms,
+        source_mode=session.audio_source,
     )
     session.overlap_tail_pcm = prepared.tail_pcm
     return prepared
@@ -566,16 +577,24 @@ def _build_prompt(session: LiveSession) -> str | None:
     if session.base_prompt:
         parts.append(session.base_prompt.strip())
 
-    if session.context_prompt_enabled and session.context_text:
+    if session.context_prompt_enabled and (session.context_history or session.context_terms):
         if (session.language or "").lower().startswith("en"):
             header = "Recent transcript context:"
+            terms_header = "Key terms:"
         elif not session.language:
             header = "Recent transcript context. Keep the same spoken language as the audio:"
+            terms_header = "Key terms from recent transcript:"
         else:
             header = "直前の文字起こし文脈:"
-        parts.append(f"{header}\n{session.context_text}")
+            terms_header = "直前の重要語:"
+        if session.context_history:
+            parts.append(f"{header}\n" + "\n".join(session.context_history))
+        if session.context_terms:
+            parts.append(f"{terms_header}\n" + ", ".join(session.context_terms))
 
     merged = "\n\n".join(part for part in parts if part).strip()
+    if session.context_max_chars > 0 and len(merged) > session.context_max_chars:
+        merged = merged[-session.context_max_chars :].lstrip()
     return merged or None
 
 
@@ -586,28 +605,101 @@ def _append_context(session: LiveSession, text: str) -> None:
         return
 
     cleaned = " ".join(text.split()).strip()
-    cleaned = _sanitize_transcript_text(cleaned)
+    cleaned = _sanitize_transcript_text(cleaned, language=session.language)
     if not cleaned:
         return
 
-    if session.context_text:
-        merged = f"{session.context_text}\n{cleaned}"
-    else:
-        merged = cleaned
+    session.context_history.append(cleaned)
+    session.context_history = session.context_history[-session.context_recent_lines :]
 
-    if len(merged) > session.context_max_chars:
-        merged = merged[-session.context_max_chars :].lstrip()
-    session.context_text = merged
+    merged_terms = _merge_context_terms(
+        existing=session.context_terms,
+        new_terms=_extract_context_terms(cleaned),
+        limit=session.context_term_limit,
+    )
+    session.context_terms = _trim_context_terms_to_budget(
+        terms=merged_terms,
+        max_chars=session.context_max_chars,
+        history=session.context_history,
+    )
+
+
+CONTEXT_LATIN_TERM_RE = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9.+/_-]{1,31}\b")
+CONTEXT_KATAKANA_TERM_RE = re.compile(r"[ァ-ヶー]{3,}")
+CONTEXT_CJK_TERM_RE = re.compile(r"[\u4e00-\u9fff]{2,12}")
+
+
+def _extract_context_terms(text: str) -> list[str]:
+    tokens: list[str] = []
+    for pattern in (CONTEXT_LATIN_TERM_RE, CONTEXT_KATAKANA_TERM_RE, CONTEXT_CJK_TERM_RE):
+        for match in pattern.finditer(text):
+            token = match.group(0).strip(".,:;()[]{}<>\"'")
+            if len(token) < 2:
+                continue
+            if token.isdigit():
+                continue
+            if token.lower() in {"recent", "transcript", "context"}:
+                continue
+            tokens.append(token)
+
+    ranked = sorted(
+        set(tokens),
+        key=lambda item: (
+            0 if re.search(r"[A-Z0-9]", item) else 1,
+            -len(item),
+            item.lower(),
+        ),
+    )
+    return ranked
+
+
+def _merge_context_terms(*, existing: list[str], new_terms: list[str], limit: int) -> list[str]:
+    merged = list(existing)
+    for term in new_terms:
+        merged = [item for item in merged if item != term]
+        merged.append(term)
+    return merged[-limit:]
+
+
+def _trim_context_terms_to_budget(
+    *,
+    terms: list[str],
+    max_chars: int,
+    history: list[str],
+) -> list[str]:
+    if max_chars <= 0:
+        return terms
+
+    history_text = "\n".join(history)
+    budget = max(160, max_chars // 2) - len(history_text)
+    if budget <= 0:
+        return []
+
+    kept: list[str] = []
+    used = 0
+    for term in reversed(terms):
+        add = len(term) + (2 if kept else 0)
+        if used + add > budget:
+            continue
+        kept.append(term)
+        used += add
+    kept.reverse()
+    return kept
 
 
 REPEAT_COLLAPSE_RE = re.compile(r"(.{2,16}?)\1{3,}")
 REPEAT_DETECT_RE = re.compile(r"(.{2,16}?)\1{5,}")
+JP_CHAR_CLASS = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
+JP_SPACE_BEFORE_RE = re.compile(rf"(?<=[{JP_CHAR_CLASS}])\s+(?=[{JP_CHAR_CLASS}])")
+JP_PUNCT_SPACE_RE = re.compile(rf"\s+([、。，．・：；！？）］】」』])|([（［【「『])\s+")
 
 
-def _sanitize_transcript_text(text: str) -> str:
+def _sanitize_transcript_text(text: str, *, language: str | None = None) -> str:
     value = " ".join((text or "").split()).strip()
     if not value:
         return ""
+
+    value = _normalize_transcript_spacing(value, language=language)
 
     # 連続反復を縮約し、意味の薄い暴走出力を抑える。
     for _ in range(3):
@@ -618,6 +710,22 @@ def _sanitize_transcript_text(text: str) -> str:
 
     if _is_repetition_noise(value):
         return ""
+    return value
+
+
+def _normalize_transcript_spacing(text: str, *, language: str | None) -> str:
+    lowered = (language or "").strip().lower()
+    if lowered and not lowered.startswith("ja"):
+        return text
+
+    value = JP_SPACE_BEFORE_RE.sub("", text)
+
+    def _punct_repl(match: re.Match[str]) -> str:
+        if match.group(1):
+            return match.group(1)
+        return match.group(2)
+
+    value = JP_PUNCT_SPACE_RE.sub(_punct_repl, value)
     return value
 
 
@@ -883,6 +991,13 @@ def _normalize_asr_language(value: str) -> str | None:
     if not lowered or lowered == "auto":
         return None
     return lowered
+
+
+def _normalize_audio_source(value: str) -> str:
+    lowered = (value or "").strip().lower()
+    if lowered in {"display", "both"}:
+        return lowered
+    return "mic"
 
 
 async def _broadcast_conn_count() -> None:

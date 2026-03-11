@@ -9,10 +9,7 @@ PORT="${APP_PORT:-${PORT:-8005}}"
 APP="${APP_ENTRYPOINT:-${APP:-server.app:app}}"
 
 if [[ -f "${ENV_FILE}" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "${ENV_FILE}"
-  set +a
+  eval "$("python3" "${SCRIPT_DIR}/scripts/load_env.py" "${ENV_FILE}")"
 fi
 
 if [[ "${VENV_DIR}" != /* ]]; then
