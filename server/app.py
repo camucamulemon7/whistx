@@ -438,7 +438,7 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 continue
 
             text = result.text.strip()
-            text = _sanitize_transcript_text(text)
+            text = _sanitize_transcript_text(text, language=session.language)
             if not text:
                 await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
                 continue
@@ -605,7 +605,7 @@ def _append_context(session: LiveSession, text: str) -> None:
         return
 
     cleaned = " ".join(text.split()).strip()
-    cleaned = _sanitize_transcript_text(cleaned)
+    cleaned = _sanitize_transcript_text(cleaned, language=session.language)
     if not cleaned:
         return
 
@@ -689,12 +689,17 @@ def _trim_context_terms_to_budget(
 
 REPEAT_COLLAPSE_RE = re.compile(r"(.{2,16}?)\1{3,}")
 REPEAT_DETECT_RE = re.compile(r"(.{2,16}?)\1{5,}")
+JP_CHAR_CLASS = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
+JP_SPACE_BEFORE_RE = re.compile(rf"(?<=[{JP_CHAR_CLASS}])\s+(?=[{JP_CHAR_CLASS}])")
+JP_PUNCT_SPACE_RE = re.compile(rf"\s+([、。，．・：；！？）］】」』])|([（［【「『])\s+")
 
 
-def _sanitize_transcript_text(text: str) -> str:
+def _sanitize_transcript_text(text: str, *, language: str | None = None) -> str:
     value = " ".join((text or "").split()).strip()
     if not value:
         return ""
+
+    value = _normalize_transcript_spacing(value, language=language)
 
     # 連続反復を縮約し、意味の薄い暴走出力を抑える。
     for _ in range(3):
@@ -705,6 +710,22 @@ def _sanitize_transcript_text(text: str) -> str:
 
     if _is_repetition_noise(value):
         return ""
+    return value
+
+
+def _normalize_transcript_spacing(text: str, *, language: str | None) -> str:
+    lowered = (language or "").strip().lower()
+    if lowered and not lowered.startswith("ja"):
+        return text
+
+    value = JP_SPACE_BEFORE_RE.sub("", text)
+
+    def _punct_repl(match: re.Match[str]) -> str:
+        if match.group(1):
+            return match.group(1)
+        return match.group(2)
+
+    value = JP_PUNCT_SPACE_RE.sub(_punct_repl, value)
     return value
 
 
