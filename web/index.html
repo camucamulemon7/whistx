@@ -9,7 +9,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>whistx</title>
-    <link rel="stylesheet" href="/style.css?v=20260311c" />
+    <link rel="stylesheet" href="/style.css?v=20260311e" />
     <script type="module" src="/main.js?v=20260311c"></script>
   </head>
   <body>
@@ -166,11 +166,10 @@
           <div class="record-hero">
             <!-- Audio Level Indicator -->
             <div id="audioLevelIndicator" class="audio-level-indicator" hidden>
-              <div class="audio-bar" style="--delay: 0ms"></div>
-              <div class="audio-bar" style="--delay: 50ms"></div>
-              <div class="audio-bar" style="--delay: 100ms"></div>
-              <div class="audio-bar" style="--delay: 150ms"></div>
-              <div class="audio-bar" style="--delay: 200ms"></div>
+              <div class="audio-level-shell">
+                <span class="audio-level-label">INPUT</span>
+                <div id="audioLevelMatrix" class="audio-level-matrix" aria-hidden="true"></div>
+              </div>
             </div>
 
             <button

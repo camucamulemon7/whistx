@@ -7,7 +7,7 @@ const brandTitleEl = $("#brandTitle");
 const brandTaglineEl = $("#brandTagline");
 const themeToggleBtn = $("#themeToggle");
 const audioLevelIndicatorEl = $("#audioLevelIndicator");
-const audioBarEls = Array.from(document.querySelectorAll("#audioLevelIndicator .audio-bar"));
+const audioLevelMatrixEl = $("#audioLevelMatrix");
 
 const languageEl = $("#language");
 const audioSourceEl = $("#audioSource");
@@ -59,6 +59,8 @@ const VAD_SEGMENT_MIN_SILENCE_MS = 450;
 const AUDIO_LEVEL_NOISE_FLOOR = 0.0025;
 const AUDIO_LEVEL_GAIN = 22;
 const AUDIO_LEVEL_EXPONENT = 0.65;
+const AUDIO_LEVEL_COLUMNS = 21;
+const AUDIO_LEVEL_SEGMENTS = 10;
 const DEFAULT_SOC_PROMPT_TEMPLATE = `SoC, ASIC, chiplet, CPU, GPU, NPU, DSP, ISP, VPU, DPU, MCU, PMU, NoC, interconnect, AXI, AXI4, AXI-Lite, AHB, APB, ACE, CHI, UCIe, PCIe, CXL, DDR, DDR4, DDR5, LPDDR4, LPDDR5, HBM, SRAM, ROM, eMMC, UFS, PHY, SerDes, PLL, DLL, RC oscillator, clock, clock tree, clock gating, reset, async reset, sync reset, power domain, voltage island, retention, isolation, level shifter, DVFS, AVS, UPF, CPF, RTL, SystemVerilog, Verilog, VHDL, UVM, testbench, assertion, SVA, lint, SpyGlass, CDC, RDC, STA, MCMM, OCV, AOCV, POCV, derate, setup, hold, recovery, removal, skew, jitter, uncertainty, timing closure, timing path, false path, multicycle path, path group, endpoint, startpoint, slack, WNS, TNS, violating path, critical path, synthesis, logic synthesis, Design Compiler, Genus, netlist, mapped netlist, unmapped netlist, compile, incremental compile, retiming, boundary optimization, datapath optimization, resource sharing, register balancing, ECO, formal, equivalence check, LEC, Conformal, Formality, gate-level simulation, GLS, SDF, back annotation, place and route, place-and-route, PnR, floorplan, floorplanning, macro placement, standard cell, utilization, density, congestion, global placement, detailed placement, legalization, CTS, clock tree synthesis, useful skew, hold fixing, setup fixing, routing, global route, detailed route, track assignment, antenna, filler cell, decap, tap cell, endcap, spare cell, spare gate, metal fill, density fill, ECO route, route guide, signoff, sign-off, DRC, LVS, ERC, extraction, parasitic extraction, RC extraction, SPEF, DEF, LEF, Liberty, .lib, TLU+, QRC, StarRC, Quantus, IR drop, dynamic IR drop, static IR drop, EM, electromigration, voltage drop, power integrity, signal integrity, SI, crosstalk, noise, glitch, overshoot, undershoot, hotspot, thermal, leakage, dynamic power, switching power, internal power, leakage power, power analysis, PrimeTime PX, PrimePower, Voltus, RedHawk, vectorless, VCD, FSDB, SAIF, toggle rate, activity factor, inrush current, rush current, decoupling capacitor, decap cell, package model, bump, substrate, interposer, TSV, process node, 28nm, 16nm, 12nm, 7nm, 5nm, 4nm, 3nm, FinFET, GAA, foundry, TSMC, Samsung, Intel, PDK, DFM, manufacturability, yield, wafer, lot, mask, reticle, tape-out, respin, metal fix, MPW, shuttle, bring-up, validation, characterization, errata, workaround, DFT, scan, scan chain, scan compression, EDT, ATPG, stuck-at, transition fault, path delay fault, bridging fault, JTAG, boundary scan, MBIST, LBIST, BISR, repair, fuse, eFuse, OTP, secure boot, TrustZone, TEE, firmware, bootloader, NAND, NAND flash, Toggle NAND, ONFI, raw NAND, managed NAND, SLC, MLC, TLC, QLC, PLC, 3D NAND, V-NAND, charge trap, floating gate, page, block, plane, die, LUN, bad block, bad block management, BBT, ECC, BCH, LDPC, RAID, read disturb, program disturb, erase disturb, wear leveling, garbage collection, overprovisioning, endurance, retention, BER, bit error rate, read retry, soft decoding, threshold voltage, ISPP, incremental step pulse programming, erase verify, program verify, copyback, cache read, cache program, multi-plane, interleaving, channel, CE, RE, WE, ALE, CLE, R/B, spare area, OOB, metadata, FTL, flash translation layer, NVMe, SATA, controller, queue depth, throughput, latency, bandwidth, QoS, arbiter, scheduler, mux, demux, crossbar, SRAM compiler, memory compiler, register file, dual port RAM, single port RAM, SRAM macro, macro, hard macro, soft macro, black box, hierarchy, partition, block-level, top-level, full-chip, chip top, top module, hierarchy flattening, dont_touch, set_false_path, set_multicycle_path, create_clock, generated clock, propagated clock, ideal clock, set_input_delay, set_output_delay, set_clock_uncertainty, set_clock_groups, operating condition, corner, slow corner, fast corner, typical corner, SS, FF, TT, RCmax, RCmin, setup view, hold view.`;
 
 const state = {
@@ -101,6 +103,7 @@ const state = {
   vadLastSpeechAt: 0,
   vadRmsThreshold: 0.01,
   audioLevel: 0,
+  audioLevelColumns: [],
   segmentStartedAt: 0,
   captureContext: null,
   captureSources: [],
@@ -884,16 +887,61 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+function ensureAudioLevelMatrix() {
+  if (!audioLevelMatrixEl) return [];
+  if (state.audioLevelColumns.length) return state.audioLevelColumns;
+
+  const columns = [];
+  audioLevelMatrixEl.innerHTML = "";
+
+  for (let i = 0; i < AUDIO_LEVEL_COLUMNS; i += 1) {
+    const column = document.createElement("div");
+    column.className = "audio-level-column";
+
+    const stack = document.createElement("div");
+    stack.className = "audio-level-stack";
+
+    const cells = [];
+
+    for (let j = 0; j < AUDIO_LEVEL_SEGMENTS; j += 1) {
+      const cell = document.createElement("span");
+      cell.className = "audio-level-cell";
+      stack.appendChild(cell);
+      cells.push(cell);
+    }
+
+    column.appendChild(stack);
+    audioLevelMatrixEl.appendChild(column);
+    columns.push({ cells });
+  }
+
+  state.audioLevelColumns = columns;
+  return columns;
+}
+
 function renderAudioLevel(level) {
   const normalized = Math.max(0, Math.min(1, Number(level) || 0));
   state.audioLevel = normalized;
-  if (!audioBarEls.length) return;
+  const columns = ensureAudioLevelMatrix();
+  if (!columns.length) return;
 
-  audioBarEls.forEach((bar, index) => {
-    const offset = index * 0.08;
-    const shaped = Math.max(0.16, Math.min(1, normalized * (0.82 + offset)));
-    bar.style.setProperty("--level", shaped.toFixed(3));
-    bar.style.setProperty("--glow", Math.max(0.18, normalized).toFixed(3));
+  const now = performance.now();
+  const center = (columns.length - 1) / 2;
+
+  columns.forEach((column, index) => {
+    const distance = Math.abs(index - center);
+    const profile = 1 - distance / Math.max(1, center + 0.5);
+    const ripple = 0.84 + 0.24 * Math.sin(now / 240 + index * 0.55);
+    const shaped = Math.max(0, Math.min(1, normalized * (0.62 + profile * 0.55) * ripple));
+    const activeCount = Math.max(
+      normalized > 0.03 ? 1 : 0,
+      Math.min(AUDIO_LEVEL_SEGMENTS, Math.round(shaped * AUDIO_LEVEL_SEGMENTS))
+    );
+
+    column.cells.forEach((cell, cellIndex) => {
+      const active = cellIndex >= AUDIO_LEVEL_SEGMENTS - activeCount;
+      cell.classList.toggle("is-active", active);
+    });
   });
 }
 

@@ -2185,8 +2185,8 @@ img, svg {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  height: 24px;
+  width: 100%;
+  height: 40px;
   margin-top: var(--space-3);
 }
 
@@ -2194,22 +2194,92 @@ img, svg {
   display: none;
 }
 
-/* Audio Bar - Functional, Not Decorative */
-.audio-bar {
-  --level: 0.18;
-  width: 4px;
-  height: 100%;
-  background: var(--accent-500);
+.audio-level-shell {
+  width: 100%;
+  max-width: 220px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 8px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
   border-radius: 999px;
-  transform-origin: bottom;
-  transform: scaleY(var(--level));
-  opacity: calc(0.3 + var(--level) * 0.7);
-  transition: transform 90ms linear, opacity 90ms linear;
 }
 
-/* Recording state audio indicator - Solid color only */
-.record-section:has(.record-btn.is-recording) .audio-bar {
-  background: var(--error);
+.audio-level-label {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  letter-spacing: 0.08em;
+}
+
+.audio-level-matrix {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 2px;
+  height: 26px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.audio-level-column {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+}
+
+.audio-level-stack {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 2px;
+  height: 100%;
+  width: 100%;
+}
+
+.audio-level-cell {
+  width: 100%;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+  transition: background-color 90ms linear, opacity 90ms linear, transform 90ms linear;
+  opacity: 0.5;
+}
+
+.audio-level-cell.is-active {
+  background: #0f172a;
+  opacity: 1;
+  transform: translateZ(0);
+}
+
+.record-section:has(.record-btn.is-recording) .audio-level-cell.is-active {
+  background: #b91c1c;
+}
+
+html[data-theme="dark"] .audio-level-shell {
+  background: #111827;
+  border-color: #374151;
+}
+
+html[data-theme="dark"] .audio-level-label {
+  color: #94a3b8;
+}
+
+html[data-theme="dark"] .audio-level-cell {
+  background: rgba(71, 85, 105, 0.34);
+}
+
+html[data-theme="dark"] .audio-level-cell.is-active {
+  background: #f8fafc;
+}
+
+html[data-theme="dark"] .record-section:has(.record-btn.is-recording) .audio-level-cell.is-active {
+  background: #fca5a5;
 }
 
 /* Brand Icon - Static, No Animation */
