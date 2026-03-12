@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -195,16 +195,15 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
     if not raw_text:
         return JSONResponse(status_code=400, content={"error": "empty_text"})
 
-    truncated = False
-    text = raw_text
-    if len(text) > settings.summary_input_max_chars:
-        text = text[-settings.summary_input_max_chars :]
-        truncated = True
-
     language = _as_str(payload.language) or settings.default_language
 
     try:
-        result = await asyncio.to_thread(SUMMARIZER.summarize, text=text, language=language)
+        result = await asyncio.to_thread(
+            SUMMARIZER.summarize_long,
+            text=raw_text,
+            language=language,
+            max_chars=settings.summary_input_max_chars,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Summary failed")
         return JSONResponse(status_code=502, content={"error": "summary_failed", "detail": str(exc)})
@@ -213,8 +212,9 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
         {
             "summary": result.text,
             "model": result.model,
-            "inputChars": len(text),
-            "truncated": truncated,
+            "inputChars": len(raw_text),
+            "chunkCount": result.chunk_count,
+            "reduced": result.reduced,
         }
     )
 
@@ -234,17 +234,16 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
     if not raw_text:
         return JSONResponse(status_code=400, content={"error": "empty_text"})
 
-    truncated = False
-    text = raw_text
-    if len(text) > settings.proofread_input_max_chars:
-        text = text[-settings.proofread_input_max_chars :]
-        truncated = True
-
     language = _as_str(payload.language) or settings.default_language
-    logger.info("Proofread requested: chars=%d language=%s", len(text), language)
+    logger.info("Proofread requested: chars=%d language=%s", len(raw_text), language)
 
     try:
-        result = await asyncio.to_thread(PROOFREADER.proofread, text=text, language=language)
+        result = await asyncio.to_thread(
+            PROOFREADER.proofread_long,
+            text=raw_text,
+            language=language,
+            max_chars=settings.proofread_input_max_chars,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Proofread failed")
         return JSONResponse(status_code=502, content={"error": "proofread_failed", "detail": str(exc)})
@@ -253,9 +252,49 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
         {
             "corrected": result.text,
             "model": result.model,
-            "inputChars": len(text),
-            "truncated": truncated,
+            "inputChars": len(raw_text),
+            "chunkCount": result.chunk_count,
+            "reduced": result.reduced,
         }
+    )
+
+
+@app.post("/api/proofread/stream")
+async def proofread_stream(payload: ProofreadRequest) -> Response:
+    if PROOFREADER is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "proofread_not_configured",
+                "detail": "PROOFREAD_API_KEY / SUMMARY_API_KEY / ASR_API_KEY (or OPENAI_API_KEY) is missing",
+            },
+        )
+
+    raw_text = payload.text.strip()
+    if not raw_text:
+        return JSONResponse(status_code=400, content={"error": "empty_text"})
+
+    language = _as_str(payload.language) or settings.default_language
+
+    def event_stream():
+        try:
+            for event in PROOFREADER.proofread_stream_long(
+                text=raw_text,
+                language=language,
+                max_chars=settings.proofread_input_max_chars,
+            ):
+                yield _format_sse(event)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Proofread stream failed")
+            yield _format_sse({"type": "error", "detail": str(exc)})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -1019,6 +1058,10 @@ async def _safe_send(ws: WebSocket, payload: dict[str, Any]) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def _format_sse(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 @app.get("/api/transcript/{session_id}.txt", response_model=None)

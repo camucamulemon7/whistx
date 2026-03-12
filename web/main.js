@@ -151,6 +151,44 @@ function setProofreadButtonBusy(busy) {
   proofreadBtn.setAttribute("aria-busy", busy ? "true" : "false");
 }
 
+async function readSseJsonStream(response, onEvent) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("stream_not_supported");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+    let boundaryIndex = buffer.indexOf("\n\n");
+    while (boundaryIndex !== -1) {
+      const rawEvent = buffer.slice(0, boundaryIndex);
+      buffer = buffer.slice(boundaryIndex + 2);
+
+      const data = rawEvent
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n")
+        .trim();
+
+      if (data) {
+        onEvent(JSON.parse(data));
+      }
+
+      boundaryIndex = buffer.indexOf("\n\n");
+    }
+
+    if (done) {
+      break;
+    }
+  }
+}
+
 function applyDiarizationEnabled(value, options = {}) {
   const persist = options.persist !== false;
   const enabled = !!value;
@@ -1419,10 +1457,10 @@ async function proofreadAll() {
   setStatus("proofreading");
   showToast("校正中...", "default", 5000);
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120000);
+  const timeoutId = setTimeout(() => controller.abort(), 300000);
 
   try {
-    const response = await fetch("/api/proofread", {
+    const response = await fetch("/api/proofread/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1432,29 +1470,65 @@ async function proofreadAll() {
       signal: controller.signal,
     });
 
-    let payload = {};
-    try {
-      payload = await response.json();
-    } catch {
-      // ignore
-    }
-
     if (!response.ok) {
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch {
+        // ignore
+      }
       const detail = payload.detail || payload.error || `http_${response.status}`;
       throw new Error(String(detail));
     }
 
-    const correctedText = String(payload.corrected || "").trim();
+    let correctedText = "";
+    let modelName = "";
+    let chunkCount = 0;
+    let currentChunk = 0;
+    let lastRenderAt = 0;
+
+    await readSseJsonStream(response, (event) => {
+      const eventType = String(event?.type || "");
+
+      if (eventType === "start") {
+        modelName = String(event.model || "");
+        chunkCount = Number(event.chunkCount || 0);
+        proofreadMetaEl.textContent = chunkCount > 1 ? `処理中... 0/${chunkCount}` : "処理中...";
+        return;
+      }
+
+      if (eventType === "chunk_start") {
+        currentChunk = Number(event.chunkIndex || currentChunk || 0);
+        proofreadMetaEl.textContent = chunkCount > 1 ? `処理中... ${currentChunk}/${chunkCount}` : "処理中...";
+        return;
+      }
+
+      if (eventType === "delta") {
+        correctedText += String(event.delta || "");
+        const now = Date.now();
+        if (now - lastRenderAt >= 120 || correctedText.endsWith("\n")) {
+          setProofread(correctedText, chunkCount > 1 ? `処理中... ${currentChunk}/${chunkCount}` : "処理中...");
+          lastRenderAt = now;
+        }
+        return;
+      }
+
+      if (eventType === "error") {
+        throw new Error(String(event.detail || event.message || "proofread_stream_failed"));
+      }
+    });
+
+    correctedText = correctedText.trim();
     if (!correctedText) {
       throw new Error("empty_corrected");
     }
 
     const metaParts = [];
-    if (payload.model) {
-      metaParts.push(`model: ${payload.model}`);
+    if (modelName) {
+      metaParts.push(`model: ${modelName}`);
     }
-    if (payload.truncated) {
-      metaParts.push("入力を末尾で切り詰め");
+    if (chunkCount > 1) {
+      metaParts.push(`chunks: ${chunkCount}`);
     }
 
     setProofread(correctedText, metaParts.join(" | ") || "生成完了");
@@ -1515,8 +1589,11 @@ async function summarizeAll() {
     if (payload.model) {
       metaParts.push(`model: ${payload.model}`);
     }
-    if (payload.truncated) {
-      metaParts.push("入力を末尾で切り詰め");
+    if (payload.chunkCount > 1) {
+      metaParts.push(`chunks: ${payload.chunkCount}`);
+    }
+    if (payload.reduced) {
+      metaParts.push("統合済み");
     }
 
     setSummary(summaryText, metaParts.join(" | ") || "生成完了");

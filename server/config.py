@@ -171,7 +171,7 @@ def _decode_env_text(value: str) -> str:
 
 def _parse_ui_banners() -> tuple[dict[str, Any], ...]:
     raw = (
-        _env_first_non_empty("APP_UI_BANNERS", "UI_BANNERS", "WEBUI_BANNERS")
+        _env_first_non_empty("APP_UI_BANNERS_TEXT", "APP_UI_BANNERS", "UI_BANNERS", "WEBUI_BANNERS")
         or ""
     )
     if not raw:
@@ -180,7 +180,10 @@ def _parse_ui_banners() -> tuple[dict[str, Any], ...]:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        message = _clean_banner_text(raw, 2000)
+        parsed_simple = _parse_simple_ui_banners(raw)
+        if parsed_simple:
+            return parsed_simple
+        message = _clean_banner_text(_decode_env_text(raw), 2000)
         if not message:
             return ()
         return (
@@ -240,6 +243,52 @@ def _parse_ui_banners() -> tuple[dict[str, Any], ...]:
                 "title": title,
                 "message": message,
                 "dismissible": _to_bool_value(item.get("dismissible"), True),
+            }
+        )
+
+    return tuple(banners)
+
+
+def _parse_simple_ui_banners(raw: str) -> tuple[dict[str, Any], ...]:
+    decoded = _decode_env_text(raw).strip()
+    if not decoded:
+        return ()
+
+    banners: list[dict[str, Any]] = []
+    entries = [part.strip() for part in decoded.split(";;") if part.strip()]
+    for index, entry in enumerate(entries, start=1):
+        segments = [segment.strip() for segment in entry.split("|")]
+        if not segments:
+            continue
+
+        banner_type = "info"
+        title = ""
+        message = ""
+        dismissible = True
+
+        if len(segments) == 1:
+            message = segments[0]
+        elif len(segments) == 2:
+            banner_type, message = segments
+        elif len(segments) == 3:
+            banner_type, title, message = segments
+        else:
+            banner_type = segments[0]
+            title = segments[1]
+            dismissible = _to_bool_value(segments[-1], True)
+            message = "|".join(segments[2:-1]).strip()
+
+        clean_message = _clean_banner_text(message, 2000)
+        if not clean_message:
+            continue
+
+        banners.append(
+            {
+                "id": f"banner-{index}",
+                "type": _normalize_banner_type(banner_type),
+                "title": _clean_banner_text(title, 200),
+                "message": clean_message,
+                "dismissible": dismissible,
             }
         )
 

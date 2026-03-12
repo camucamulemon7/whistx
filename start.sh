@@ -3,6 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env}"
+
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/scripts/load_env.sh"
+
+if [[ -f "${ENV_FILE}" ]]; then
+  load_env_file "${ENV_FILE}"
+fi
+
 IMAGE_NAME="${CONTAINER_IMAGE_NAME:-${IMAGE_NAME:-whistx:latest}}"
 CONTAINER_NAME="${CONTAINER_NAME:-whistx}"
 APP_PORT="${APP_PORT:-${PORT:-8005}}"
@@ -10,10 +18,8 @@ APP_HOST="${APP_HOST:-${HOST:-0.0.0.0}}"
 APP_ENTRYPOINT="${APP_ENTRYPOINT:-${APP:-server.app:app}}"
 APP_WS_PATH="${APP_WS_PATH:-${WS_PATH:-/ws/transcribe}}"
 DATA_DIR="${APP_DATA_DIR:-${DATA_DIR:-${SCRIPT_DIR}/data}}"
-
-if [[ -f "${ENV_FILE}" ]]; then
-  eval "$("python3" "${SCRIPT_DIR}/scripts/load_env.py" "${ENV_FILE}")"
-fi
+BUILD_POLICY="${CONTAINER_BUILD_POLICY:-missing}"
+INSTALL_DIARIZATION="${CONTAINER_INSTALL_DIARIZATION:-${DIARIZATION_ENABLED:-0}}"
 
 if [[ "${DATA_DIR}" != /* ]]; then
   DATA_DIR="${SCRIPT_DIR}/${DATA_DIR#./}"
@@ -22,6 +28,7 @@ fi
 ASR_API_KEY_VALUE="${ASR_API_KEY:-${OPENAI_API_KEY:-}}"
 ASR_BASE_URL_VALUE="${ASR_BASE_URL:-${OPENAI_BASE_URL:-}}"
 ASR_MODEL_VALUE="${ASR_MODEL:-${WHISPER_MODEL:-mistralai/Voxtral-Mini-4B-Realtime-2602}}"
+APP_UI_BANNERS_TEXT_VALUE="${APP_UI_BANNERS_TEXT:-}"
 APP_UI_BANNERS_VALUE="${APP_UI_BANNERS:-${UI_BANNERS:-${WEBUI_BANNERS:-}}}"
 ASR_DEFAULT_LANGUAGE_VALUE="${ASR_DEFAULT_LANGUAGE:-${DEFAULT_LANGUAGE:-ja}}"
 ASR_DEFAULT_PROMPT_VALUE="${ASR_DEFAULT_PROMPT:-${DEFAULT_PROMPT:-}}"
@@ -39,7 +46,31 @@ fi
 
 mkdir -p "${DATA_DIR}/transcripts"
 
-docker build -t "${IMAGE_NAME}" "${SCRIPT_DIR}"
+case "${BUILD_POLICY}" in
+  always)
+    echo "[start.sh] イメージを毎回ビルドします: ${IMAGE_NAME}" >&2
+    docker build --build-arg INSTALL_DIARIZATION="${INSTALL_DIARIZATION}" -t "${IMAGE_NAME}" "${SCRIPT_DIR}"
+    ;;
+  missing)
+    if docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1; then
+      echo "[start.sh] 既存イメージを再利用します: ${IMAGE_NAME}" >&2
+    else
+      echo "[start.sh] イメージがないためビルドします: ${IMAGE_NAME}" >&2
+      docker build --build-arg INSTALL_DIARIZATION="${INSTALL_DIARIZATION}" -t "${IMAGE_NAME}" "${SCRIPT_DIR}"
+    fi
+    ;;
+  never)
+    if ! docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1; then
+      echo "[start.sh] BUILD_POLICY=never ですがイメージが存在しません: ${IMAGE_NAME}" >&2
+      exit 1
+    fi
+    echo "[start.sh] 既存イメージを使用します: ${IMAGE_NAME}" >&2
+    ;;
+  *)
+    echo "[start.sh] CONTAINER_BUILD_POLICY は always / missing / never のいずれかにしてください" >&2
+    exit 1
+    ;;
+esac
 
 docker run --rm \
   --name "${CONTAINER_NAME}" \
@@ -61,6 +92,7 @@ docker run --rm \
   -e PROOFREAD_INPUT_MAX_CHARS="${PROOFREAD_INPUT_MAX_CHARS:-24000}" \
   -e PROOFREAD_SYSTEM_PROMPT="${PROOFREAD_SYSTEM_PROMPT:-}" \
   -e PROOFREAD_PROMPT_TEMPLATE="${PROOFREAD_PROMPT_TEMPLATE:-}" \
+  -e APP_UI_BANNERS_TEXT="${APP_UI_BANNERS_TEXT_VALUE}" \
   -e APP_UI_BANNERS="${APP_UI_BANNERS_VALUE}" \
   -e APP_BRAND_TITLE="${APP_BRAND_TITLE:-whistx}" \
   -e APP_BRAND_TAGLINE="${APP_BRAND_TAGLINE:-高精度リアルタイム文字起こし}" \
