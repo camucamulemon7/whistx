@@ -3,14 +3,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env}"
+
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/scripts/load_env.sh"
+
+if [[ -f "${ENV_FILE}" ]]; then
+  load_env_file "${ENV_FILE}"
+fi
+
 VENV_DIR="${DEV_VENV_DIR:-${VENV_DIR:-${SCRIPT_DIR}/.venv}}"
 HOST="${APP_HOST:-${HOST:-0.0.0.0}}"
 PORT="${APP_PORT:-${PORT:-8005}}"
 APP="${APP_ENTRYPOINT:-${APP:-server.app:app}}"
-
-if [[ -f "${ENV_FILE}" ]]; then
-  eval "$("python3" "${SCRIPT_DIR}/scripts/load_env.py" "${ENV_FILE}")"
-fi
 
 if [[ "${VENV_DIR}" != /* ]]; then
   VENV_DIR="${SCRIPT_DIR}/${VENV_DIR#./}"
@@ -34,6 +38,10 @@ if [[ "${DEV_SKIP_PIP_INSTALL:-${SKIP_PIP_INSTALL:-0}}" != "1" ]]; then
   echo "[run.sh] 依存関係を更新します" >&2
   python -m pip install -U pip
   pip install -r "${SCRIPT_DIR}/requirements.txt"
+  if [[ "${DIARIZATION_ENABLED:-0}" == "1" || "${INSTALL_DIARIZATION_DEPS:-0}" == "1" ]]; then
+    echo "[run.sh] diarization 依存関係を追加インストールします" >&2
+    pip install -r "${SCRIPT_DIR}/requirements-diarization.txt"
+  fi
 fi
 
 APP_DATA_DIR="${APP_DATA_DIR:-${DATA_DIR:-${SCRIPT_DIR}/data}}"

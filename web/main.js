@@ -6,6 +6,10 @@ const bannersContainerEl = $("#bannersContainer");
 const brandTitleEl = $("#brandTitle");
 const brandTaglineEl = $("#brandTagline");
 const themeToggleBtn = $("#themeToggle");
+const sidebarToggleBtn = $("#sidebarToggle");
+const sidebarCloseBtn = $("#sidebarClose");
+const sidebarBackdropEl = $("#sidebarBackdrop");
+const sidePanelEl = $("#sidePanel");
 const audioLevelIndicatorEl = $("#audioLevelIndicator");
 const audioLevelMatrixEl = $("#audioLevelMatrix");
 
@@ -21,13 +25,19 @@ const diarizationMaxSpeakersEl = $("#diarizationMaxSpeakers");
 const diarizationSpeakerHintEl = $("#diarizationSpeakerHint");
 const chunkSecondsEl = $("#chunkSeconds");
 const promptEl = $("#prompt");
+const summaryPromptEl = $("#summaryPrompt");
 const promptTemplateButtonsEl = $("#promptTemplateButtons");
+const workspacePanelsEl = $("#workspacePanels");
+const panelResizerEls = Array.from(document.querySelectorAll("[data-resizer]"));
 const chunkHintEl = $("#chunkHint");
 const presetButtons = Array.from(document.querySelectorAll("[data-chunk-preset]"));
 
 const startBtn = $("#startBtn");
 const summaryBtn = $("#summaryBtn");
+const summaryBtnLabelEl = $("#summaryBtnLabel");
 const proofreadBtn = $("#proofreadBtn");
+const proofreadBtnLabelEl = $("#proofreadBtnLabel");
+const proofreadModeEl = $("#proofreadMode");
 const copyBtn = $("#copyBtn");
 const copyProofreadBtn = $("#copyProofreadBtn");
 const clearBtn = $("#clearBtn");
@@ -84,6 +94,12 @@ const state = {
   proofread: "",
   proofreadAvailable: true,
   proofreadInFlight: false,
+  proofreadMode: "proofread",
+  sidebarOpen: false,
+  activeResizer: null,
+  panelLeftRatio: 1.35,
+  panelCenterRatio: 0.95,
+  panelRightRatio: 0.9,
   diarizationAvailable: true,
   diarizationEnabled: true,
   diarizationSpeakerMode: "auto",
@@ -147,8 +163,167 @@ function applyBranding(title, tagline) {
 function setProofreadButtonBusy(busy) {
   if (!proofreadBtn) return;
   proofreadBtn.disabled = busy;
-  proofreadBtn.textContent = busy ? "校正中..." : "校正";
+  if (proofreadBtnLabelEl) {
+    proofreadBtnLabelEl.textContent = busy ? "実行中..." : "実行";
+  }
   proofreadBtn.setAttribute("aria-busy", busy ? "true" : "false");
+}
+
+function normalizeProofreadMode(value) {
+  if (value === "translate_ja" || value === "translate_en") return value;
+  return "proofread";
+}
+
+function proofreadActionLabel() {
+  const mode = normalizeProofreadMode(state.proofreadMode);
+  if (mode === "translate_ja") return "日本語訳";
+  if (mode === "translate_en") return "英語訳";
+  return "校正";
+}
+
+function applyProofreadMode(value) {
+  state.proofreadMode = normalizeProofreadMode(value);
+  if (proofreadModeEl) {
+    proofreadModeEl.value = state.proofreadMode;
+  }
+  if (proofreadBtn && !state.proofreadInFlight) {
+    if (proofreadBtnLabelEl) {
+      proofreadBtnLabelEl.textContent = "実行";
+    }
+    proofreadBtn.setAttribute("aria-label", `${proofreadActionLabel()}を開始`);
+    proofreadBtn.title = proofreadActionLabel();
+  }
+}
+
+function applySidebarOpen(value) {
+  state.sidebarOpen = !!value;
+  if (sidePanelEl) {
+    sidePanelEl.classList.toggle("is-open", state.sidebarOpen);
+    sidePanelEl.setAttribute("aria-hidden", state.sidebarOpen ? "false" : "true");
+  }
+  if (sidebarBackdropEl) {
+    sidebarBackdropEl.hidden = !state.sidebarOpen;
+    sidebarBackdropEl.classList.toggle("is-open", state.sidebarOpen);
+  }
+  if (sidebarToggleBtn) {
+    sidebarToggleBtn.setAttribute("aria-label", state.sidebarOpen ? "サイドパネルを閉じる" : "サイドパネルを開く");
+    sidebarToggleBtn.title = state.sidebarOpen ? "サイドパネルを閉じる" : "サイドパネル";
+  }
+}
+
+function applyWorkspaceRatios(left, center, right, options = {}) {
+  const persist = options.persist !== false;
+  const safeLeft = Math.max(0.65, Math.min(2.4, Number(left) || state.panelLeftRatio));
+  const safeCenter = Math.max(0.6, Math.min(2.2, Number(center) || state.panelCenterRatio));
+  const safeRight = Math.max(0.6, Math.min(2.2, Number(right) || state.panelRightRatio));
+
+  state.panelLeftRatio = safeLeft;
+  state.panelCenterRatio = safeCenter;
+  state.panelRightRatio = safeRight;
+
+  if (workspacePanelsEl) {
+    workspacePanelsEl.style.setProperty("--panel-left", `${safeLeft}fr`);
+    workspacePanelsEl.style.setProperty("--panel-center", `${safeCenter}fr`);
+    workspacePanelsEl.style.setProperty("--panel-right", `${safeRight}fr`);
+  }
+
+  if (persist) {
+    try {
+      localStorage.setItem(
+        "whistx_workspace_ratios",
+        JSON.stringify({ left: safeLeft, center: safeCenter, right: safeRight })
+      );
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function setupWorkspaceResizers() {
+  if (!workspacePanelsEl || panelResizerEls.length === 0) return;
+
+  const stopDrag = () => {
+    state.activeResizer = null;
+    document.body.classList.remove("is-resizing-panels");
+  };
+
+  const onPointerMove = (event) => {
+    if (!state.activeResizer || window.innerWidth <= 1100) return;
+    const rect = workspacePanelsEl.getBoundingClientRect();
+    const totalWidth = rect.width;
+    if (totalWidth <= 0) return;
+
+    const currentLeft = state.panelLeftRatio;
+    const currentCenter = state.panelCenterRatio;
+    const currentRight = state.panelRightRatio;
+    const totalRatio = currentLeft + currentCenter + currentRight;
+    const ratioPerPixel = totalRatio / totalWidth;
+
+    if (state.activeResizer === "left") {
+      const pointerRatio = (event.clientX - rect.left) * ratioPerPixel;
+      const nextLeft = Math.max(0.75, Math.min(totalRatio - currentRight - 0.7, pointerRatio));
+      const nextCenter = totalRatio - currentRight - nextLeft;
+      applyWorkspaceRatios(nextLeft, nextCenter, currentRight);
+      return;
+    }
+
+    const pointerRatio = (rect.right - event.clientX) * ratioPerPixel;
+    const nextRight = Math.max(0.7, Math.min(totalRatio - currentLeft - 0.7, pointerRatio));
+    const nextCenter = totalRatio - currentLeft - nextRight;
+    applyWorkspaceRatios(currentLeft, nextCenter, nextRight);
+  };
+
+  panelResizerEls.forEach((handle) => {
+    handle.addEventListener("pointerdown", (event) => {
+      if (window.innerWidth <= 1100) return;
+      state.activeResizer = String(handle.dataset.resizer || "");
+      document.body.classList.add("is-resizing-panels");
+      handle.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    });
+  });
+
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", stopDrag);
+  window.addEventListener("pointercancel", stopDrag);
+}
+
+async function readSseJsonStream(response, onEvent) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("stream_not_supported");
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+    let boundaryIndex = buffer.indexOf("\n\n");
+    while (boundaryIndex !== -1) {
+      const rawEvent = buffer.slice(0, boundaryIndex);
+      buffer = buffer.slice(boundaryIndex + 2);
+
+      const data = rawEvent
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n")
+        .trim();
+
+      if (data) {
+        onEvent(JSON.parse(data));
+      }
+
+      boundaryIndex = buffer.indexOf("\n\n");
+    }
+
+    if (done) {
+      break;
+    }
+  }
 }
 
 function applyDiarizationEnabled(value, options = {}) {
@@ -620,9 +795,13 @@ function setUiRecording(active) {
   if (active) {
     startBtn.classList.add("is-recording");
     startBtn.querySelector(".record-label").textContent = "停止";
+    startBtn.setAttribute("aria-pressed", "true");
+    startBtn.setAttribute("aria-label", "録音を停止");
   } else {
     startBtn.classList.remove("is-recording");
     startBtn.querySelector(".record-label").textContent = "録音開始";
+    startBtn.setAttribute("aria-pressed", "false");
+    startBtn.setAttribute("aria-label", "録音を開始");
 
     // Brief completion feedback
     if (state.log.length > 0) {
@@ -1417,53 +1596,90 @@ async function proofreadAll() {
   setProofreadButtonBusy(true);
   proofreadMetaEl.textContent = "処理中...";
   setStatus("proofreading");
-  showToast("校正中...", "default", 5000);
+  showToast(`${proofreadActionLabel()}中...`, "default", 5000);
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120000);
+  const timeoutId = setTimeout(() => controller.abort(), 300000);
 
   try {
-    const response = await fetch("/api/proofread", {
+    const response = await fetch("/api/proofread/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text,
         language: selectedLanguage(),
+        mode: state.proofreadMode,
       }),
       signal: controller.signal,
     });
 
-    let payload = {};
-    try {
-      payload = await response.json();
-    } catch {
-      // ignore
-    }
-
     if (!response.ok) {
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch {
+        // ignore
+      }
       const detail = payload.detail || payload.error || `http_${response.status}`;
       throw new Error(String(detail));
     }
 
-    const correctedText = String(payload.corrected || "").trim();
+    let correctedText = "";
+    let modelName = "";
+    let chunkCount = 0;
+    let currentChunk = 0;
+    let lastRenderAt = 0;
+
+    await readSseJsonStream(response, (event) => {
+      const eventType = String(event?.type || "");
+
+      if (eventType === "start") {
+        modelName = String(event.model || "");
+        chunkCount = Number(event.chunkCount || 0);
+        proofreadMetaEl.textContent = chunkCount > 1 ? `処理中... 0/${chunkCount}` : "処理中...";
+        return;
+      }
+
+      if (eventType === "chunk_start") {
+        currentChunk = Number(event.chunkIndex || currentChunk || 0);
+        proofreadMetaEl.textContent = chunkCount > 1 ? `処理中... ${currentChunk}/${chunkCount}` : "処理中...";
+        return;
+      }
+
+      if (eventType === "delta") {
+        correctedText += String(event.delta || "");
+        const now = Date.now();
+        if (now - lastRenderAt >= 120 || correctedText.endsWith("\n")) {
+          setProofread(correctedText, chunkCount > 1 ? `処理中... ${currentChunk}/${chunkCount}` : "処理中...");
+          lastRenderAt = now;
+        }
+        return;
+      }
+
+      if (eventType === "error") {
+        throw new Error(String(event.detail || event.message || "proofread_stream_failed"));
+      }
+    });
+
+    correctedText = correctedText.trim();
     if (!correctedText) {
       throw new Error("empty_corrected");
     }
 
     const metaParts = [];
-    if (payload.model) {
-      metaParts.push(`model: ${payload.model}`);
+    if (modelName) {
+      metaParts.push(`model: ${modelName}`);
     }
-    if (payload.truncated) {
-      metaParts.push("入力を末尾で切り詰め");
+    if (chunkCount > 1) {
+      metaParts.push(`chunks: ${chunkCount}`);
     }
 
     setProofread(correctedText, metaParts.join(" | ") || "生成完了");
     setStatus("proofread_done");
-    showToast("校正結果を生成しました", "success");
+    showToast(`${proofreadActionLabel()}を生成しました`, "success");
   } catch (err) {
     const message = err?.name === "AbortError" ? "request_timeout" : err?.message || "unknown_error";
-    showToast(`校正に失敗: ${message}`, "error");
-    setProofread(`校正に失敗しました。\n${message}`, "エラー");
+    showToast(`${proofreadActionLabel()}に失敗: ${message}`, "error");
+    setProofread(`${proofreadActionLabel()}に失敗しました。\n${message}`, "エラー");
     setStatus(`proofread_failed: ${message}`);
   } finally {
     clearTimeout(timeoutId);
@@ -1481,6 +1697,9 @@ async function summarizeAll() {
   }
 
   summaryBtn.disabled = true;
+  if (summaryBtnLabelEl) {
+    summaryBtnLabelEl.textContent = "実行中...";
+  }
   setStatus("summarizing");
   showToast("要約を生成中...", "default", 5000);
 
@@ -1491,6 +1710,7 @@ async function summarizeAll() {
       body: JSON.stringify({
         text,
         language: selectedLanguage(),
+        prompt: String(summaryPromptEl?.value || "").trim(),
       }),
     });
 
@@ -1515,8 +1735,11 @@ async function summarizeAll() {
     if (payload.model) {
       metaParts.push(`model: ${payload.model}`);
     }
-    if (payload.truncated) {
-      metaParts.push("入力を末尾で切り詰め");
+    if (payload.chunkCount > 1) {
+      metaParts.push(`chunks: ${payload.chunkCount}`);
+    }
+    if (payload.reduced) {
+      metaParts.push("統合済み");
     }
 
     setSummary(summaryText, metaParts.join(" | ") || "生成完了");
@@ -1527,6 +1750,9 @@ async function summarizeAll() {
     setStatus(`summary_failed: ${err.message}`);
   } finally {
     summaryBtn.disabled = false;
+    if (summaryBtnLabelEl) {
+      summaryBtnLabelEl.textContent = "実行";
+    }
   }
 }
 
@@ -1631,6 +1857,50 @@ if (proofreadBtn) {
   proofreadBtn.addEventListener("click", () => {
     proofreadAll();
   });
+}
+
+if (proofreadModeEl) {
+  proofreadModeEl.addEventListener("change", () => {
+    applyProofreadMode(proofreadModeEl.value);
+  });
+}
+
+if (sidebarToggleBtn) {
+  sidebarToggleBtn.addEventListener("click", () => {
+    applySidebarOpen(!state.sidebarOpen);
+  });
+}
+
+if (sidebarCloseBtn) {
+  sidebarCloseBtn.addEventListener("click", () => {
+    applySidebarOpen(false);
+  });
+}
+
+if (sidebarBackdropEl) {
+  sidebarBackdropEl.addEventListener("click", () => {
+    applySidebarOpen(false);
+  });
+}
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.sidebarOpen) {
+    applySidebarOpen(false);
+  }
+});
+
+setupWorkspaceResizers();
+
+try {
+  const savedRatiosRaw = localStorage.getItem("whistx_workspace_ratios");
+  if (savedRatiosRaw) {
+    const savedRatios = JSON.parse(savedRatiosRaw);
+    applyWorkspaceRatios(savedRatios.left, savedRatios.center, savedRatios.right, { persist: false });
+  } else {
+    applyWorkspaceRatios(state.panelLeftRatio, state.panelCenterRatio, state.panelRightRatio, { persist: false });
+  }
+} catch {
+  applyWorkspaceRatios(state.panelLeftRatio, state.panelCenterRatio, state.panelRightRatio, { persist: false });
 }
 
 copyBtn.addEventListener("click", () => {
@@ -1770,14 +2040,14 @@ async function loadCapabilities() {
 
     if (!state.proofreadAvailable) {
       setProofread(
-        "校正機能が無効です。\nサーバーの API キー設定（PROOFREAD_API_KEY / SUMMARY_API_KEY / ASR_API_KEY）を確認してください。",
+        "校正・翻訳機能が無効です。\nサーバーの API キー設定（PROOFREAD_API_KEY / SUMMARY_API_KEY / ASR_API_KEY）を確認してください。",
         "利用不可"
       );
       if (proofreadBtn) {
-        proofreadBtn.title = "校正機能はサーバーで無効";
+        proofreadBtn.title = "校正・翻訳機能はサーバーで無効";
       }
     } else if (proofreadBtn) {
-      proofreadBtn.title = "校正";
+      proofreadBtn.title = proofreadActionLabel();
     }
 
     if (diarizationToggleEl) {
@@ -1829,6 +2099,11 @@ updateSegmentCount();
 updateDownloadLinks();
 setSummary("", "未生成");
 setProofread("", "未生成");
+applyProofreadMode(proofreadModeEl?.value || "proofread");
+if (summaryBtnLabelEl) {
+  summaryBtnLabelEl.textContent = "実行";
+}
+applySidebarOpen(false);
 setStatus("idle");
 
 // Show initial empty state for transcript

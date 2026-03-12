@@ -9,8 +9,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>whistx</title>
-    <link rel="stylesheet" href="/style.css?v=20260311e" />
-    <script type="module" src="/main.js?v=20260311c"></script>
+    <link rel="stylesheet" href="/style.css?v=20260313i" />
+    <script type="module" src="/main.js?v=20260313i"></script>
   </head>
   <body>
     <div class="app">
@@ -42,6 +42,14 @@
             </div>
             <!-- Theme Toggle -->
             <div class="theme-toggle-wrapper">
+              <button id="sidebarToggle" type="button" class="theme-toggle-btn" aria-label="サイドパネルを開く" title="サイドパネル">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="4" y1="6" x2="20" y2="6"/>
+                  <line x1="10" y1="12" x2="20" y2="12"/>
+                  <line x1="6" y1="18" x2="20" y2="18"/>
+                  <circle cx="7" cy="12" r="2"/>
+                </svg>
+              </button>
               <button id="themeToggle" type="button" class="theme-toggle-btn" aria-label="テーマを切り替え" title="テーマ切り替え">
                 <svg class="theme-icon sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="12" cy="12" r="5"/>
@@ -69,34 +77,67 @@
 
         <!-- Quick Settings Panel -->
         <section class="settings-panel glass-panel reveal" aria-label="設定">
-          <div class="settings-row">
-            <div class="setting-group">
-              <label for="language" class="setting-label">言語</label>
-              <div class="select-wrapper">
-                <select id="language">
-                  <option value="ja" selected>日本語</option>
-                  <option value="en">English</option>
-                  <option value="">自動検出</option>
-                </select>
+          <div class="settings-layout">
+            <div class="record-hero record-hero-inline">
+              <div id="audioLevelIndicator" class="audio-level-indicator" hidden>
+                <div class="audio-level-shell">
+                  <span class="audio-level-label">INPUT</span>
+                  <div id="audioLevelMatrix" class="audio-level-matrix" aria-hidden="true"></div>
+                </div>
               </div>
+
+              <button
+                id="startBtn"
+                class="record-btn"
+                type="button"
+                aria-label="録音を開始"
+                aria-describedby="recordBtnHint"
+                aria-pressed="false"
+              >
+                <div class="record-btn-inner">
+                  <svg class="record-icon" width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="12" cy="12" r="6"/>
+                  </svg>
+                  <svg class="stop-icon" width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="6" y="6" width="12" height="12" rx="2"/>
+                  </svg>
+                </div>
+                <span class="record-label">録音開始</span>
+              </button>
+              <span id="recordBtnHint" class="sr-only">タップでマイクからの録音を開始します</span>
             </div>
-            <div class="setting-group">
-              <label for="audioSource" class="setting-label">音声ソース</label>
-              <div class="select-wrapper">
-                <select id="audioSource">
-                  <option value="mic" selected>マイク</option>
-                  <option value="display">画面共有</option>
-                  <option value="both">両方</option>
-                </select>
+
+            <div class="settings-main">
+              <div class="settings-row">
+                <div class="setting-group">
+                  <label for="language" class="setting-label">言語</label>
+                  <div class="select-wrapper">
+                    <select id="language">
+                      <option value="ja" selected>日本語</option>
+                      <option value="en">English</option>
+                      <option value="">自動検出</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="setting-group">
+                  <label for="audioSource" class="setting-label">音声ソース</label>
+                  <div class="select-wrapper">
+                    <select id="audioSource">
+                      <option value="mic" selected>マイク</option>
+                      <option value="display">画面共有</option>
+                      <option value="both">両方</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="setting-group setting-group-toggle">
+                  <span class="setting-label">話者分離</span>
+                  <label for="diarizationEnabled" class="toggle-control">
+                    <input id="diarizationEnabled" type="checkbox" checked />
+                    <span class="toggle-track" aria-hidden="true"></span>
+                    <span id="diarizationStateText" class="toggle-text">ON</span>
+                  </label>
+                </div>
               </div>
-            </div>
-            <div class="setting-group setting-group-toggle">
-              <span class="setting-label">話者分離</span>
-              <label for="diarizationEnabled" class="toggle-control">
-                <input id="diarizationEnabled" type="checkbox" checked />
-                <span class="toggle-track" aria-hidden="true"></span>
-                <span id="diarizationStateText" class="toggle-text">ON</span>
-              </label>
             </div>
           </div>
           <div id="diarizationConfigRow" class="diarization-config-row">
@@ -161,88 +202,13 @@
           </p>
         </section>
 
-        <!-- Record Control -->
-        <section class="record-section reveal delay-1">
-          <div class="record-hero">
-            <!-- Audio Level Indicator -->
-            <div id="audioLevelIndicator" class="audio-level-indicator" hidden>
-              <div class="audio-level-shell">
-                <span class="audio-level-label">INPUT</span>
-                <div id="audioLevelMatrix" class="audio-level-matrix" aria-hidden="true"></div>
-              </div>
-            </div>
-
-            <button
-              id="startBtn"
-              class="record-btn"
-              type="button"
-              aria-label="録音を開始"
-              aria-describedby="recordBtnHint"
-            >
-              <div class="record-btn-inner">
-                <svg class="record-icon" width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
-                  <circle cx="12" cy="12" r="6"/>
-                </svg>
-                <svg class="stop-icon" width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="6" y="6" width="12" height="12" rx="2"/>
-                </svg>
-              </div>
-              <span class="record-label">録音開始</span>
-            </button>
-            <span id="recordBtnHint" class="sr-only">タップでマイクからの録音を開始します</span>
-          </div>
-
-          <!-- Options Grid -->
-          <div class="record-options-grid">
-            <!-- Chunk Settings -->
-            <div class="chunk-settings glass-panel">
-              <div class="chunk-header">
-                <span class="chunk-label">チャンク秒数</span>
-                <span id="chunkHint" class="chunk-hint">精度重視</span>
-              </div>
-              <div class="chunk-controls">
-                <input
-                  id="chunkSeconds"
-                  type="number"
-                  min="15"
-                  max="60"
-                  step="1"
-                  value="30"
-                  class="chunk-input"
-                  aria-label="チャンク秒数"
-                />
-                <div class="chunk-presets" role="group" aria-label="チャンクプリセット">
-                  <button type="button" class="chunk-chip" data-chunk-preset="15">15s</button>
-                  <button type="button" class="chunk-chip is-active" data-chunk-preset="30">30s</button>
-                  <button type="button" class="chunk-chip" data-chunk-preset="45">45s</button>
-                  <button type="button" class="chunk-chip" data-chunk-preset="60">60s</button>
-                </div>
-              </div>
-              <p class="chunk-description">長いほど精度向上・遅延増加</p>
-            </div>
-
-            <!-- Prompt Input -->
-            <div class="prompt-section glass-panel">
-              <div class="prompt-header">
-                <label for="prompt" class="prompt-label">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                  </svg>
-                  コンテキストプロンプト
-                </label>
-                <div id="promptTemplateButtons" class="prompt-template-list" aria-label="プロンプトテンプレート"></div>
-              </div>
-              <textarea
-                id="prompt"
-                rows="2"
-                placeholder="固有名詞や専門用語を入力すると認識精度が向上します"
-              ></textarea>
-            </div>
-          </div>
-        </section>
-
-        <!-- Transcript + Proofread Grid -->
-        <section class="transcript-proofread-grid reveal delay-2" aria-label="文字起こしと校正結果">
+        <!-- Workspace Panels -->
+        <section
+          id="workspacePanels"
+          class="workspace-panels reveal delay-2"
+          aria-label="文字起こしと校正結果"
+          style="--panel-left: 1.35fr; --panel-center: 0.95fr; --panel-right: 0.9fr;"
+        >
           <!-- Transcript Panel -->
           <section class="transcript-panel glass-panel" aria-label="文字起こし結果">
             <header class="panel-header">
@@ -297,6 +263,8 @@
             </div>
           </section>
 
+          <div class="panel-resizer" data-resizer="left" aria-hidden="true"></div>
+
           <!-- Proofread Panel -->
           <section class="proofread-panel glass-panel" aria-label="校正結果">
             <header class="panel-header">
@@ -311,12 +279,19 @@
                 <span id="proofreadMeta" class="panel-badge">未生成</span>
               </div>
               <div class="panel-actions">
+                <div class="select-wrapper compact-select">
+                  <select id="proofreadMode" aria-label="校正または翻訳モード">
+                    <option value="proofread" selected>校正</option>
+                    <option value="translate_ja">日本語訳</option>
+                    <option value="translate_en">英語訳</option>
+                  </select>
+                </div>
                 <button id="proofreadBtn" type="button" class="btn-action" aria-label="校正を開始">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M12 20h9"/>
                     <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
                   </svg>
-                  <span>校正</span>
+                  <span id="proofreadBtnLabel">実行</span>
                 </button>
                 <button id="copyProofreadBtn" type="button" class="icon-btn" aria-label="校正結果をコピー" title="校正結果をコピー">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -332,10 +307,11 @@
               </div>
             </div>
           </section>
-        </section>
 
-        <!-- Summary Panel -->
-        <section class="summary-panel glass-panel reveal delay-3" aria-label="要約">
+          <div class="panel-resizer" data-resizer="right" aria-hidden="true"></div>
+
+          <!-- Summary Panel -->
+          <section class="summary-panel glass-panel" aria-label="要約">
           <header class="panel-header">
             <div class="panel-title-group">
               <div class="panel-icon summary-icon">
@@ -353,19 +329,96 @@
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polygon points="13,2 3,14 12,14 11,22 21,10 12,10 13,2"/>
               </svg>
-              <span>要約</span>
+              <span id="summaryBtnLabel">実行</span>
             </button>
           </header>
-          <div id="summaryText" class="summary-content">
-            <div class="empty-state small">
-              <p class="empty-description">「要約」ボタンでAIによる要約を生成します</p>
+            <div id="summaryText" class="summary-content">
+              <div class="empty-state small">
+                <p class="empty-description">「要約」ボタンでAIによる要約を生成します</p>
+              </div>
             </div>
-          </div>
+          </section>
         </section>
       </main>
 
       <!-- Toast Container -->
       <div id="toastContainer" class="toast-container" role="alert" aria-live="assertive"></div>
     </div>
+
+    <div id="sidebarBackdrop" class="sidebar-backdrop" hidden></div>
+    <aside id="sidePanel" class="side-panel" aria-label="詳細設定" aria-hidden="true">
+      <div class="side-panel-header">
+        <div>
+          <h2 class="side-panel-title">詳細設定</h2>
+          <p class="side-panel-description">文字起こしと要約のプロンプトをここで調整します</p>
+        </div>
+        <button id="sidebarClose" type="button" class="icon-btn" aria-label="サイドパネルを閉じる" title="閉じる">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="side-panel-section">
+        <div class="chunk-header">
+          <span class="chunk-label">チャンク秒数</span>
+          <span id="chunkHint" class="chunk-hint">精度重視</span>
+        </div>
+        <div class="chunk-controls">
+          <input
+            id="chunkSeconds"
+            type="number"
+            min="15"
+            max="60"
+            step="1"
+            value="30"
+            class="chunk-input"
+            aria-label="チャンク秒数"
+          />
+          <div class="chunk-presets" role="group" aria-label="チャンクプリセット">
+            <button type="button" class="chunk-chip" data-chunk-preset="15">15s</button>
+            <button type="button" class="chunk-chip is-active" data-chunk-preset="30">30s</button>
+            <button type="button" class="chunk-chip" data-chunk-preset="45">45s</button>
+            <button type="button" class="chunk-chip" data-chunk-preset="60">60s</button>
+          </div>
+        </div>
+        <p class="chunk-description">長いほど精度向上・遅延増加</p>
+      </div>
+
+      <div class="side-panel-section">
+        <div class="prompt-header">
+          <label for="prompt" class="prompt-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            コンテキストプロンプト
+          </label>
+          <div id="promptTemplateButtons" class="prompt-template-list" aria-label="プロンプトテンプレート"></div>
+        </div>
+        <textarea
+          id="prompt"
+          rows="6"
+          class="side-panel-textarea"
+          placeholder="固有名詞や専門用語を入力すると認識精度が向上します"
+        ></textarea>
+      </div>
+
+      <div class="side-panel-section">
+        <label for="summaryPrompt" class="prompt-label">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14,2 14,8 20,8"/>
+          </svg>
+          要約プロンプト
+        </label>
+        <textarea
+          id="summaryPrompt"
+          rows="8"
+          class="side-panel-textarea"
+          placeholder="未入力の場合はサーバーの既定要約プロンプトを使用します。{text}, {language} が使えます。"
+        ></textarea>
+      </div>
+    </aside>
   </body>
 </html>

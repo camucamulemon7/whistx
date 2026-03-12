@@ -25,6 +25,8 @@ It records microphone audio, shared screen audio, or both, sends chunked audio t
 - Optional transcript summarization with an LLM backend
 - Optional transcript proofreading with an LLM backend
 
+By default, diarization dependencies are not installed in local or container setups unless explicitly enabled.
+
 ## Current Architecture
 
 ### Frontend
@@ -82,6 +84,18 @@ cp .env.example .env
 ./run.sh
 ```
 
+If you want local diarization support, set one of these before running:
+
+```env
+DIARIZATION_ENABLED=1
+```
+
+or
+
+```env
+INSTALL_DIARIZATION_DEPS=1
+```
+
 Then open:
 
 - `http://localhost:8005`
@@ -99,6 +113,17 @@ cp .env.example .env
 cp .env.example .env
 ./podman-run.sh
 ```
+
+Container build behavior:
+
+- `CONTAINER_BUILD_POLICY=missing` (default): build only when the image does not exist
+- `CONTAINER_BUILD_POLICY=always`: rebuild every time
+- `CONTAINER_BUILD_POLICY=never`: never build, require an existing local image
+
+Container diarization dependency behavior:
+
+- `CONTAINER_INSTALL_DIARIZATION=0` (default): do not install `torch` / `torchaudio` / `pyannote.audio`
+- `CONTAINER_INSTALL_DIARIZATION=1`: include diarization dependencies in the image
 
 ## Minimal Configuration
 
@@ -139,8 +164,34 @@ ASR_MODEL=whisper-1
 
 - `APP_BRAND_TITLE`
 - `APP_BRAND_TAGLINE`
+- `APP_UI_BANNERS_TEXT`
 - `APP_UI_BANNERS`
 - `APP_PROMPT_TEMPLATES`
+
+`APP_UI_BANNERS_TEXT` is the recommended format when you generate `.env` from `Makefile` or `sed`.
+
+Single banner:
+
+```env
+APP_UI_BANNERS_TEXT=warning|注意|(社外)GPUを使うので社外秘情報を入力しないでください\nよろしくお願いいたします
+```
+
+Multiple banners:
+
+```env
+APP_UI_BANNERS_TEXT=warning|注意|社外秘情報を入力しないでください;;info|補足|録音前に共有音声を確認してください
+```
+
+Format:
+
+```text
+type|title|message
+type|title|message|dismissible
+```
+
+- `type`: `info`, `warning`, `success`, `error`
+- Multiple banners are separated by `;;`
+- Line breaks can be written as `\n`
 
 ### Summary
 
@@ -205,6 +256,7 @@ To enable speaker diarization:
 
 ```env
 DIARIZATION_ENABLED=1
+CONTAINER_INSTALL_DIARIZATION=1
 DIARIZATION_HF_TOKEN=hf_xxx
 ```
 

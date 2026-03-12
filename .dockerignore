@@ -2,8 +2,15 @@ __pycache__
 *.pyc
 .git
 .gitignore
+.venv
+.env
+.pytest_cache
+.mypy_cache
+.ruff_cache
 data/*
 !data/.gitkeep
 hf-home/*
 node_modules
 .DS_Store
+docs
+CLAUDE.md
