@@ -51,23 +51,23 @@ class OpenAISummarizer:
         self.proofread_system_prompt = proofread_system_prompt.strip()
         self.proofread_prompt_template = proofread_prompt_template.strip()
 
-    def summarize(self, *, text: str, language: str) -> SummaryResult:
+    def summarize(self, *, text: str, language: str, custom_template: str = "") -> SummaryResult:
         clean_text = (text or "").strip()
         if not clean_text:
             return SummaryResult(text="", model=self.model)
 
-        return self._summarize_once(clean_text, language)
+        return self._summarize_once(clean_text, language, custom_template=custom_template)
 
-    def summarize_long(self, *, text: str, language: str, max_chars: int) -> SummaryResult:
+    def summarize_long(self, *, text: str, language: str, max_chars: int, custom_template: str = "") -> SummaryResult:
         clean_text = (text or "").strip()
         if not clean_text:
             return SummaryResult(text="", model=self.model)
 
         chunks = _split_text_into_chunks(clean_text, max_chars=max_chars)
         if len(chunks) == 1:
-            return self._summarize_once(clean_text, language)
+            return self._summarize_once(clean_text, language, custom_template=custom_template)
 
-        partials = [self._summarize_once(chunk, language).text for chunk in chunks]
+        partials = [self._summarize_once(chunk, language, custom_template=custom_template).text for chunk in chunks]
         reduced = False
 
         while len(partials) > 1:
@@ -82,26 +82,26 @@ class OpenAISummarizer:
             reduced=reduced,
         )
 
-    def proofread(self, *, text: str, language: str) -> ProofreadResult:
+    def proofread(self, *, text: str, language: str, mode: str = "proofread") -> ProofreadResult:
         clean_text = (text or "").strip()
         if not clean_text:
             return ProofreadResult(text="", model=self.model)
 
-        return self._proofread_once(clean_text, language)
+        return self._proofread_once(clean_text, language, mode=mode)
 
-    def proofread_long(self, *, text: str, language: str, max_chars: int) -> ProofreadResult:
+    def proofread_long(self, *, text: str, language: str, max_chars: int, mode: str = "proofread") -> ProofreadResult:
         clean_text = (text or "").strip()
         if not clean_text:
             return ProofreadResult(text="", model=self.model)
 
         chunks = _split_text_into_chunks(clean_text, max_chars=max_chars)
         if len(chunks) == 1:
-            return self._proofread_once(clean_text, language)
+            return self._proofread_once(clean_text, language, mode=mode)
 
         corrected_chunks: list[str] = []
         trailing_context = ""
         for chunk in chunks:
-            corrected = self._proofread_once(chunk, language, trailing_context=trailing_context).text.strip()
+            corrected = self._proofread_once(chunk, language, mode=mode, trailing_context=trailing_context).text.strip()
             if corrected:
                 corrected_chunks.append(corrected)
                 trailing_context = corrected[-800:]
@@ -109,7 +109,7 @@ class OpenAISummarizer:
         merged = "\n\n".join(part for part in corrected_chunks if part).strip()
         reduced = False
         if merged and len(merged) <= max_chars:
-            merged = self._proofread_consistency_pass(merged, language).text.strip()
+            merged = self._proofread_consistency_pass(merged, language, mode=mode).text.strip()
             reduced = True
 
         return ProofreadResult(
@@ -125,6 +125,7 @@ class OpenAISummarizer:
         text: str,
         language: str,
         max_chars: int,
+        mode: str = "proofread",
     ):
         clean_text = (text or "").strip()
         if not clean_text:
@@ -141,7 +142,7 @@ class OpenAISummarizer:
                 yield {"type": "delta", "delta": "\n\n", "chunkIndex": index, "chunkCount": len(chunks)}
 
             assembled_parts: list[str] = []
-            for delta in self._proofread_stream_chunk(chunk, language, trailing_context=trailing_context):
+            for delta in self._proofread_stream_chunk(chunk, language, mode=mode, trailing_context=trailing_context):
                 if delta:
                     assembled_parts.append(delta)
                     yield {"type": "delta", "delta": delta, "chunkIndex": index, "chunkCount": len(chunks)}
@@ -153,7 +154,7 @@ class OpenAISummarizer:
 
         yield {"type": "done", "model": self.model, "chunkCount": len(chunks)}
 
-    def _summarize_once(self, text: str, language: str) -> SummaryResult:
+    def _summarize_once(self, text: str, language: str, *, custom_template: str = "") -> SummaryResult:
         response = self._create_chat_completion(
             model=self.model,
             temperature=self.temperature,
@@ -171,7 +172,7 @@ class OpenAISummarizer:
                     "content": _build_summary_prompt(
                         text,
                         language,
-                        custom_template=self.summary_prompt_template,
+                        custom_template=custom_template or self.summary_prompt_template,
                     ),
                 },
             ],
@@ -210,6 +211,7 @@ class OpenAISummarizer:
         text: str,
         language: str,
         *,
+        mode: str = "proofread",
         trailing_context: str = "",
     ) -> ProofreadResult:
         response = self._create_chat_completion(
@@ -219,9 +221,10 @@ class OpenAISummarizer:
                 {
                     "role": "system",
                     "content": (
-                        self.proofread_system_prompt
-                        or "You are a strict transcript proofreader. "
-                        "Do not add new facts. Preserve meaning, speaker intent, and uncertainty."
+                        _build_proofread_system_prompt(
+                            mode=mode,
+                            custom_system_prompt=self.proofread_system_prompt,
+                        )
                     ),
                 },
                 {
@@ -229,6 +232,7 @@ class OpenAISummarizer:
                     "content": _build_proofread_prompt(
                         text,
                         language,
+                        mode=mode,
                         custom_template=self.proofread_prompt_template,
                         trailing_context=trailing_context,
                     ),
@@ -246,6 +250,7 @@ class OpenAISummarizer:
         text: str,
         language: str,
         *,
+        mode: str = "proofread",
         trailing_context: str = "",
     ):
         request_payload: dict[str, Any] = {
@@ -254,9 +259,10 @@ class OpenAISummarizer:
                 {
                     "role": "system",
                     "content": (
-                        self.proofread_system_prompt
-                        or "You are a strict transcript proofreader. "
-                        "Do not add new facts. Preserve meaning, speaker intent, and uncertainty."
+                        _build_proofread_system_prompt(
+                            mode=mode,
+                            custom_system_prompt=self.proofread_system_prompt,
+                        )
                     ),
                 },
                 {
@@ -264,6 +270,7 @@ class OpenAISummarizer:
                     "content": _build_proofread_prompt(
                         text,
                         language,
+                        mode=mode,
                         custom_template=self.proofread_prompt_template,
                         trailing_context=trailing_context,
                     ),
@@ -278,7 +285,7 @@ class OpenAISummarizer:
             if delta:
                 yield delta
 
-    def _proofread_consistency_pass(self, text: str, language: str) -> ProofreadResult:
+    def _proofread_consistency_pass(self, text: str, language: str, *, mode: str = "proofread") -> ProofreadResult:
         response = self._create_chat_completion(
             model=self.model,
             temperature=self.temperature,
@@ -286,14 +293,15 @@ class OpenAISummarizer:
                 {
                     "role": "system",
                     "content": (
-                        self.proofread_system_prompt
-                        or "You are a strict transcript proofreader. "
-                        "Do not add new facts. Preserve meaning, speaker intent, and uncertainty."
+                        _build_proofread_system_prompt(
+                            mode=mode,
+                            custom_system_prompt=self.proofread_system_prompt,
+                        )
                     ),
                 },
                 {
                     "role": "user",
-                    "content": _build_proofread_consistency_prompt(text, language),
+                    "content": _build_proofread_consistency_prompt(text, language, mode=mode),
                 },
             ],
         )
@@ -406,16 +414,82 @@ def _build_summary_reduce_prompt(summaries: list[str], language: str) -> str:
     )
 
 
+def _build_proofread_system_prompt(*, mode: str, custom_system_prompt: str = "") -> str:
+    if mode == "proofread" and custom_system_prompt.strip():
+        return custom_system_prompt.strip()
+
+    if mode == "translate_ja":
+        return (
+            "You are a careful transcript translator. "
+            "Translate the source text into natural Japanese without omitting facts. "
+            "Preserve meaning, uncertainty, structure, and proper nouns whenever possible."
+        )
+
+    if mode == "translate_en":
+        return (
+            "You are a careful transcript translator. "
+            "Translate the source text into natural English without omitting facts. "
+            "Preserve meaning, uncertainty, structure, and proper nouns whenever possible."
+        )
+
+    return (
+        "You are a strict transcript proofreader. "
+        "Do not add new facts. Preserve meaning, speaker intent, and uncertainty."
+    )
+
+
 def _build_proofread_prompt(
     text: str,
     language: str,
     *,
+    mode: str = "proofread",
     custom_template: str = "",
     trailing_context: str = "",
 ) -> str:
-    rendered = _render_prompt_template(custom_template, text=text, language=language)
+    rendered = ""
+    if mode == "proofread":
+        rendered = _render_prompt_template(custom_template, text=text, language=language)
     if rendered.strip():
         return rendered
+
+    if mode == "translate_ja":
+        context_prefix = ""
+        if trailing_context.strip():
+            context_prefix = (
+                "以下は直前チャンクの翻訳文脈です。用語や文体の一貫性の参照にのみ使ってください。\n"
+                "出力に再掲しないでください。\n\n"
+                f"直前文脈:\n{trailing_context.strip()}\n\n"
+            )
+        return (
+            f"{context_prefix}"
+            "以下の文字起こしを自然な日本語に翻訳してください。\n"
+            "- 事実や不確実性は保持する\n"
+            "- 新しい情報を追加しない\n"
+            "- 固有名詞は不確実なら無理に意訳しない\n"
+            "- 段落や箇条書きの構造はできるだけ維持する\n"
+            "- 出力は翻訳本文のみ\n\n"
+            f"文字起こし:\n{text}"
+        )
+
+    if mode == "translate_en":
+        context_prefix = ""
+        if trailing_context.strip():
+            context_prefix = (
+                "Reference context from the immediately preceding translated chunk.\n"
+                "Use it only to keep terminology and style consistent.\n"
+                "Do not repeat it in the output.\n\n"
+                f"Previous context:\n{trailing_context.strip()}\n\n"
+            )
+        return (
+            f"{context_prefix}"
+            "Translate the following transcript into natural English.\n"
+            "- Preserve facts and uncertainty\n"
+            "- Do not add inferred content\n"
+            "- Keep proper nouns as-is when uncertain\n"
+            "- Preserve paragraph or list structure when practical\n"
+            "- Output only the translated text\n\n"
+            f"Transcript:\n{text}"
+        )
 
     if language.lower().startswith("en"):
         context_prefix = ""
@@ -457,7 +531,27 @@ def _build_proofread_prompt(
     )
 
 
-def _build_proofread_consistency_prompt(text: str, language: str) -> str:
+def _build_proofread_consistency_prompt(text: str, language: str, *, mode: str = "proofread") -> str:
+    if mode == "translate_ja":
+        return (
+            "以下の翻訳済み本文全体の整合を取ってください。\n"
+            "- 意味は変えない\n"
+            "- 用語、表記、段落の一貫性を整える\n"
+            "- 不要な重複や空白のみを必要最小限で直す\n"
+            "- 出力は最終本文のみ\n\n"
+            f"翻訳済み本文:\n{text}"
+        )
+
+    if mode == "translate_en":
+        return (
+            "Unify the translated transcript below.\n"
+            "- Keep the meaning unchanged\n"
+            "- Standardize terminology, punctuation, and paragraph consistency\n"
+            "- Remove only obvious duplication or spacing noise\n"
+            "- Output only the finalized translation\n\n"
+            f"Translated transcript:\n{text}"
+        )
+
     if language.lower().startswith("en"):
         return (
             "Unify the formatting of the corrected transcript below.\n"

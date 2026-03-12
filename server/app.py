@@ -79,11 +79,13 @@ class LiveSession:
 class SummarizeRequest(BaseModel):
     text: str = Field(min_length=1)
     language: str | None = None
+    prompt: str | None = None
 
 
 class ProofreadRequest(BaseModel):
     text: str = Field(min_length=1)
     language: str | None = None
+    mode: str | None = None
 
 
 TRANSCRIBER_FACTORY: Callable[[], SessionTranscriber] | None = None
@@ -196,6 +198,7 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": "empty_text"})
 
     language = _as_str(payload.language) or settings.default_language
+    prompt = _as_str(payload.prompt)
 
     try:
         result = await asyncio.to_thread(
@@ -203,6 +206,7 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
             text=raw_text,
             language=language,
             max_chars=settings.summary_input_max_chars,
+            custom_template=prompt,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Summary failed")
@@ -235,6 +239,7 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": "empty_text"})
 
     language = _as_str(payload.language) or settings.default_language
+    mode = _normalize_proofread_mode(_as_str(payload.mode))
     logger.info("Proofread requested: chars=%d language=%s", len(raw_text), language)
 
     try:
@@ -243,6 +248,7 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
             text=raw_text,
             language=language,
             max_chars=settings.proofread_input_max_chars,
+            mode=mode,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Proofread failed")
@@ -255,6 +261,7 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
             "inputChars": len(raw_text),
             "chunkCount": result.chunk_count,
             "reduced": result.reduced,
+            "mode": mode,
         }
     )
 
@@ -275,6 +282,7 @@ async def proofread_stream(payload: ProofreadRequest) -> Response:
         return JSONResponse(status_code=400, content={"error": "empty_text"})
 
     language = _as_str(payload.language) or settings.default_language
+    mode = _normalize_proofread_mode(_as_str(payload.mode))
 
     def event_stream():
         try:
@@ -282,6 +290,7 @@ async def proofread_stream(payload: ProofreadRequest) -> Response:
                 text=raw_text,
                 language=language,
                 max_chars=settings.proofread_input_max_chars,
+                mode=mode,
             ):
                 yield _format_sse(event)
         except Exception as exc:  # noqa: BLE001
@@ -1037,6 +1046,13 @@ def _normalize_audio_source(value: str) -> str:
     if lowered in {"display", "both"}:
         return lowered
     return "mic"
+
+
+def _normalize_proofread_mode(value: str) -> str:
+    lowered = (value or "").strip().lower()
+    if lowered in {"translate_ja", "translate_en"}:
+        return lowered
+    return "proofread"
 
 
 async def _broadcast_conn_count() -> None:
