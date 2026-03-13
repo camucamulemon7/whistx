@@ -854,10 +854,44 @@ async function requestMicStream(sourceMode = "mic") {
 }
 
 async function requestDisplayStream() {
-  return navigator.mediaDevices.getDisplayMedia({
-    video: true,
-    audio: true,
-  });
+  const candidates = [
+    {
+      video: true,
+      audio: { suppressLocalAudioPlayback: false },
+      systemAudio: "include",
+      windowAudio: "system",
+      surfaceSwitching: "include",
+      selfBrowserSurface: "exclude",
+      monitorTypeSurfaces: "include",
+    },
+    {
+      video: true,
+      audio: true,
+      systemAudio: "include",
+      windowAudio: "system",
+      surfaceSwitching: "include",
+      selfBrowserSurface: "exclude",
+      monitorTypeSurfaces: "include",
+    },
+    {
+      video: true,
+      audio: true,
+    },
+  ];
+
+  let lastError = null;
+  for (const constraints of candidates) {
+    try {
+      return await navigator.mediaDevices.getDisplayMedia(constraints);
+    } catch (error) {
+      lastError = error;
+      if (error?.name && error.name !== "TypeError" && error.name !== "OverconstrainedError") {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError || new Error("display_capture_not_supported");
 }
 
 async function ensureAudioContextResumed(context) {
@@ -916,6 +950,29 @@ function bindDisplayEndEvents(displayStream) {
   });
 }
 
+function getDisplayCaptureDiagnostics(displayStream) {
+  const audioTracks = displayStream?.getAudioTracks?.() || [];
+  const videoTracks = displayStream?.getVideoTracks?.() || [];
+  const firstVideo = videoTracks[0] || null;
+  const settings = firstVideo?.getSettings?.() || {};
+
+  return {
+    audioTrackCount: audioTracks.length,
+    audioLabels: audioTracks.map((track) => track.label || "unknown"),
+    videoLabel: firstVideo?.label || "unknown",
+    displaySurface: settings.displaySurface || "unknown",
+  };
+}
+
+function logDisplayCaptureDiagnostics(displayStream, sourceMode) {
+  const diagnostics = getDisplayCaptureDiagnostics(displayStream);
+  console.info("[whistx] display capture diagnostics", {
+    sourceMode,
+    ...diagnostics,
+  });
+  return diagnostics;
+}
+
 async function prepareInputStream(sourceMode) {
   const mode = normalizeAudioSource(sourceMode);
 
@@ -927,8 +984,11 @@ async function prepareInputStream(sourceMode) {
 
   if (mode === "display") {
     const displayStream = await requestDisplayStream();
+    const diagnostics = logDisplayCaptureDiagnostics(displayStream, mode);
     if (!hasAudioTrack(displayStream)) {
-      throw new Error("display_audio_not_found");
+      const error = new Error("display_audio_not_found");
+      error.diagnostics = diagnostics;
+      throw error;
     }
     bindDisplayEndEvents(displayStream);
     state.displayStream = displayStream;
@@ -936,8 +996,11 @@ async function prepareInputStream(sourceMode) {
   }
 
   const displayStream = await requestDisplayStream();
+  const diagnostics = logDisplayCaptureDiagnostics(displayStream, mode);
   if (!hasAudioTrack(displayStream)) {
-    throw new Error("display_audio_not_found");
+    const error = new Error("display_audio_not_found");
+    error.diagnostics = diagnostics;
+    throw error;
   }
   bindDisplayEndEvents(displayStream);
 
@@ -1475,7 +1538,17 @@ async function startRecording() {
     const name = err?.name || "";
     const message = err?.message || "unknown_error";
     if (message === "display_audio_not_found") {
-      setStatus("start_failed: 画面共有の音声が見つかりません（音声共有をONにしてください）");
+      const diagnostics = err?.diagnostics || {};
+      const displaySurface = diagnostics.displaySurface || "unknown";
+      const audioTrackCount = Number(diagnostics.audioTrackCount || 0);
+      setStatus(
+        `start_failed: 画面共有の音声が見つかりません (surface=${displaySurface}, audioTracks=${audioTrackCount})`
+      );
+      showToast(
+        "画面共有の音声トラックを取得できませんでした。Chrome/Edge のタブ共有は通りやすいですが、Skype/Webex のアプリ画面はブラウザ制約で音声が渡らないことがあります。",
+        "error",
+        9000
+      );
     } else if (name === "NotAllowedError") {
       setStatus("start_failed: 権限が拒否されました");
     } else {
