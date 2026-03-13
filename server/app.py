@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -20,6 +21,7 @@ from .asr import SessionTranscriber
 from .audio_pipeline import AudioPreprocessor
 from .config import settings
 from .diarizer import AudioChunk, PyannoteSpeakerDiarizer, SpeakerTurn
+from .langfuse_observer import make_langfuse_observer
 from .openai_whisper import OpenAIWhisperTranscriber
 from .summarizer import OpenAISummarizer
 from .transcript_store import (
@@ -94,11 +96,21 @@ SUMMARIZER: OpenAISummarizer | None = None
 PROOFREADER: OpenAISummarizer | None = None
 DIARIZER: PyannoteSpeakerDiarizer | None = None
 ACTIVE_SOCKETS: set[WebSocket] = set()
+LANGFUSE_OBSERVER = None
 
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    global TRANSCRIBER_FACTORY, AUDIO_PREPROCESSOR, SUMMARIZER, PROOFREADER, DIARIZER
+    global TRANSCRIBER_FACTORY, AUDIO_PREPROCESSOR, SUMMARIZER, PROOFREADER, DIARIZER, LANGFUSE_OBSERVER
+
+    LANGFUSE_OBSERVER = make_langfuse_observer(
+        public_key=settings.langfuse_public_key,
+        secret_key=settings.langfuse_secret_key,
+        host=settings.langfuse_host,
+        environment=settings.langfuse_environment,
+        release=settings.langfuse_release,
+        enabled=settings.langfuse_enabled,
+    )
 
     TRANSCRIBER_FACTORY = _build_transcriber_factory()
     AUDIO_PREPROCESSOR = AudioPreprocessor(
@@ -117,6 +129,7 @@ async def on_startup() -> None:
             summary_prompt_template=settings.summary_prompt_template,
             proofread_system_prompt=settings.proofread_system_prompt,
             proofread_prompt_template=settings.proofread_prompt_template,
+            observer=LANGFUSE_OBSERVER,
         )
     except Exception as exc:  # noqa: BLE001
         SUMMARIZER = None
@@ -132,6 +145,7 @@ async def on_startup() -> None:
             summary_prompt_template=settings.summary_prompt_template,
             proofread_system_prompt=settings.proofread_system_prompt,
             proofread_prompt_template=settings.proofread_prompt_template,
+            observer=LANGFUSE_OBSERVER,
         )
     except Exception as exc:  # noqa: BLE001
         PROOFREADER = None
@@ -157,6 +171,13 @@ async def on_startup() -> None:
         DIARIZER = None
 
     logger.info("whistx started (model=%s, ws=%s)", settings.asr_model, settings.ws_path)
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    if LANGFUSE_OBSERVER is not None:
+        LANGFUSE_OBSERVER.flush()
+        LANGFUSE_OBSERVER.shutdown()
 
 
 @app.get("/api/health")
@@ -201,13 +222,17 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
     prompt = _as_str(payload.prompt)
 
     try:
-        result = await asyncio.to_thread(
-            SUMMARIZER.summarize_long,
-            text=raw_text,
-            language=language,
-            max_chars=settings.summary_input_max_chars,
-            custom_template=prompt,
-        )
+        with LANGFUSE_OBSERVER.span(
+            name="api.summarize",
+            input={"language": language, "chars": len(raw_text), "customPrompt": bool(prompt)},
+        ) if LANGFUSE_OBSERVER is not None else _noop_span():
+            result = await asyncio.to_thread(
+                SUMMARIZER.summarize_long,
+                text=raw_text,
+                language=language,
+                max_chars=settings.summary_input_max_chars,
+                custom_template=prompt,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Summary failed")
         return JSONResponse(status_code=502, content={"error": "summary_failed", "detail": str(exc)})
@@ -243,13 +268,17 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
     logger.info("Proofread requested: chars=%d language=%s", len(raw_text), language)
 
     try:
-        result = await asyncio.to_thread(
-            PROOFREADER.proofread_long,
-            text=raw_text,
-            language=language,
-            max_chars=settings.proofread_input_max_chars,
-            mode=mode,
-        )
+        with LANGFUSE_OBSERVER.span(
+            name="api.proofread",
+            input={"language": language, "chars": len(raw_text), "mode": mode},
+        ) if LANGFUSE_OBSERVER is not None else _noop_span():
+            result = await asyncio.to_thread(
+                PROOFREADER.proofread_long,
+                text=raw_text,
+                language=language,
+                max_chars=settings.proofread_input_max_chars,
+                mode=mode,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Proofread failed")
         return JSONResponse(status_code=502, content={"error": "proofread_failed", "detail": str(exc)})
@@ -592,12 +621,14 @@ def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
             base_url=settings.openai_base_url,
             model=settings.asr_model,
             ffmpeg_bin=settings.ffmpeg_bin,
+            observer=LANGFUSE_OBSERVER,
         )
 
     return lambda: OpenAIWhisperTranscriber(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
         model=settings.asr_model,
+        observer=LANGFUSE_OBSERVER,
     )
 
 
@@ -1053,6 +1084,11 @@ def _normalize_proofread_mode(value: str) -> str:
     if lowered in {"translate_ja", "translate_en"}:
         return lowered
     return "proofread"
+
+
+@contextmanager
+def _noop_span():
+    yield None
 
 
 async def _broadcast_conn_count() -> None:

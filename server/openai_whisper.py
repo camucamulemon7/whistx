@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import io
+from contextlib import contextmanager
 from typing import Any
 
 from openai import OpenAI
 
 from .asr import ASRChunkResult
+from .langfuse_observer import LangfuseObserver
 
 
 class OpenAIWhisperTranscriber:
-    def __init__(self, *, api_key: str, base_url: str | None, model: str):
+    def __init__(self, *, api_key: str, base_url: str | None, model: str, observer: LangfuseObserver | None = None):
         if not api_key:
             raise RuntimeError("ASR_API_KEY (or OPENAI_API_KEY) is not set")
 
@@ -19,6 +21,7 @@ class OpenAIWhisperTranscriber:
 
         self.client = OpenAI(**kwargs)
         self.model = model
+        self.observer = observer
 
     def transcribe_chunk(
         self,
@@ -33,18 +36,32 @@ class OpenAIWhisperTranscriber:
         file_obj = io.BytesIO(audio_bytes)
         file_obj.name = f"chunk{suffix}"
 
-        response = self.client.audio.transcriptions.create(
+        with (self.observer.generation(
+            name="asr.transcription",
             model=self.model,
-            file=file_obj,
-            language=language or None,
-            prompt=prompt or None,
-            temperature=temperature,
-            response_format="verbose_json",
-        )
+            input={
+                "mimeType": mime_type,
+                "language": language or "",
+                "prompt": bool(prompt),
+                "audioBytes": len(audio_bytes),
+            },
+            metadata={"endpoint": "audio.transcriptions", "responseFormat": "verbose_json"},
+            model_parameters={"temperature": temperature},
+        ) if self.observer else _noop_generation()) as generation:
+            response = self.client.audio.transcriptions.create(
+                model=self.model,
+                file=file_obj,
+                language=language or None,
+                prompt=prompt or None,
+                temperature=temperature,
+                response_format="verbose_json",
+            )
 
         text = _extract_text(response).strip()
         if _should_drop_as_silence(response, text):
             text = ""
+        if generation is not None:
+            generation.update(output={"text": text, "chars": len(text)})
         start_ms, end_ms = _extract_bounds_ms(response)
         return ASRChunkResult(text=text, start_ms=start_ms, end_ms=end_ms)
 
@@ -169,3 +186,7 @@ def _should_drop_as_silence(response: Any, text: str) -> bool:
 
     # 無音寄り判定が高く、かつ短文なら無音ハルシネーションの可能性が高い。
     return max(no_speech_probs) >= 0.85 and len(normalized) <= 32
+
+@contextmanager
+def _noop_generation():
+    yield None

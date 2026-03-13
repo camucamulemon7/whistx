@@ -228,6 +228,15 @@ type|title|message|dismissible
 - `DIARIZATION_FFMPEG_BIN`
 - `HF_HUB_DISABLE_XET`
 
+### Observability
+
+- `LANGFUSE_ENABLED`
+- `LANGFUSE_PUBLIC_KEY`
+- `LANGFUSE_SECRET_KEY`
+- `LANGFUSE_HOST`
+- `LANGFUSE_ENVIRONMENT`
+- `LANGFUSE_RELEASE`
+
 See [`.env.example`](./.env.example) for the full template.
 
 ## Prompt Templates

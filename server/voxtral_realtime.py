@@ -8,12 +8,14 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from websockets.sync.client import connect
 
 from .asr import ASRChunkResult
+from .langfuse_observer import LangfuseObserver
 
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,7 @@ class VoxtralRealtimeTranscriber:
         model: str,
         ffmpeg_bin: str,
         sample_rate: int = 16_000,
+        observer: LangfuseObserver | None = None,
     ):
         if not api_key:
             raise RuntimeError("ASR_API_KEY (or OPENAI_API_KEY) is not set")
@@ -41,6 +44,7 @@ class VoxtralRealtimeTranscriber:
         self.model = model
         self.ffmpeg_bin = ffmpeg_bin
         self.sample_rate = sample_rate
+        self.observer = observer
         self._connection = None
         self._lock = threading.Lock()
         self._session_ready = False
@@ -64,12 +68,26 @@ class VoxtralRealtimeTranscriber:
 
         payload = base64.b64encode(pcm_audio).decode("ascii")
 
-        with self._lock:
-            self._ensure_connection()
-            self._send_event({"type": "input_audio_buffer.append", "audio": payload})
-            self._send_event({"type": "input_audio_buffer.commit", "final": True})
-            text = self._wait_for_transcript()
-            return ASRChunkResult(text=text.strip(), start_ms=0, end_ms=None)
+        with (self.observer.generation(
+            name="asr.realtime_transcription",
+            model=self.model,
+            input={
+                "mimeType": mime_type,
+                "audioBytes": len(audio_bytes),
+                "language": language or "",
+                "prompt": bool(prompt),
+            },
+            metadata={"sampleRate": self.sample_rate, "transport": "websocket"},
+            model_parameters={"temperature": temperature},
+        ) if self.observer else _noop_generation()) as generation:
+            with self._lock:
+                self._ensure_connection()
+                self._send_event({"type": "input_audio_buffer.append", "audio": payload})
+                self._send_event({"type": "input_audio_buffer.commit", "final": True})
+                text = self._wait_for_transcript()
+                if generation is not None:
+                    generation.update(output={"text": text.strip(), "chars": len(text.strip())})
+                return ASRChunkResult(text=text.strip(), start_ms=0, end_ms=None)
 
     def close(self) -> None:
         with self._lock:
@@ -220,3 +238,8 @@ def _ext_from_mime(mime_type: str) -> str:
     if "mpeg" in lowered or "mp3" in lowered:
         return ".mp3"
     return ".bin"
+
+
+@contextmanager
+def _noop_generation():
+    yield None

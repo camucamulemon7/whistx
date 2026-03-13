@@ -9,8 +9,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>whistx</title>
-    <link rel="stylesheet" href="/style.css?v=20260313i" />
-    <script type="module" src="/main.js?v=20260313i"></script>
+    <link rel="stylesheet" href="/style.css?v=20260314a" />
+    <script type="module" src="/main.js?v=20260314a"></script>
   </head>
   <body>
     <div class="app">
@@ -192,13 +192,13 @@
             </div>
           </div>
           <p id="diarizationSpeakerHint" class="setting-hint"></p>
-          <p class="setting-hint">
+          <p id="audioSourceHint" class="setting-hint">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"/>
               <path d="M12 16v-4"/>
               <path d="M12 8h.01"/>
             </svg>
-            画面共有の際は音声共有を有効にしてください
+            <span id="audioSourceHintText">画面共有音声はブラウザ制約で取得できない場合があります。タブ共有が最も安定します</span>
           </p>
         </section>
 
