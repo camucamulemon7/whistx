@@ -57,6 +57,7 @@ class VoxtralRealtimeTranscriber:
         language: str | None,
         prompt: str | None,
         temperature: float,
+        trace_context: dict[str, str] | None = None,
     ) -> ASRChunkResult:
         del language
         del prompt
@@ -79,6 +80,7 @@ class VoxtralRealtimeTranscriber:
             },
             metadata={"sampleRate": self.sample_rate, "transport": "websocket"},
             model_parameters={"temperature": temperature},
+            trace_context=trace_context,
         ) if self.observer else _noop_generation()) as generation:
             with self._lock:
                 self._ensure_connection()

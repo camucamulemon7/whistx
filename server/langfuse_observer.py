@@ -33,6 +33,12 @@ class _NoopObserver:
     def shutdown(self) -> None:
         return None
 
+    def current_trace_context(self) -> dict[str, str] | None:
+        return None
+
+    def create_trace_context(self, **_: Any) -> dict[str, str] | None:
+        return None
+
 
 class LangfuseObserver:
     def __init__(
@@ -108,6 +114,7 @@ class LangfuseObserver:
         output: Any = None,
         metadata: Any = None,
         model_parameters: dict[str, Any] | None = None,
+        trace_context: dict[str, str] | None = None,
     ) -> Iterator[Any]:
         if not self.enabled or self._client is None:
             yield _NoopObservation()
@@ -122,6 +129,7 @@ class LangfuseObserver:
                 output=_safe_serialize(output),
                 metadata=_safe_serialize(metadata),
                 model_parameters=_safe_serialize(model_parameters),
+                trace_context=trace_context,
             ) as generation:
                 yield generation
         except Exception as exc:  # noqa: BLE001
@@ -143,6 +151,53 @@ class LangfuseObserver:
             self._client.shutdown()
         except Exception:  # noqa: BLE001
             logger.debug("langfuse shutdown failed", exc_info=True)
+
+    def current_trace_context(self) -> dict[str, str] | None:
+        if not self.enabled or self._client is None:
+            return None
+        try:
+            trace_id = self._client.get_current_trace_id()
+            observation_id = self._client.get_current_observation_id()
+            if not trace_id:
+                return None
+            payload = {"trace_id": trace_id}
+            if observation_id:
+                payload["parent_span_id"] = observation_id
+            return payload
+        except Exception:  # noqa: BLE001
+            logger.debug("langfuse current trace lookup failed", exc_info=True)
+            return None
+
+    def create_trace_context(
+        self,
+        *,
+        name: str,
+        input: Any = None,
+        metadata: Any = None,
+    ) -> dict[str, str] | None:
+        if not self.enabled or self._client is None:
+            return None
+
+        trace_id: str | None = None
+        observation_id: str | None = None
+        try:
+            with self._client.start_as_current_span(
+                name=name,
+                input=_safe_serialize(input),
+                metadata=_safe_serialize(metadata),
+            ):
+                trace_id = self._client.get_current_trace_id()
+                observation_id = self._client.get_current_observation_id()
+        except Exception:  # noqa: BLE001
+            logger.debug("langfuse trace root skipped: %s", name, exc_info=True)
+            return None
+
+        if not trace_id:
+            return None
+        payload = {"trace_id": trace_id}
+        if observation_id:
+            payload["parent_span_id"] = observation_id
+        return payload
 
 
 def make_langfuse_observer(

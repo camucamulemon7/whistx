@@ -237,6 +237,11 @@ type|title|message|dismissible
 - `LANGFUSE_ENVIRONMENT`
 - `LANGFUSE_RELEASE`
 
+For rootless Podman, if Langfuse runs on the host machine, use:
+
+- `LANGFUSE_HOST=http://host.containers.internal:3000`
+- `PODMAN_NETWORK=slirp4netns:allow_host_loopback=true`
+
 See [`.env.example`](./.env.example) for the full template.
 
 ## Prompt Templates

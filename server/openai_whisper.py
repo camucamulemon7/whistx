@@ -31,6 +31,7 @@ class OpenAIWhisperTranscriber:
         language: str | None,
         prompt: str | None,
         temperature: float,
+        trace_context: dict[str, str] | None = None,
     ) -> ASRChunkResult:
         suffix = _ext_from_mime(mime_type)
         file_obj = io.BytesIO(audio_bytes)
@@ -47,6 +48,7 @@ class OpenAIWhisperTranscriber:
             },
             metadata={"endpoint": "audio.transcriptions", "responseFormat": "verbose_json"},
             model_parameters={"temperature": temperature},
+            trace_context=trace_context,
         ) if self.observer else _noop_generation()) as generation:
             response = self.client.audio.transcriptions.create(
                 model=self.model,
@@ -57,11 +59,12 @@ class OpenAIWhisperTranscriber:
                 response_format="verbose_json",
             )
 
-        text = _extract_text(response).strip()
-        if _should_drop_as_silence(response, text):
-            text = ""
-        if generation is not None:
-            generation.update(output={"text": text, "chars": len(text)})
+            text = _extract_text(response).strip()
+            if _should_drop_as_silence(response, text):
+                text = ""
+            if generation is not None:
+                generation.update(output={"text": text, "chars": len(text)})
+
         start_ms, end_ms = _extract_bounds_ms(response)
         return ASRChunkResult(text=text, start_ms=start_ms, end_ms=end_ms)
 

@@ -55,29 +55,57 @@ class OpenAISummarizer:
         self.proofread_prompt_template = proofread_prompt_template.strip()
         self.observer = observer
 
-    def summarize(self, *, text: str, language: str, custom_template: str = "") -> SummaryResult:
+    def summarize(
+        self,
+        *,
+        text: str,
+        language: str,
+        custom_template: str = "",
+        trace_context: dict[str, str] | None = None,
+    ) -> SummaryResult:
         clean_text = (text or "").strip()
         if not clean_text:
             return SummaryResult(text="", model=self.model)
 
-        return self._summarize_once(clean_text, language, custom_template=custom_template)
+        return self._summarize_once(clean_text, language, custom_template=custom_template, trace_context=trace_context)
 
-    def summarize_long(self, *, text: str, language: str, max_chars: int, custom_template: str = "") -> SummaryResult:
+    def summarize_long(
+        self,
+        *,
+        text: str,
+        language: str,
+        max_chars: int,
+        custom_template: str = "",
+        trace_context: dict[str, str] | None = None,
+    ) -> SummaryResult:
         clean_text = (text or "").strip()
         if not clean_text:
             return SummaryResult(text="", model=self.model)
 
         chunks = _split_text_into_chunks(clean_text, max_chars=max_chars)
         if len(chunks) == 1:
-            return self._summarize_once(clean_text, language, custom_template=custom_template)
+            return self._summarize_once(
+                clean_text,
+                language,
+                custom_template=custom_template,
+                trace_context=trace_context,
+            )
 
-        partials = [self._summarize_once(chunk, language, custom_template=custom_template).text for chunk in chunks]
+        partials = [
+            self._summarize_once(
+                chunk,
+                language,
+                custom_template=custom_template,
+                trace_context=trace_context,
+            ).text
+            for chunk in chunks
+        ]
         reduced = False
 
         while len(partials) > 1:
             reduced = True
             groups = _group_texts_for_reduce(partials, max_chars=max_chars)
-            partials = [self._reduce_summaries(group, language).text for group in groups]
+            partials = [self._reduce_summaries(group, language, trace_context=trace_context).text for group in groups]
 
         return SummaryResult(
             text=partials[0].strip(),
@@ -86,14 +114,29 @@ class OpenAISummarizer:
             reduced=reduced,
         )
 
-    def proofread(self, *, text: str, language: str, mode: str = "proofread") -> ProofreadResult:
+    def proofread(
+        self,
+        *,
+        text: str,
+        language: str,
+        mode: str = "proofread",
+        trace_context: dict[str, str] | None = None,
+    ) -> ProofreadResult:
         clean_text = (text or "").strip()
         if not clean_text:
             return ProofreadResult(text="", model=self.model)
 
-        return self._proofread_once(clean_text, language, mode=mode)
+        return self._proofread_once(clean_text, language, mode=mode, trace_context=trace_context)
 
-    def proofread_long(self, *, text: str, language: str, max_chars: int, mode: str = "proofread") -> ProofreadResult:
+    def proofread_long(
+        self,
+        *,
+        text: str,
+        language: str,
+        max_chars: int,
+        mode: str = "proofread",
+        trace_context: dict[str, str] | None = None,
+    ) -> ProofreadResult:
         clean_text = (text or "").strip()
         if not clean_text:
             return ProofreadResult(text="", model=self.model)
@@ -101,12 +144,18 @@ class OpenAISummarizer:
         chunk_chars = _effective_proofread_chunk_chars(max_chars)
         chunks = _split_text_into_chunks(clean_text, max_chars=chunk_chars)
         if len(chunks) == 1:
-            return self._proofread_once(clean_text, language, mode=mode)
+            return self._proofread_once(clean_text, language, mode=mode, trace_context=trace_context)
 
         corrected_chunks: list[str] = []
         trailing_context = ""
         for chunk in chunks:
-            corrected = self._proofread_once(chunk, language, mode=mode, trailing_context=trailing_context).text.strip()
+            corrected = self._proofread_once(
+                chunk,
+                language,
+                mode=mode,
+                trailing_context=trailing_context,
+                trace_context=trace_context,
+            ).text.strip()
             if corrected:
                 corrected_chunks.append(corrected)
                 trailing_context = corrected[-800:]
@@ -114,7 +163,12 @@ class OpenAISummarizer:
         merged = "\n\n".join(part for part in corrected_chunks if part).strip()
         reduced = False
         if merged and len(merged) <= chunk_chars:
-            merged = self._proofread_consistency_pass(merged, language, mode=mode).text.strip()
+            merged = self._proofread_consistency_pass(
+                merged,
+                language,
+                mode=mode,
+                trace_context=trace_context,
+            ).text.strip()
             reduced = True
 
         return ProofreadResult(
@@ -131,6 +185,7 @@ class OpenAISummarizer:
         language: str,
         max_chars: int,
         mode: str = "proofread",
+        trace_context: dict[str, str] | None = None,
     ):
         clean_text = (text or "").strip()
         if not clean_text:
@@ -148,7 +203,13 @@ class OpenAISummarizer:
                 yield {"type": "delta", "delta": "\n\n", "chunkIndex": index, "chunkCount": len(chunks)}
 
             assembled_parts: list[str] = []
-            for delta in self._proofread_stream_chunk(chunk, language, mode=mode, trailing_context=trailing_context):
+            for delta in self._proofread_stream_chunk(
+                chunk,
+                language,
+                mode=mode,
+                trailing_context=trailing_context,
+                trace_context=trace_context,
+            ):
                 if delta:
                     assembled_parts.append(delta)
                     yield {"type": "delta", "delta": delta, "chunkIndex": index, "chunkCount": len(chunks)}
@@ -160,7 +221,14 @@ class OpenAISummarizer:
 
         yield {"type": "done", "model": self.model, "chunkCount": len(chunks)}
 
-    def _summarize_once(self, text: str, language: str, *, custom_template: str = "") -> SummaryResult:
+    def _summarize_once(
+        self,
+        text: str,
+        language: str,
+        *,
+        custom_template: str = "",
+        trace_context: dict[str, str] | None = None,
+    ) -> SummaryResult:
         messages = [
             {
                 "role": "system",
@@ -183,6 +251,7 @@ class OpenAISummarizer:
             name="summary.generate",
             input={"language": language, "text": text, "customTemplate": bool(custom_template)},
             model_parameters={"temperature": self.temperature},
+            trace_context=trace_context,
         ) as generation:
             response = self._create_chat_completion(
                 model=self.model,
@@ -199,7 +268,12 @@ class OpenAISummarizer:
                 model=_extract_model_name(response, self.model),
             )
 
-    def _reduce_summaries(self, summaries: list[str], language: str) -> SummaryResult:
+    def _reduce_summaries(
+        self,
+        summaries: list[str],
+        language: str,
+        trace_context: dict[str, str] | None = None,
+    ) -> SummaryResult:
         messages = [
             {
                 "role": "system",
@@ -218,6 +292,7 @@ class OpenAISummarizer:
             name="summary.reduce",
             input={"language": language, "parts": summaries},
             model_parameters={"temperature": self.temperature},
+            trace_context=trace_context,
         ) as generation:
             response = self._create_chat_completion(
                 model=self.model,
@@ -241,6 +316,7 @@ class OpenAISummarizer:
         *,
         mode: str = "proofread",
         trailing_context: str = "",
+        trace_context: dict[str, str] | None = None,
     ) -> ProofreadResult:
         messages = [
             {
@@ -268,6 +344,7 @@ class OpenAISummarizer:
             name=f"proofread.{mode}",
             input={"language": language, "text": text, "hasContext": bool(trailing_context)},
             model_parameters={"temperature": self.temperature},
+            trace_context=trace_context,
         ) as generation:
             response = self._create_chat_completion(
                 model=self.model,
@@ -292,6 +369,7 @@ class OpenAISummarizer:
         *,
         mode: str = "proofread",
         trailing_context: str = "",
+        trace_context: dict[str, str] | None = None,
     ):
         request_payload: dict[str, Any] = {
             "model": self.model,
@@ -324,6 +402,7 @@ class OpenAISummarizer:
             name=f"proofread.stream.{mode}",
             input={"language": language, "text": text, "hasContext": bool(trailing_context)},
             model_parameters={"temperature": self.temperature, "stream": True},
+            trace_context=trace_context,
         ) as generation:
             parts: list[str] = []
             for event in self._create_chat_completion_stream(request_payload):
@@ -334,7 +413,14 @@ class OpenAISummarizer:
             final_text = "".join(parts).strip()
             generation.update(output={"text": final_text, "chars": len(final_text)})
 
-    def _proofread_consistency_pass(self, text: str, language: str, *, mode: str = "proofread") -> ProofreadResult:
+    def _proofread_consistency_pass(
+        self,
+        text: str,
+        language: str,
+        *,
+        mode: str = "proofread",
+        trace_context: dict[str, str] | None = None,
+    ) -> ProofreadResult:
         messages = [
             {
                 "role": "system",
@@ -354,6 +440,7 @@ class OpenAISummarizer:
             name=f"proofread.consistency.{mode}",
             input={"language": language, "text": text},
             model_parameters={"temperature": self.temperature},
+            trace_context=trace_context,
         ) as generation:
             response = self._create_chat_completion(
                 model=self.model,
@@ -370,7 +457,14 @@ class OpenAISummarizer:
                 model=_extract_model_name(response, self.model),
             )
 
-    def _generation(self, *, name: str, input: Any, model_parameters: dict[str, Any] | None = None):
+    def _generation(
+        self,
+        *,
+        name: str,
+        input: Any,
+        model_parameters: dict[str, Any] | None = None,
+        trace_context: dict[str, str] | None = None,
+    ):
         if self.observer is None:
             return _noop_generation()
         return self.observer.generation(
@@ -378,6 +472,7 @@ class OpenAISummarizer:
             model=self.model,
             input=input,
             model_parameters=model_parameters or {},
+            trace_context=trace_context,
         )
 
     def _create_chat_completion(

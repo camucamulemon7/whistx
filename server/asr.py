@@ -20,6 +20,7 @@ class SessionTranscriber(Protocol):
         language: str | None,
         prompt: str | None,
         temperature: float,
+        trace_context: dict[str, str] | None = None,
     ) -> ASRChunkResult: ...
 
     def close(self) -> None: ...
