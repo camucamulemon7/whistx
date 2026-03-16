@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from contextlib import contextmanager
 from typing import Any
 
 from openai import BadRequestError, OpenAI
+from .langfuse_observer import LangfuseObserver
 
 
 @dataclass(slots=True)
@@ -35,6 +37,7 @@ class OpenAISummarizer:
         summary_prompt_template: str = "",
         proofread_system_prompt: str = "",
         proofread_prompt_template: str = "",
+        observer: LangfuseObserver | None = None,
     ):
         if not api_key:
             raise RuntimeError("SUMMARY_API_KEY (or ASR_API_KEY / OPENAI_API_KEY) is not set")
@@ -50,30 +53,59 @@ class OpenAISummarizer:
         self.summary_prompt_template = summary_prompt_template.strip()
         self.proofread_system_prompt = proofread_system_prompt.strip()
         self.proofread_prompt_template = proofread_prompt_template.strip()
+        self.observer = observer
 
-    def summarize(self, *, text: str, language: str, custom_template: str = "") -> SummaryResult:
+    def summarize(
+        self,
+        *,
+        text: str,
+        language: str,
+        custom_template: str = "",
+        trace_context: dict[str, str] | None = None,
+    ) -> SummaryResult:
         clean_text = (text or "").strip()
         if not clean_text:
             return SummaryResult(text="", model=self.model)
 
-        return self._summarize_once(clean_text, language, custom_template=custom_template)
+        return self._summarize_once(clean_text, language, custom_template=custom_template, trace_context=trace_context)
 
-    def summarize_long(self, *, text: str, language: str, max_chars: int, custom_template: str = "") -> SummaryResult:
+    def summarize_long(
+        self,
+        *,
+        text: str,
+        language: str,
+        max_chars: int,
+        custom_template: str = "",
+        trace_context: dict[str, str] | None = None,
+    ) -> SummaryResult:
         clean_text = (text or "").strip()
         if not clean_text:
             return SummaryResult(text="", model=self.model)
 
         chunks = _split_text_into_chunks(clean_text, max_chars=max_chars)
         if len(chunks) == 1:
-            return self._summarize_once(clean_text, language, custom_template=custom_template)
+            return self._summarize_once(
+                clean_text,
+                language,
+                custom_template=custom_template,
+                trace_context=trace_context,
+            )
 
-        partials = [self._summarize_once(chunk, language, custom_template=custom_template).text for chunk in chunks]
+        partials = [
+            self._summarize_once(
+                chunk,
+                language,
+                custom_template=custom_template,
+                trace_context=trace_context,
+            ).text
+            for chunk in chunks
+        ]
         reduced = False
 
         while len(partials) > 1:
             reduced = True
             groups = _group_texts_for_reduce(partials, max_chars=max_chars)
-            partials = [self._reduce_summaries(group, language).text for group in groups]
+            partials = [self._reduce_summaries(group, language, trace_context=trace_context).text for group in groups]
 
         return SummaryResult(
             text=partials[0].strip(),
@@ -82,34 +114,61 @@ class OpenAISummarizer:
             reduced=reduced,
         )
 
-    def proofread(self, *, text: str, language: str, mode: str = "proofread") -> ProofreadResult:
+    def proofread(
+        self,
+        *,
+        text: str,
+        language: str,
+        mode: str = "proofread",
+        trace_context: dict[str, str] | None = None,
+    ) -> ProofreadResult:
         clean_text = (text or "").strip()
         if not clean_text:
             return ProofreadResult(text="", model=self.model)
 
-        return self._proofread_once(clean_text, language, mode=mode)
+        return self._proofread_once(clean_text, language, mode=mode, trace_context=trace_context)
 
-    def proofread_long(self, *, text: str, language: str, max_chars: int, mode: str = "proofread") -> ProofreadResult:
+    def proofread_long(
+        self,
+        *,
+        text: str,
+        language: str,
+        max_chars: int,
+        mode: str = "proofread",
+        trace_context: dict[str, str] | None = None,
+    ) -> ProofreadResult:
         clean_text = (text or "").strip()
         if not clean_text:
             return ProofreadResult(text="", model=self.model)
 
-        chunks = _split_text_into_chunks(clean_text, max_chars=max_chars)
+        chunk_chars = _effective_proofread_chunk_chars(max_chars)
+        chunks = _split_text_into_chunks(clean_text, max_chars=chunk_chars)
         if len(chunks) == 1:
-            return self._proofread_once(clean_text, language, mode=mode)
+            return self._proofread_once(clean_text, language, mode=mode, trace_context=trace_context)
 
         corrected_chunks: list[str] = []
         trailing_context = ""
         for chunk in chunks:
-            corrected = self._proofread_once(chunk, language, mode=mode, trailing_context=trailing_context).text.strip()
+            corrected = self._proofread_once(
+                chunk,
+                language,
+                mode=mode,
+                trailing_context=trailing_context,
+                trace_context=trace_context,
+            ).text.strip()
             if corrected:
                 corrected_chunks.append(corrected)
                 trailing_context = corrected[-800:]
 
         merged = "\n\n".join(part for part in corrected_chunks if part).strip()
         reduced = False
-        if merged and len(merged) <= max_chars:
-            merged = self._proofread_consistency_pass(merged, language, mode=mode).text.strip()
+        if merged and len(merged) <= chunk_chars:
+            merged = self._proofread_consistency_pass(
+                merged,
+                language,
+                mode=mode,
+                trace_context=trace_context,
+            ).text.strip()
             reduced = True
 
         return ProofreadResult(
@@ -126,13 +185,15 @@ class OpenAISummarizer:
         language: str,
         max_chars: int,
         mode: str = "proofread",
+        trace_context: dict[str, str] | None = None,
     ):
         clean_text = (text or "").strip()
         if not clean_text:
             yield {"type": "done", "model": self.model, "chunkCount": 0}
             return
 
-        chunks = _split_text_into_chunks(clean_text, max_chars=max_chars)
+        chunk_chars = _effective_proofread_chunk_chars(max_chars)
+        chunks = _split_text_into_chunks(clean_text, max_chars=chunk_chars)
         yield {"type": "start", "model": self.model, "chunkCount": len(chunks)}
 
         trailing_context = ""
@@ -142,7 +203,13 @@ class OpenAISummarizer:
                 yield {"type": "delta", "delta": "\n\n", "chunkIndex": index, "chunkCount": len(chunks)}
 
             assembled_parts: list[str] = []
-            for delta in self._proofread_stream_chunk(chunk, language, mode=mode, trailing_context=trailing_context):
+            for delta in self._proofread_stream_chunk(
+                chunk,
+                language,
+                mode=mode,
+                trailing_context=trailing_context,
+                trace_context=trace_context,
+            ):
                 if delta:
                     assembled_parts.append(delta)
                     yield {"type": "delta", "delta": delta, "chunkIndex": index, "chunkCount": len(chunks)}
@@ -154,57 +221,93 @@ class OpenAISummarizer:
 
         yield {"type": "done", "model": self.model, "chunkCount": len(chunks)}
 
-    def _summarize_once(self, text: str, language: str, *, custom_template: str = "") -> SummaryResult:
-        response = self._create_chat_completion(
-            model=self.model,
-            temperature=self.temperature,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        self.summary_system_prompt
-                        or "You are a careful transcription summarizer. "
-                        "Keep factual consistency with the source and do not hallucinate."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": _build_summary_prompt(
-                        text,
-                        language,
-                        custom_template=custom_template or self.summary_prompt_template,
-                    ),
-                },
-            ],
-        )
-        return SummaryResult(
-            text=_extract_text(response).strip(),
-            model=_extract_model_name(response, self.model),
-        )
+    def _summarize_once(
+        self,
+        text: str,
+        language: str,
+        *,
+        custom_template: str = "",
+        trace_context: dict[str, str] | None = None,
+    ) -> SummaryResult:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    self.summary_system_prompt
+                    or "You are a careful transcription summarizer. "
+                    "Keep factual consistency with the source and do not hallucinate."
+                ),
+            },
+            {
+                "role": "user",
+                "content": _build_summary_prompt(
+                    text,
+                    language,
+                    custom_template=custom_template or self.summary_prompt_template,
+                ),
+            },
+        ]
+        with self._generation(
+            name="summary.generate",
+            input={"language": language, "text": text, "customTemplate": bool(custom_template)},
+            model_parameters={"temperature": self.temperature},
+            trace_context=trace_context,
+        ) as generation:
+            response = self._create_chat_completion(
+                model=self.model,
+                temperature=self.temperature,
+                messages=messages,
+            )
+            result_text = _extract_text(response).strip()
+            generation.update(
+                output={"text": result_text, "chars": len(result_text)},
+                usage_details=_extract_usage_details(response),
+            )
+            return SummaryResult(
+                text=result_text,
+                model=_extract_model_name(response, self.model),
+            )
 
-    def _reduce_summaries(self, summaries: list[str], language: str) -> SummaryResult:
-        response = self._create_chat_completion(
-            model=self.model,
-            temperature=self.temperature,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        self.summary_system_prompt
-                        or "You are a careful transcription summarizer. "
-                        "Keep factual consistency with the source and do not hallucinate."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": _build_summary_reduce_prompt(summaries, language),
-                },
-            ],
-        )
-        return SummaryResult(
-            text=_extract_text(response).strip(),
-            model=_extract_model_name(response, self.model),
-        )
+    def _reduce_summaries(
+        self,
+        summaries: list[str],
+        language: str,
+        trace_context: dict[str, str] | None = None,
+    ) -> SummaryResult:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    self.summary_system_prompt
+                    or "You are a careful transcription summarizer. "
+                    "Keep factual consistency with the source and do not hallucinate."
+                ),
+            },
+            {
+                "role": "user",
+                "content": _build_summary_reduce_prompt(summaries, language),
+            },
+        ]
+        with self._generation(
+            name="summary.reduce",
+            input={"language": language, "parts": summaries},
+            model_parameters={"temperature": self.temperature},
+            trace_context=trace_context,
+        ) as generation:
+            response = self._create_chat_completion(
+                model=self.model,
+                temperature=self.temperature,
+                messages=messages,
+            )
+            result_text = _extract_text(response).strip()
+            generation.update(
+                output={"text": result_text, "chars": len(result_text)},
+                usage_details=_extract_usage_details(response),
+            )
+            return SummaryResult(
+                text=result_text,
+                model=_extract_model_name(response, self.model),
+            )
 
     def _proofread_once(
         self,
@@ -213,37 +316,51 @@ class OpenAISummarizer:
         *,
         mode: str = "proofread",
         trailing_context: str = "",
+        trace_context: dict[str, str] | None = None,
     ) -> ProofreadResult:
-        response = self._create_chat_completion(
-            model=self.model,
-            temperature=self.temperature,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        _build_proofread_system_prompt(
-                            mode=mode,
-                            custom_system_prompt=self.proofread_system_prompt,
-                        )
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": _build_proofread_prompt(
-                        text,
-                        language,
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    _build_proofread_system_prompt(
                         mode=mode,
-                        custom_template=self.proofread_prompt_template,
-                        trailing_context=trailing_context,
-                    ),
-                },
-            ],
-        )
+                        custom_system_prompt=self.proofread_system_prompt,
+                    )
+                ),
+            },
+            {
+                "role": "user",
+                "content": _build_proofread_prompt(
+                    text,
+                    language,
+                    mode=mode,
+                    custom_template=self.proofread_prompt_template,
+                    trailing_context=trailing_context,
+                ),
+            },
+        ]
 
-        return ProofreadResult(
-            text=_extract_text(response).strip(),
-            model=_extract_model_name(response, self.model),
-        )
+        with self._generation(
+            name=f"proofread.{mode}",
+            input={"language": language, "text": text, "hasContext": bool(trailing_context)},
+            model_parameters={"temperature": self.temperature},
+            trace_context=trace_context,
+        ) as generation:
+            response = self._create_chat_completion(
+                model=self.model,
+                temperature=self.temperature,
+                messages=messages,
+            )
+            result_text = _extract_text(response).strip()
+            generation.update(
+                output={"text": result_text, "chars": len(result_text)},
+                usage_details=_extract_usage_details(response),
+            )
+
+            return ProofreadResult(
+                text=result_text,
+                model=_extract_model_name(response, self.model),
+            )
 
     def _proofread_stream_chunk(
         self,
@@ -252,6 +369,7 @@ class OpenAISummarizer:
         *,
         mode: str = "proofread",
         trailing_context: str = "",
+        trace_context: dict[str, str] | None = None,
     ):
         request_payload: dict[str, Any] = {
             "model": self.model,
@@ -280,34 +398,81 @@ class OpenAISummarizer:
             "stream": True,
         }
 
-        for event in self._create_chat_completion_stream(request_payload):
-            delta = _extract_stream_delta_text(event)
-            if delta:
-                yield delta
+        with self._generation(
+            name=f"proofread.stream.{mode}",
+            input={"language": language, "text": text, "hasContext": bool(trailing_context)},
+            model_parameters={"temperature": self.temperature, "stream": True},
+            trace_context=trace_context,
+        ) as generation:
+            parts: list[str] = []
+            for event in self._create_chat_completion_stream(request_payload):
+                delta = _extract_stream_delta_text(event)
+                if delta:
+                    parts.append(delta)
+                    yield delta
+            final_text = "".join(parts).strip()
+            generation.update(output={"text": final_text, "chars": len(final_text)})
 
-    def _proofread_consistency_pass(self, text: str, language: str, *, mode: str = "proofread") -> ProofreadResult:
-        response = self._create_chat_completion(
+    def _proofread_consistency_pass(
+        self,
+        text: str,
+        language: str,
+        *,
+        mode: str = "proofread",
+        trace_context: dict[str, str] | None = None,
+    ) -> ProofreadResult:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    _build_proofread_system_prompt(
+                        mode=mode,
+                        custom_system_prompt=self.proofread_system_prompt,
+                    )
+                ),
+            },
+            {
+                "role": "user",
+                "content": _build_proofread_consistency_prompt(text, language, mode=mode),
+            },
+        ]
+        with self._generation(
+            name=f"proofread.consistency.{mode}",
+            input={"language": language, "text": text},
+            model_parameters={"temperature": self.temperature},
+            trace_context=trace_context,
+        ) as generation:
+            response = self._create_chat_completion(
+                model=self.model,
+                temperature=self.temperature,
+                messages=messages,
+            )
+            result_text = _extract_text(response).strip()
+            generation.update(
+                output={"text": result_text, "chars": len(result_text)},
+                usage_details=_extract_usage_details(response),
+            )
+            return ProofreadResult(
+                text=result_text,
+                model=_extract_model_name(response, self.model),
+            )
+
+    def _generation(
+        self,
+        *,
+        name: str,
+        input: Any,
+        model_parameters: dict[str, Any] | None = None,
+        trace_context: dict[str, str] | None = None,
+    ):
+        if self.observer is None:
+            return _noop_generation()
+        return self.observer.generation(
+            name=name,
             model=self.model,
-            temperature=self.temperature,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        _build_proofread_system_prompt(
-                            mode=mode,
-                            custom_system_prompt=self.proofread_system_prompt,
-                        )
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": _build_proofread_consistency_prompt(text, language, mode=mode),
-                },
-            ],
-        )
-        return ProofreadResult(
-            text=_extract_text(response).strip(),
-            model=_extract_model_name(response, self.model),
+            input=input,
+            model_parameters=model_parameters or {},
+            trace_context=trace_context,
         )
 
     def _create_chat_completion(
@@ -602,6 +767,27 @@ def _extract_model_name(response: Any, fallback: str) -> str:
     return fallback
 
 
+def _extract_usage_details(response: Any) -> dict[str, int] | None:
+    usage = _read_field(response, "usage")
+    if usage is None:
+        return None
+    prompt_tokens = _read_field(usage, "prompt_tokens")
+    completion_tokens = _read_field(usage, "completion_tokens")
+    total_tokens = _read_field(usage, "total_tokens")
+    payload: dict[str, int] = {}
+    for key, value in (
+        ("input", prompt_tokens),
+        ("output", completion_tokens),
+        ("total", total_tokens),
+    ):
+        try:
+            if value is not None:
+                payload[key] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return payload or None
+
+
 def _extract_stream_delta_text(response: Any) -> str:
     choices = _read_field(response, "choices")
     if not isinstance(choices, list) or not choices:
@@ -704,6 +890,11 @@ def _hard_wrap_text(text: str, *, max_chars: int) -> list[str]:
     return parts
 
 
+def _effective_proofread_chunk_chars(max_chars: int) -> int:
+    safe_max = max(2_000, int(max_chars or 0))
+    return min(safe_max, 8_000)
+
+
 def _group_texts_for_reduce(texts: list[str], *, max_chars: int) -> list[list[str]]:
     groups: list[list[str]] = []
     current: list[str] = []
@@ -730,3 +921,12 @@ def _read_field(obj: Any, field: str) -> Any:
     if isinstance(obj, dict):
         return obj.get(field)
     return getattr(obj, field, None)
+
+
+@contextmanager
+def _noop_generation():
+    class _Noop:
+        def update(self, **_: Any) -> None:
+            return None
+
+    yield _Noop()

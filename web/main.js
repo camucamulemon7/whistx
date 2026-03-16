@@ -15,6 +15,8 @@ const audioLevelMatrixEl = $("#audioLevelMatrix");
 
 const languageEl = $("#language");
 const audioSourceEl = $("#audioSource");
+const audioSourceHintEl = $("#audioSourceHint");
+const audioSourceHintTextEl = $("#audioSourceHintText");
 const diarizationToggleEl = $("#diarizationEnabled");
 const diarizationStateTextEl = $("#diarizationStateText");
 const diarizationConfigRowEl = $("#diarizationConfigRow");
@@ -818,10 +820,23 @@ function normalizeAudioSource(value) {
   return "mic";
 }
 
+function audioSourceHintText(source) {
+  if (source === "display") {
+    return "画面共有音声はブラウザ制約で取得できない場合があります。Chrome/Edge のタブ共有が最も安定します。";
+  }
+  if (source === "both") {
+    return "画面共有音声とマイクを混ぜます。画面共有音声は共有面やブラウザ制約の影響を受けます。";
+  }
+  return "通常のマイク入力を使います。会議アプリ音声は画面共有では取得できない場合があります。";
+}
+
 function applyAudioSource(value) {
   const source = normalizeAudioSource(value);
   if (audioSourceEl) {
     audioSourceEl.value = source;
+  }
+  if (audioSourceHintTextEl || audioSourceHintEl) {
+    (audioSourceHintTextEl || audioSourceHintEl).textContent = audioSourceHintText(source);
   }
   state.vadRmsThreshold = vadThresholdForSource(source);
   try {

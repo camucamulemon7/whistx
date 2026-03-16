@@ -58,6 +58,12 @@ class Settings:
     app_brand_tagline: str
     ui_prompt_templates: tuple[dict[str, str], ...]
     ui_banners: tuple[dict[str, Any], ...]
+    langfuse_enabled: bool
+    langfuse_public_key: str
+    langfuse_secret_key: str
+    langfuse_host: str | None
+    langfuse_environment: str | None
+    langfuse_release: str | None
 
 
 def _env_first_non_empty(*names: str) -> str | None:
@@ -513,6 +519,12 @@ def load_settings() -> Settings:
         app_brand_tagline=app_brand_tagline,
         ui_prompt_templates=_parse_prompt_templates(),
         ui_banners=_parse_ui_banners(),
+        langfuse_enabled=_to_bool("LANGFUSE_ENABLED", True),
+        langfuse_public_key=_env_first_non_empty("LANGFUSE_PUBLIC_KEY") or "",
+        langfuse_secret_key=_env_first_non_empty("LANGFUSE_SECRET_KEY") or "",
+        langfuse_host=_env_first_non_empty("LANGFUSE_HOST"),
+        langfuse_environment=_env_first_non_empty("LANGFUSE_ENVIRONMENT", "LANGFUSE_ENV"),
+        langfuse_release=_env_first_non_empty("LANGFUSE_RELEASE"),
     )
 
 

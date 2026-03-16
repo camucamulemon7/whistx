@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -20,6 +21,7 @@ from .asr import SessionTranscriber
 from .audio_pipeline import AudioPreprocessor
 from .config import settings
 from .diarizer import AudioChunk, PyannoteSpeakerDiarizer, SpeakerTurn
+from .langfuse_observer import make_langfuse_observer
 from .openai_whisper import OpenAIWhisperTranscriber
 from .summarizer import OpenAISummarizer
 from .transcript_store import (
@@ -63,6 +65,7 @@ class LiveSession:
     context_recent_lines: int
     context_term_limit: int
     context_history: list[str]
+    transcript_history: list[str]
     context_terms: list[str]
     last_emitted_text: str
     collect_audio_for_diarization: bool
@@ -94,11 +97,21 @@ SUMMARIZER: OpenAISummarizer | None = None
 PROOFREADER: OpenAISummarizer | None = None
 DIARIZER: PyannoteSpeakerDiarizer | None = None
 ACTIVE_SOCKETS: set[WebSocket] = set()
+LANGFUSE_OBSERVER = None
 
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    global TRANSCRIBER_FACTORY, AUDIO_PREPROCESSOR, SUMMARIZER, PROOFREADER, DIARIZER
+    global TRANSCRIBER_FACTORY, AUDIO_PREPROCESSOR, SUMMARIZER, PROOFREADER, DIARIZER, LANGFUSE_OBSERVER
+
+    LANGFUSE_OBSERVER = make_langfuse_observer(
+        public_key=settings.langfuse_public_key,
+        secret_key=settings.langfuse_secret_key,
+        host=settings.langfuse_host,
+        environment=settings.langfuse_environment,
+        release=settings.langfuse_release,
+        enabled=settings.langfuse_enabled,
+    )
 
     TRANSCRIBER_FACTORY = _build_transcriber_factory()
     AUDIO_PREPROCESSOR = AudioPreprocessor(
@@ -117,6 +130,7 @@ async def on_startup() -> None:
             summary_prompt_template=settings.summary_prompt_template,
             proofread_system_prompt=settings.proofread_system_prompt,
             proofread_prompt_template=settings.proofread_prompt_template,
+            observer=LANGFUSE_OBSERVER,
         )
     except Exception as exc:  # noqa: BLE001
         SUMMARIZER = None
@@ -132,6 +146,7 @@ async def on_startup() -> None:
             summary_prompt_template=settings.summary_prompt_template,
             proofread_system_prompt=settings.proofread_system_prompt,
             proofread_prompt_template=settings.proofread_prompt_template,
+            observer=LANGFUSE_OBSERVER,
         )
     except Exception as exc:  # noqa: BLE001
         PROOFREADER = None
@@ -157,6 +172,13 @@ async def on_startup() -> None:
         DIARIZER = None
 
     logger.info("whistx started (model=%s, ws=%s)", settings.asr_model, settings.ws_path)
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    if LANGFUSE_OBSERVER is not None:
+        LANGFUSE_OBSERVER.flush()
+        LANGFUSE_OBSERVER.shutdown()
 
 
 @app.get("/api/health")
@@ -199,6 +221,10 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
 
     language = _as_str(payload.language) or settings.default_language
     prompt = _as_str(payload.prompt)
+    trace_context = LANGFUSE_OBSERVER.create_trace_context(
+        name="api.summarize",
+        input={"language": language, "chars": len(raw_text), "customPrompt": bool(prompt)},
+    ) if LANGFUSE_OBSERVER is not None else None
 
     try:
         result = await asyncio.to_thread(
@@ -207,6 +233,7 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
             language=language,
             max_chars=settings.summary_input_max_chars,
             custom_template=prompt,
+            trace_context=trace_context,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Summary failed")
@@ -241,6 +268,10 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
     language = _as_str(payload.language) or settings.default_language
     mode = _normalize_proofread_mode(_as_str(payload.mode))
     logger.info("Proofread requested: chars=%d language=%s", len(raw_text), language)
+    trace_context = LANGFUSE_OBSERVER.create_trace_context(
+        name="api.proofread",
+        input={"language": language, "chars": len(raw_text), "mode": mode},
+    ) if LANGFUSE_OBSERVER is not None else None
 
     try:
         result = await asyncio.to_thread(
@@ -249,6 +280,7 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
             language=language,
             max_chars=settings.proofread_input_max_chars,
             mode=mode,
+            trace_context=trace_context,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Proofread failed")
@@ -283,6 +315,10 @@ async def proofread_stream(payload: ProofreadRequest) -> Response:
 
     language = _as_str(payload.language) or settings.default_language
     mode = _normalize_proofread_mode(_as_str(payload.mode))
+    trace_context = LANGFUSE_OBSERVER.create_trace_context(
+        name="api.proofread.stream",
+        input={"language": language, "chars": len(raw_text), "mode": mode},
+    ) if LANGFUSE_OBSERVER is not None else None
 
     def event_stream():
         try:
@@ -291,6 +327,7 @@ async def proofread_stream(payload: ProofreadRequest) -> Response:
                 language=language,
                 max_chars=settings.proofread_input_max_chars,
                 mode=mode,
+                trace_context=trace_context,
             ):
                 yield _format_sse(event)
         except Exception as exc:  # noqa: BLE001
@@ -432,6 +469,18 @@ async def ws_transcribe(ws: WebSocket) -> None:
 
 
 async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
+    emitted_segments = 0
+    emitted_chars = 0
+    trace_context = LANGFUSE_OBSERVER.create_trace_context(
+        name="asr.session",
+        input={
+            "sessionId": session.session_id,
+            "language": session.language or "",
+            "audioSource": session.audio_source,
+            "model": settings.asr_model,
+            "diarizationEnabled": session.collect_audio_for_diarization,
+        },
+    ) if LANGFUSE_OBSERVER is not None else None
     try:
         while True:
             item = await session.queue.get()
@@ -471,6 +520,7 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                     language=session.language,
                     prompt=prompt,
                     temperature=session.temperature,
+                    trace_context=trace_context,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Transcription failed: session=%s seq=%s", session.session_id, item.seq)
@@ -522,7 +572,10 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
             )
             session.store.append_final(record)
             session.last_emitted_text = text
+            session.transcript_history.append(text)
             _append_context(session, text)
+            emitted_segments += 1
+            emitted_chars += len(text)
 
             await _safe_send(
                 ws,
@@ -536,6 +589,19 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                     "speaker": record.speaker,
                 },
             )
+
+        if LANGFUSE_OBSERVER is not None and trace_context is not None:
+            with LANGFUSE_OBSERVER.generation(
+                name="asr.session.result",
+                model=settings.asr_model,
+                output={
+                    "segmentCount": emitted_segments,
+                    "charCount": emitted_chars,
+                    "finalTranscript": _clip_trace_text("\n".join(session.transcript_history)),
+                },
+                trace_context=trace_context,
+            ):
+                pass
     finally:
         try:
             await asyncio.to_thread(session.transcriber.close)
@@ -571,6 +637,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         context_recent_lines=settings.context_recent_lines,
         context_term_limit=settings.context_term_limit,
         context_history=[],
+        transcript_history=[],
         context_terms=[],
         last_emitted_text="",
         collect_audio_for_diarization=DIARIZER is not None and diarization_requested,
@@ -592,12 +659,14 @@ def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
             base_url=settings.openai_base_url,
             model=settings.asr_model,
             ffmpeg_bin=settings.ffmpeg_bin,
+            observer=LANGFUSE_OBSERVER,
         )
 
     return lambda: OpenAIWhisperTranscriber(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
         model=settings.asr_model,
+        observer=LANGFUSE_OBSERVER,
     )
 
 
@@ -1053,6 +1122,18 @@ def _normalize_proofread_mode(value: str) -> str:
     if lowered in {"translate_ja", "translate_en"}:
         return lowered
     return "proofread"
+
+
+def _clip_trace_text(text: str, limit: int = 8000) -> str:
+    clean = str(text or "").strip()
+    if len(clean) <= limit:
+        return clean
+    return clean[:limit] + "...(truncated)"
+
+
+@contextmanager
+def _noop_span():
+    yield None
 
 
 async def _broadcast_conn_count() -> None:
