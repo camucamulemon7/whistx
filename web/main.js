@@ -25,12 +25,15 @@ const diarizationSpeakerCountEl = $("#diarizationSpeakerCount");
 const diarizationMinSpeakersEl = $("#diarizationMinSpeakers");
 const diarizationMaxSpeakersEl = $("#diarizationMaxSpeakers");
 const diarizationSpeakerHintEl = $("#diarizationSpeakerHint");
+const captureScreenshotsEnabledEl = $("#captureScreenshotsEnabled");
+const captureScreenshotsStateTextEl = $("#captureScreenshotsStateText");
 const chunkSecondsEl = $("#chunkSeconds");
 const promptEl = $("#prompt");
 const summaryPromptEl = $("#summaryPrompt");
 const promptTemplateButtonsEl = $("#promptTemplateButtons");
 const workspacePanelsEl = $("#workspacePanels");
 const panelResizerEls = Array.from(document.querySelectorAll("[data-resizer]"));
+const panelToggleEls = Array.from(document.querySelectorAll("[data-panel-toggle]"));
 const chunkHintEl = $("#chunkHint");
 const presetButtons = Array.from(document.querySelectorAll("[data-chunk-preset]"));
 
@@ -46,7 +49,7 @@ const clearBtn = $("#clearBtn");
 
 const dlTxt = $("#dlTxt");
 const dlJsonl = $("#dlJsonl");
-const dlSrt = $("#dlSrt");
+const dlZip = $("#dlZip");
 
 const logEl = $("#log");
 const segmentCountEl = $("#segmentCount");
@@ -126,6 +129,14 @@ const state = {
   captureContext: null,
   captureSources: [],
   captureDestination: null,
+  displayCaptureVideo: null,
+  screenshotCanvas: null,
+  captureScreenshotsEnabled: true,
+  panelCollapsed: {
+    transcript: false,
+    proofread: false,
+    summary: false,
+  },
   promptTemplates: [
     {
       id: "soc-design",
@@ -228,6 +239,7 @@ function applyWorkspaceRatios(left, center, right, options = {}) {
     workspacePanelsEl.style.setProperty("--panel-center", `${safeCenter}fr`);
     workspacePanelsEl.style.setProperty("--panel-right", `${safeRight}fr`);
   }
+  updateWorkspaceGridTemplate();
 
   if (persist) {
     try {
@@ -235,6 +247,67 @@ function applyWorkspaceRatios(left, center, right, options = {}) {
         "whistx_workspace_ratios",
         JSON.stringify({ left: safeLeft, center: safeCenter, right: safeRight })
       );
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function updateWorkspaceGridTemplate() {
+  if (!workspacePanelsEl) return;
+  if (window.innerWidth <= 1100) {
+    workspacePanelsEl.style.gridTemplateColumns = "1fr";
+    return;
+  }
+
+  const left = state.panelCollapsed.transcript ? "88px" : `minmax(280px, ${state.panelLeftRatio}fr)`;
+  const center = state.panelCollapsed.proofread ? "88px" : `minmax(240px, ${state.panelCenterRatio}fr)`;
+  const right = state.panelCollapsed.summary ? "88px" : `minmax(240px, ${state.panelRightRatio}fr)`;
+  workspacePanelsEl.style.gridTemplateColumns = `${left} 10px ${center} 10px ${right}`;
+}
+
+function applyPanelCollapseState(panel, collapsed, options = {}) {
+  const persist = options.persist !== false;
+  const key = panel === "proofread" || panel === "summary" ? panel : "transcript";
+  state.panelCollapsed[key] = !!collapsed;
+
+  const panelEl = document.querySelector(`.${key}-panel`);
+  if (panelEl) {
+    panelEl.classList.toggle("is-collapsed", !!collapsed);
+  }
+
+  const toggleBtn = document.querySelector(`[data-panel-toggle="${key}"]`);
+  if (toggleBtn) {
+    toggleBtn.classList.toggle("is-collapsed", !!collapsed);
+    const labelMap = { transcript: "文字起こし", proofread: "校正", summary: "要約" };
+    const label = labelMap[key] || "パネル";
+    toggleBtn.setAttribute("aria-label", collapsed ? `${label}を展開` : `${label}をたたむ`);
+    toggleBtn.title = collapsed ? "展開" : "たたむ";
+  }
+
+  if (persist) {
+    try {
+      localStorage.setItem("whistx_panel_collapsed", JSON.stringify(state.panelCollapsed));
+    } catch {
+      // ignore
+    }
+  }
+  updateWorkspaceGridTemplate();
+}
+
+function applyCaptureScreenshotsEnabled(value, options = {}) {
+  const persist = options.persist !== false;
+  const enabled = !!value;
+  state.captureScreenshotsEnabled = enabled;
+  if (captureScreenshotsEnabledEl) {
+    captureScreenshotsEnabledEl.checked = enabled;
+  }
+  if (captureScreenshotsStateTextEl) {
+    captureScreenshotsStateTextEl.textContent = enabled ? "ON" : "OFF";
+  }
+  if (persist) {
+    try {
+      localStorage.setItem("whistx_capture_screenshots_enabled", enabled ? "1" : "0");
     } catch {
       // ignore
     }
@@ -288,6 +361,15 @@ function setupWorkspaceResizers() {
   window.addEventListener("pointermove", onPointerMove);
   window.addEventListener("pointerup", stopDrag);
   window.addEventListener("pointercancel", stopDrag);
+}
+
+function setupPanelToggles() {
+  panelToggleEls.forEach((button) => {
+    button.addEventListener("click", () => {
+      const panel = String(button.dataset.panelToggle || "");
+      applyPanelCollapseState(panel, !state.panelCollapsed[panel]);
+    });
+  });
 }
 
 async function readSseJsonStream(response, onEvent) {
@@ -593,13 +675,13 @@ function updateDownloadLinks() {
   if (!state.runtimeSessionId) {
     dlTxt.href = "#";
     dlJsonl.href = "#";
-    dlSrt.href = "#";
+    dlZip.href = "#";
     return;
   }
 
   dlTxt.href = `/api/transcript/${state.runtimeSessionId}.txt`;
   dlJsonl.href = `/api/transcript/${state.runtimeSessionId}.jsonl`;
-  dlSrt.href = `/api/transcript/${state.runtimeSessionId}.srt`;
+  dlZip.href = `/api/transcript/${state.runtimeSessionId}.zip`;
 }
 
 function setSummary(text, meta) {
@@ -649,7 +731,7 @@ function renderTranscriptText(rawText, speaker) {
   return `[${label}] ${clean}`;
 }
 
-function addLogLine(text, tsStart, tsEnd, seq, speaker) {
+function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "") {
   // Hide empty state on first log entry
   const emptyState = logEl.querySelector(".empty-state");
   if (emptyState) {
@@ -675,7 +757,29 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker) {
     row.dataset.seq = String(Number(seq));
   }
 
-  row.append(range, content);
+  const body = document.createElement("div");
+  body.className = "log-body";
+  body.append(content);
+
+  if (screenshotPath) {
+    const link = document.createElement("a");
+    link.className = "log-screenshot-link";
+    link.href = screenshotPath;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.title = "スクリーンショットを開く";
+
+    const image = document.createElement("img");
+    image.className = "log-screenshot";
+    image.src = screenshotPath;
+    image.alt = `${formatMs(tsStart)} の画面キャプチャ`;
+    image.loading = "lazy";
+
+    link.append(image);
+    body.append(link);
+  }
+
+  row.append(range, body);
   logEl.appendChild(row);
   logEl.scrollTop = logEl.scrollHeight;
 
@@ -857,6 +961,63 @@ function hasAudioTrack(stream) {
   return !!stream && stream.getAudioTracks().length > 0;
 }
 
+function setupDisplayCaptureVideo(displayStream) {
+  const [videoTrack] = displayStream?.getVideoTracks?.() || [];
+  if (!videoTrack) {
+    state.displayCaptureVideo = null;
+    return;
+  }
+
+  const video = document.createElement("video");
+  video.muted = true;
+  video.playsInline = true;
+  video.autoplay = true;
+  video.srcObject = new MediaStream([videoTrack]);
+  const playPromise = video.play();
+  if (playPromise && typeof playPromise.catch === "function") {
+    playPromise.catch(() => {});
+  }
+  state.displayCaptureVideo = video;
+}
+
+async function captureDisplayScreenshot() {
+  if (!state.captureScreenshotsEnabled) return null;
+  const video = state.displayCaptureVideo;
+  const displayStream = state.displayStream;
+  if (!video || !displayStream) return null;
+
+  const [videoTrack] = displayStream.getVideoTracks?.() || [];
+  if (!videoTrack) return null;
+
+  const width = Number(video.videoWidth || videoTrack.getSettings?.().width || 0);
+  const height = Number(video.videoHeight || videoTrack.getSettings?.().height || 0);
+  if (!width || !height) return null;
+
+  const maxWidth = 960;
+  const targetWidth = Math.min(maxWidth, width);
+  const targetHeight = Math.max(1, Math.round((height * targetWidth) / width));
+
+  const canvas = state.screenshotCanvas || document.createElement("canvas");
+  state.screenshotCanvas = canvas;
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (!ctx) return null;
+  ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+
+  const blob = await new Promise((resolve) => {
+    canvas.toBlob((nextBlob) => resolve(nextBlob), "image/webp", 0.82);
+  });
+  if (!blob) return null;
+
+  const buffer = await blob.arrayBuffer();
+  return {
+    mimeType: blob.type || "image/webp",
+    data: arrayBufferToBase64(buffer),
+  };
+}
+
 async function requestMicStream(sourceMode = "mic") {
   const mixed = sourceMode === "both";
   return navigator.mediaDevices.getUserMedia({
@@ -1007,6 +1168,7 @@ async function prepareInputStream(sourceMode) {
     }
     bindDisplayEndEvents(displayStream);
     state.displayStream = displayStream;
+    setupDisplayCaptureVideo(displayStream);
     return buildMixedAudioStream([displayStream]);
   }
 
@@ -1021,6 +1183,7 @@ async function prepareInputStream(sourceMode) {
 
   const micStream = await requestMicStream(mode);
   state.displayStream = displayStream;
+  setupDisplayCaptureVideo(displayStream);
   state.micStream = micStream;
   return buildMixedAudioStream([displayStream, micStream]);
 }
@@ -1066,7 +1229,8 @@ async function ensureSocket() {
         Number(data.tsStart || 0),
         Number(data.tsEnd || 0),
         Number(data.seq),
-        String(data.speaker || "")
+        String(data.speaker || ""),
+        String(data.screenshotPath || "")
       );
       return;
     }
@@ -1368,6 +1532,7 @@ async function sendChunk(blob, mimeType, durationMsOverride, vadDecision) {
   const seq = state.seq++;
   const buffer = await blob.arrayBuffer();
   const audio = arrayBufferToBase64(buffer);
+  const screenshot = await captureDisplayScreenshot();
 
   state.ws.send(
     JSON.stringify({
@@ -1377,6 +1542,8 @@ async function sendChunk(blob, mimeType, durationMsOverride, vadDecision) {
       durationMs,
       mimeType: mimeType || blob.type || "audio/webm",
       audio,
+      screenshot: screenshot?.data || "",
+      screenshotMimeType: screenshot?.mimeType || "",
     })
   );
 }
@@ -1620,6 +1787,16 @@ function cleanupMedia() {
   state.stream = null;
   state.micStream = null;
   state.displayStream = null;
+  if (state.displayCaptureVideo) {
+    try {
+      state.displayCaptureVideo.pause();
+      state.displayCaptureVideo.srcObject = null;
+    } catch {
+      // ignore
+    }
+  }
+  state.displayCaptureVideo = null;
+  state.screenshotCanvas = null;
 }
 
 async function copyAll() {
@@ -1971,13 +2148,24 @@ if (sidebarBackdropEl) {
   });
 }
 
+if (captureScreenshotsEnabledEl) {
+  captureScreenshotsEnabledEl.addEventListener("change", () => {
+    applyCaptureScreenshotsEnabled(captureScreenshotsEnabledEl.checked);
+  });
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.sidebarOpen) {
     applySidebarOpen(false);
   }
 });
 
+window.addEventListener("resize", () => {
+  updateWorkspaceGridTemplate();
+});
+
 setupWorkspaceResizers();
+setupPanelToggles();
 
 try {
   const savedRatiosRaw = localStorage.getItem("whistx_workspace_ratios");
@@ -1989,6 +2177,25 @@ try {
   }
 } catch {
   applyWorkspaceRatios(state.panelLeftRatio, state.panelCenterRatio, state.panelRightRatio, { persist: false });
+}
+
+try {
+  const savedCollapsedRaw = localStorage.getItem("whistx_panel_collapsed");
+  if (savedCollapsedRaw) {
+    const savedCollapsed = JSON.parse(savedCollapsedRaw);
+    applyPanelCollapseState("transcript", !!savedCollapsed.transcript, { persist: false });
+    applyPanelCollapseState("proofread", !!savedCollapsed.proofread, { persist: false });
+    applyPanelCollapseState("summary", !!savedCollapsed.summary, { persist: false });
+  }
+} catch {
+  // ignore
+}
+
+try {
+  const savedCaptureScreenshots = localStorage.getItem("whistx_capture_screenshots_enabled");
+  applyCaptureScreenshotsEnabled(savedCaptureScreenshots !== "0", { persist: false });
+} catch {
+  applyCaptureScreenshotsEnabled(true, { persist: false });
 }
 
 copyBtn.addEventListener("click", () => {
@@ -2032,7 +2239,7 @@ function renderPromptTemplateButtons(rawTemplates) {
 }
 
 // Download link feedback
-[dlTxt, dlJsonl, dlSrt].forEach((link) => {
+[dlTxt, dlJsonl, dlZip].forEach((link) => {
   link.addEventListener("click", () => {
     const format = link.textContent;
     if (link.href && link.href !== "#") {

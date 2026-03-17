@@ -25,6 +25,7 @@ class TranscriptRecord:
     language: str
     createdAt: str
     speaker: str | None = None
+    screenshotPath: str | None = None
 
 
 class TranscriptStore:
@@ -35,11 +36,13 @@ class TranscriptStore:
         self.jsonl_path = self.base_path.with_suffix(".jsonl")
         self.txt_path = self.base_path.with_suffix(".txt")
         self.chunks_dir = self.root_dir / "_chunks" / session_id
+        self.screenshots_dir = self.root_dir / "_screenshots" / session_id
 
         self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
         self.jsonl_path.touch(exist_ok=True)
         self.txt_path.touch(exist_ok=True)
         self.chunks_dir.mkdir(parents=True, exist_ok=True)
+        self.screenshots_dir.mkdir(parents=True, exist_ok=True)
 
     def append_final(self, record: TranscriptRecord) -> None:
         payload = asdict(record)
@@ -57,6 +60,13 @@ class TranscriptStore:
         path = self.chunks_dir / f"{seq:06d}{ext}"
         path.write_bytes(audio_bytes)
         return path
+
+    def save_screenshot(self, *, seq: int, mime_type: str, image_bytes: bytes) -> str:
+        ext = _image_ext_from_mime(mime_type)
+        filename = f"{seq:06d}{ext}"
+        path = self.screenshots_dir / filename
+        path.write_bytes(image_bytes)
+        return filename
 
     def rewrite_records(self, records: Iterable[dict]) -> None:
         rows = [row for row in records if isinstance(row, dict)]
@@ -101,6 +111,24 @@ def resolve_transcript_path(root_dir: Path, session_id: str, ext: str) -> Path |
     path = (root_dir / session_id).with_suffix(f".{safe_ext}")
     try:
         resolved_root = root_dir.resolve()
+        resolved_path = path.resolve()
+    except Exception:
+        return None
+
+    if resolved_root != resolved_path.parent:
+        return None
+    return path
+
+
+def resolve_screenshot_path(root_dir: Path, session_id: str, filename: str) -> Path | None:
+    if not SESSION_ID_RE.fullmatch(session_id):
+        return None
+    if not re.fullmatch(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", filename or ""):
+        return None
+
+    path = root_dir / "_screenshots" / session_id / filename
+    try:
+        resolved_root = (root_dir / "_screenshots" / session_id).resolve()
         resolved_path = path.resolve()
     except Exception:
         return None
@@ -181,6 +209,17 @@ def _ext_from_mime(mime_type: str) -> str:
         return ".m4a"
     if "mpeg" in lowered or "mp3" in lowered:
         return ".mp3"
+    return ".bin"
+
+
+def _image_ext_from_mime(mime_type: str) -> str:
+    lowered = (mime_type or "").lower()
+    if "webp" in lowered:
+        return ".webp"
+    if "png" in lowered:
+        return ".png"
+    if "jpeg" in lowered or "jpg" in lowered:
+        return ".jpg"
     return ".bin"
 
 

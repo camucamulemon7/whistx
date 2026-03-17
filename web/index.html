@@ -9,8 +9,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>whistx</title>
-    <link rel="stylesheet" href="/style.css?v=20260314a" />
-    <script type="module" src="/main.js?v=20260314a"></script>
+    <link rel="stylesheet" href="/style.css?v=20260317b" />
+    <script type="module" src="/main.js?v=20260317b"></script>
   </head>
   <body>
     <div class="app">
@@ -225,6 +225,11 @@
                 <span id="segmentCount" class="panel-badge">0</span>
               </div>
               <div class="panel-actions">
+                <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="transcript" aria-label="文字起こしをたたむ" title="たたむ">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                </button>
                 <button id="copyBtn" type="button" class="icon-btn" aria-label="コピー" title="コピー">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
@@ -259,7 +264,7 @@
               <span class="downloads-label">Export</span>
               <a id="dlTxt" href="#" download class="download-link">TXT</a>
               <a id="dlJsonl" href="#" download class="download-link">JSONL</a>
-              <a id="dlSrt" href="#" download class="download-link">SRT</a>
+              <a id="dlZip" href="#" download class="download-link">ZIP</a>
             </div>
           </section>
 
@@ -279,6 +284,11 @@
                 <span id="proofreadMeta" class="panel-badge">未生成</span>
               </div>
               <div class="panel-actions">
+                <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="proofread" aria-label="校正をたたむ" title="たたむ">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                </button>
                 <div class="select-wrapper compact-select">
                   <select id="proofreadMode" aria-label="校正または翻訳モード">
                     <option value="proofread" selected>校正</option>
@@ -325,12 +335,19 @@
                 <h2 class="panel-title">要約</h2>
               <span id="summaryMeta" class="panel-badge">未生成</span>
             </div>
-            <button id="summaryBtn" type="button" class="btn-action" aria-label="要約を生成">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="13,2 3,14 12,14 11,22 21,10 12,10 13,2"/>
-              </svg>
-              <span id="summaryBtnLabel">実行</span>
-            </button>
+            <div class="panel-actions">
+              <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="summary" aria-label="要約をたたむ" title="たたむ">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="15 18 9 12 15 6"/>
+                </svg>
+              </button>
+              <button id="summaryBtn" type="button" class="btn-action" aria-label="要約を生成">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="13,2 3,14 12,14 11,22 21,10 12,10 13,2"/>
+                </svg>
+                <span id="summaryBtnLabel">実行</span>
+              </button>
+            </div>
           </header>
             <div id="summaryText" class="summary-content">
               <div class="empty-state small">
@@ -358,6 +375,18 @@
             <line x1="6" y1="6" x2="18" y2="18"/>
           </svg>
         </button>
+      </div>
+
+      <div class="side-panel-section">
+        <div class="setting-group setting-group-toggle side-panel-toggle">
+          <span class="setting-label">画面キャプチャ保存</span>
+          <label for="captureScreenshotsEnabled" class="toggle-control">
+            <input id="captureScreenshotsEnabled" type="checkbox" checked />
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span id="captureScreenshotsStateText" class="toggle-text">ON</span>
+          </label>
+        </div>
+        <p class="chunk-description">画面共有時のみ、確定セグメントごとにサムネイルを保存します</p>
       </div>
 
       <div class="side-panel-section">

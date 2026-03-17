@@ -6,9 +6,11 @@ import difflib
 import json
 import logging
 import re
+import zipfile
 from dataclasses import dataclass
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,8 +29,8 @@ from .summarizer import OpenAISummarizer
 from .transcript_store import (
     TranscriptRecord,
     TranscriptStore,
-    format_srt,
     read_jsonl_records,
+    resolve_screenshot_path,
     resolve_transcript_path,
 )
 from .voxtral_realtime import VoxtralRealtimeTranscriber
@@ -51,6 +53,8 @@ class ChunkMessage:
     duration_ms: int
     mime_type: str
     audio_bytes: bytes
+    screenshot_mime_type: str | None = None
+    screenshot_bytes: bytes | None = None
 
 
 @dataclass(slots=True)
@@ -569,6 +573,7 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 chunkDurationMs=item.duration_ms,
                 language=session.language,
                 createdAt=datetime.now(timezone.utc).isoformat(),
+                screenshotPath=_store_screenshot_for_chunk(session, item),
             )
             session.store.append_final(record)
             session.last_emitted_text = text
@@ -587,6 +592,7 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                     "tsStart": record.tsStart,
                     "tsEnd": record.tsEnd,
                     "speaker": record.speaker,
+                    "screenshotPath": record.screenshotPath,
                 },
             )
 
@@ -1031,7 +1037,16 @@ def _parse_chunk_message(payload: dict[str, Any]) -> ChunkMessage | None:
     except Exception:  # noqa: BLE001
         return None
 
+    screenshot_b64 = _as_str(payload.get("screenshot"))
+    screenshot_bytes: bytes | None = None
+    if screenshot_b64:
+        try:
+            screenshot_bytes = base64.b64decode(screenshot_b64, validate=True)
+        except Exception:  # noqa: BLE001
+            screenshot_bytes = None
+
     mime_type = _as_str(payload.get("mimeType")) or "audio/webm"
+    screenshot_mime_type = _as_str(payload.get("screenshotMimeType")) or None
     seq = _as_int(payload.get("seq"), 0)
     offset_ms = max(0, _as_int(payload.get("offsetMs"), 0))
     duration_ms = max(200, _as_int(payload.get("durationMs"), 2000))
@@ -1042,7 +1057,29 @@ def _parse_chunk_message(payload: dict[str, Any]) -> ChunkMessage | None:
         duration_ms=duration_ms,
         mime_type=mime_type,
         audio_bytes=audio_bytes,
+        screenshot_mime_type=screenshot_mime_type,
+        screenshot_bytes=screenshot_bytes,
     )
+
+
+def _store_screenshot_for_chunk(session: LiveSession, item: ChunkMessage) -> str | None:
+    if not item.screenshot_bytes or not item.screenshot_mime_type:
+        return None
+    try:
+        filename = session.store.save_screenshot(
+            seq=item.seq,
+            mime_type=item.screenshot_mime_type,
+            image_bytes=item.screenshot_bytes,
+        )
+        return f"/api/transcripts/{session.session_id}/screenshots/{filename}"
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Screenshot save failed: session=%s seq=%s",
+            session.session_id,
+            item.seq,
+            exc_info=True,
+        )
+        return None
 
 
 def _clamp_diarization_speakers(value: int) -> int:
@@ -1177,15 +1214,48 @@ async def get_jsonl(session_id: str) -> Response:
     return FileResponse(str(path), media_type="application/x-ndjson")
 
 
-@app.get("/api/transcript/{session_id}.srt", response_model=None)
-async def get_srt(session_id: str) -> Response:
-    path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
+@app.get("/api/transcript/{session_id}.zip", response_model=None)
+async def get_zip(session_id: str) -> Response:
+    txt_path = resolve_transcript_path(settings.transcripts_dir, session_id, "txt")
+    jsonl_path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
+    if not txt_path or not jsonl_path or not txt_path.exists() or not jsonl_path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(txt_path, arcname=f"{session_id}.txt")
+        archive.write(jsonl_path, arcname=f"{session_id}.jsonl")
+
+        screenshots_dir = settings.transcripts_dir / "_screenshots" / session_id
+        if screenshots_dir.exists():
+            for screenshot_path in sorted(screenshots_dir.iterdir()):
+                if screenshot_path.is_file():
+                    archive.write(
+                        screenshot_path,
+                        arcname=f"{session_id}/screenshots/{screenshot_path.name}",
+                    )
+
+    buffer.seek(0)
+    headers = {"Content-Disposition": f'attachment; filename="{session_id}.zip"'}
+    return Response(content=buffer.getvalue(), media_type="application/zip", headers=headers)
+
+
+@app.get("/api/transcripts/{session_id}/screenshots/{filename}", response_model=None)
+async def get_screenshot(session_id: str, filename: str) -> Response:
+    path = resolve_screenshot_path(settings.transcripts_dir, session_id, filename)
     if not path or not path.exists():
         return HTMLResponse(status_code=404, content="not found")
 
-    records = read_jsonl_records(path)
-    srt = format_srt(records)
-    return PlainTextResponse(status_code=200, content=srt, media_type="text/plain; charset=utf-8")
+    suffix = path.suffix.lower()
+    media_type = "application/octet-stream"
+    if suffix == ".webp":
+        media_type = "image/webp"
+    elif suffix in {".jpg", ".jpeg"}:
+        media_type = "image/jpeg"
+    elif suffix == ".png":
+        media_type = "image/png"
+
+    return FileResponse(str(path), media_type=media_type)
 
 
 WEB_DIR = Path("web")

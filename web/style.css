@@ -1565,6 +1565,56 @@ body.is-resizing-panels {
   min-height: 380px;
 }
 
+.transcript-panel.is-collapsed,
+.proofread-panel.is-collapsed,
+.summary-panel.is-collapsed {
+  min-width: 88px;
+}
+
+.transcript-panel.is-collapsed .panel-header,
+.proofread-panel.is-collapsed .panel-header,
+.summary-panel.is-collapsed .panel-header {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding: var(--space-4) var(--space-2);
+}
+
+.transcript-panel.is-collapsed .panel-title-group,
+.proofread-panel.is-collapsed .panel-title-group,
+.summary-panel.is-collapsed .panel-title-group,
+.transcript-panel.is-collapsed .panel-actions,
+.proofread-panel.is-collapsed .panel-actions,
+.summary-panel.is-collapsed .panel-actions {
+  flex-direction: column;
+  justify-content: center;
+}
+
+.transcript-panel.is-collapsed .panel-title,
+.proofread-panel.is-collapsed .panel-title,
+.summary-panel.is-collapsed .panel-title {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  min-height: 80px;
+}
+
+.transcript-panel.is-collapsed .log-container,
+.transcript-panel.is-collapsed .downloads-bar,
+.proofread-panel.is-collapsed .proofread-content,
+.summary-panel.is-collapsed .summary-content,
+.proofread-panel.is-collapsed .compact-select,
+.proofread-panel.is-collapsed #copyProofreadBtn,
+.proofread-panel.is-collapsed #proofreadBtn,
+.summary-panel.is-collapsed #summaryBtn,
+.transcript-panel.is-collapsed #copyBtn,
+.transcript-panel.is-collapsed #clearBtn {
+  display: none;
+}
+
+.panel-collapse-btn.is-collapsed svg {
+  transform: rotate(180deg);
+}
+
 /* Panel Header */
 .panel-header {
   display: flex;
@@ -1803,6 +1853,15 @@ body.is-resizing-panels {
   animation: logSlideIn var(--duration-300) var(--ease-out-expo);
 }
 
+.log-body {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+  width: 100%;
+}
+
 @keyframes logSlideIn {
   from {
     opacity: 0;
@@ -1829,6 +1888,24 @@ body.is-resizing-panels {
   line-height: var(--leading-relaxed);
   color: var(--text-primary);
   word-break: break-word;
+  min-width: 0;
+}
+
+.log-screenshot-link {
+  display: inline-flex;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border-secondary);
+  text-decoration: none;
+}
+
+.log-screenshot {
+  display: block;
+  width: 112px;
+  height: 72px;
+  object-fit: cover;
+  background: var(--bg-secondary);
 }
 
 /* Downloads Bar */
