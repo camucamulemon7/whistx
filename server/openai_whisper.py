@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 from contextlib import contextmanager
 from typing import Any
 
@@ -8,6 +9,9 @@ from openai import OpenAI
 
 from .asr import ASRChunkResult
 from .langfuse_observer import LangfuseObserver
+
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIWhisperTranscriber:
@@ -50,6 +54,14 @@ class OpenAIWhisperTranscriber:
             model_parameters={"temperature": temperature},
             trace_context=trace_context,
         ) if self.observer else _noop_generation()) as generation:
+            logger.info(
+                "ASR POST /v1/audio/transcriptions: model=%s mime=%s bytes=%d language=%s prompt=%s",
+                self.model,
+                mime_type,
+                len(audio_bytes),
+                language or "",
+                bool(prompt),
+            )
             response = self.client.audio.transcriptions.create(
                 model=self.model,
                 file=file_obj,
@@ -62,6 +74,11 @@ class OpenAIWhisperTranscriber:
             text = _extract_text(response).strip()
             if _should_drop_as_silence(response, text):
                 text = ""
+            logger.info(
+                "ASR POST /v1/audio/transcriptions done: model=%s chars=%d",
+                self.model,
+                len(text),
+            )
             if generation is not None:
                 generation.update(output={"text": text, "chars": len(text)})
 
