@@ -541,6 +541,8 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
 
             text = result.text.strip()
             text = _sanitize_transcript_text(text, language=session.language)
+            text = _trim_overlap_prefix(text, session.last_emitted_text)
+            text = _sanitize_transcript_text(text, language=session.language)
             if not text:
                 await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
                 continue
@@ -812,9 +814,13 @@ def _trim_context_terms_to_budget(
 
 REPEAT_COLLAPSE_RE = re.compile(r"(.{2,16}?)\1{3,}")
 REPEAT_DETECT_RE = re.compile(r"(.{2,16}?)\1{5,}")
+PHRASE_TOKEN_RE = re.compile(r"[^。！？!?]+[。！？!?]?")
 JP_CHAR_CLASS = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
 JP_SPACE_BEFORE_RE = re.compile(rf"(?<=[{JP_CHAR_CLASS}])\s+(?=[{JP_CHAR_CLASS}])")
 JP_PUNCT_SPACE_RE = re.compile(rf"\s+([、。，．・：；！？）］】」』])|([（［【「『])\s+")
+OVERLAP_COMPARE_DROP_RE = re.compile(r"[\s、。，．・：；！？!?,.:;()\[\]{}<>\"'「」『』]+")
+MIN_OVERLAP_MATCH_CHARS = 12
+MAX_OVERLAP_MATCH_CHARS = 96
 
 
 def _sanitize_transcript_text(text: str, *, language: str | None = None) -> str:
@@ -831,9 +837,40 @@ def _sanitize_transcript_text(text: str, *, language: str | None = None) -> str:
             break
         value = collapsed
 
+    value = _collapse_repeated_phrase_loops(value)
+
     if _is_repetition_noise(value):
         return ""
     return value
+
+
+def _trim_overlap_prefix(current: str, previous: str) -> str:
+    current = (current or "").strip()
+    previous = (previous or "").strip()
+    if not current or not previous:
+        return current
+
+    previous_normalized, _ = _normalize_overlap_compare_text(previous)
+    current_normalized, current_index_map = _normalize_overlap_compare_text(current)
+    if not previous_normalized or not current_normalized:
+        return current
+
+    max_overlap = min(len(previous_normalized), len(current_normalized), MAX_OVERLAP_MATCH_CHARS)
+    if max_overlap < MIN_OVERLAP_MATCH_CHARS:
+        return current
+
+    best_overlap = 0
+    for overlap_len in range(max_overlap, MIN_OVERLAP_MATCH_CHARS - 1, -1):
+        if previous_normalized[-overlap_len:] == current_normalized[:overlap_len]:
+            best_overlap = overlap_len
+            break
+
+    if best_overlap <= 0:
+        return current
+
+    cut_index = current_index_map[best_overlap - 1]
+    trimmed = current[cut_index:].lstrip()
+    return trimmed or current
 
 
 def _normalize_transcript_spacing(text: str, *, language: str | None) -> str:
@@ -852,6 +889,17 @@ def _normalize_transcript_spacing(text: str, *, language: str | None) -> str:
     return value
 
 
+def _normalize_overlap_compare_text(text: str) -> tuple[str, list[int]]:
+    normalized_chars: list[str] = []
+    index_map: list[int] = []
+    for index, char in enumerate((text or "").strip()):
+        if OVERLAP_COMPARE_DROP_RE.fullmatch(char):
+            continue
+        normalized_chars.append(char)
+        index_map.append(index + 1)
+    return "".join(normalized_chars), index_map
+
+
 def _normalize_compare_text(text: str) -> str:
     return re.sub(r"\s+", "", (text or "").strip())
 
@@ -868,6 +916,42 @@ def _is_repetition_noise(text: str) -> bool:
     run_len = len(matched.group(0))
     # 1箇所の反復だけで大半を占める場合はノイズ扱い。
     return run_len >= max(36, int(len(normalized) * 0.45))
+
+
+def _collapse_repeated_phrase_loops(text: str) -> str:
+    tokens = [token.strip() for token in PHRASE_TOKEN_RE.findall(text or "") if token.strip()]
+    if len(tokens) < 4:
+        return text
+
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        collapsed = False
+        max_unit = min(3, (len(tokens) - i) // 2)
+        for unit_size in range(max_unit, 0, -1):
+            unit = tokens[i : i + unit_size]
+            if len(unit) < unit_size:
+                continue
+
+            repeats = 1
+            cursor = i + unit_size
+            while cursor + unit_size <= len(tokens) and tokens[cursor : cursor + unit_size] == unit:
+                repeats += 1
+                cursor += unit_size
+
+            if repeats >= 3:
+                out.extend(unit[: unit_size])
+                out.extend(unit[: unit_size])
+                i = cursor
+                collapsed = True
+                break
+
+        if not collapsed:
+            out.append(tokens[i])
+            i += 1
+
+    collapsed_text = " ".join(out).strip()
+    return collapsed_text or text
 
 
 def _is_near_duplicate(current: str, previous: str) -> bool:

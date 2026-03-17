@@ -162,7 +162,20 @@ KNOWN_SILENCE_HALLUCINATIONS = {
     "ご清聴ありがとうございました",
     "ご視聴ありがとうございました",
     "ありがとうございました",
+    "チャンネル登録よろしくお願いします",
+    "チャンネル登録お願いします",
+    "高評価とチャンネル登録お願いします",
+    "高評価よろしくお願いします",
+    "ご覧いただきありがとうございました",
 }
+
+SILENCE_HALLUCINATION_PATTERNS = (
+    "チャンネル登録",
+    "高評価",
+    "ご視聴ありがとうございました",
+    "ご清聴ありがとうございました",
+    "ご覧いただきありがとうございました",
+)
 
 
 def _normalize_for_match(text: str) -> str:
@@ -203,6 +216,9 @@ def _should_drop_as_silence(response: Any, text: str) -> bool:
 
     if not no_speech_probs:
         return False
+
+    if any(pattern in clean for pattern in SILENCE_HALLUCINATION_PATTERNS):
+        return max(no_speech_probs) >= 0.55 and len(normalized) <= 64
 
     # 無音寄り判定が高く、かつ短文なら無音ハルシネーションの可能性が高い。
     return max(no_speech_probs) >= 0.85 and len(normalized) <= 32
