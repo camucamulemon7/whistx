@@ -6,9 +6,11 @@ import difflib
 import json
 import logging
 import re
+import zipfile
 from dataclasses import dataclass
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,8 +29,8 @@ from .summarizer import OpenAISummarizer
 from .transcript_store import (
     TranscriptRecord,
     TranscriptStore,
-    format_srt,
     read_jsonl_records,
+    resolve_screenshot_path,
     resolve_transcript_path,
 )
 from .voxtral_realtime import VoxtralRealtimeTranscriber
@@ -51,6 +53,8 @@ class ChunkMessage:
     duration_ms: int
     mime_type: str
     audio_bytes: bytes
+    screenshot_mime_type: str | None = None
+    screenshot_bytes: bytes | None = None
 
 
 @dataclass(slots=True)
@@ -537,6 +541,8 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
 
             text = result.text.strip()
             text = _sanitize_transcript_text(text, language=session.language)
+            text = _trim_overlap_prefix(text, session.last_emitted_text)
+            text = _sanitize_transcript_text(text, language=session.language)
             if not text:
                 await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
                 continue
@@ -569,6 +575,7 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 chunkDurationMs=item.duration_ms,
                 language=session.language,
                 createdAt=datetime.now(timezone.utc).isoformat(),
+                screenshotPath=_store_screenshot_for_chunk(session, item),
             )
             session.store.append_final(record)
             session.last_emitted_text = text
@@ -587,6 +594,7 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                     "tsStart": record.tsStart,
                     "tsEnd": record.tsEnd,
                     "speaker": record.speaker,
+                    "screenshotPath": record.screenshotPath,
                 },
             )
 
@@ -806,9 +814,13 @@ def _trim_context_terms_to_budget(
 
 REPEAT_COLLAPSE_RE = re.compile(r"(.{2,16}?)\1{3,}")
 REPEAT_DETECT_RE = re.compile(r"(.{2,16}?)\1{5,}")
+PHRASE_TOKEN_RE = re.compile(r"[^。！？!?]+[。！？!?]?")
 JP_CHAR_CLASS = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
 JP_SPACE_BEFORE_RE = re.compile(rf"(?<=[{JP_CHAR_CLASS}])\s+(?=[{JP_CHAR_CLASS}])")
 JP_PUNCT_SPACE_RE = re.compile(rf"\s+([、。，．・：；！？）］】」』])|([（［【「『])\s+")
+OVERLAP_COMPARE_DROP_RE = re.compile(r"[\s、。，．・：；！？!?,.:;()\[\]{}<>\"'「」『』]+")
+MIN_OVERLAP_MATCH_CHARS = 12
+MAX_OVERLAP_MATCH_CHARS = 96
 
 
 def _sanitize_transcript_text(text: str, *, language: str | None = None) -> str:
@@ -825,9 +837,40 @@ def _sanitize_transcript_text(text: str, *, language: str | None = None) -> str:
             break
         value = collapsed
 
+    value = _collapse_repeated_phrase_loops(value)
+
     if _is_repetition_noise(value):
         return ""
     return value
+
+
+def _trim_overlap_prefix(current: str, previous: str) -> str:
+    current = (current or "").strip()
+    previous = (previous or "").strip()
+    if not current or not previous:
+        return current
+
+    previous_normalized, _ = _normalize_overlap_compare_text(previous)
+    current_normalized, current_index_map = _normalize_overlap_compare_text(current)
+    if not previous_normalized or not current_normalized:
+        return current
+
+    max_overlap = min(len(previous_normalized), len(current_normalized), MAX_OVERLAP_MATCH_CHARS)
+    if max_overlap < MIN_OVERLAP_MATCH_CHARS:
+        return current
+
+    best_overlap = 0
+    for overlap_len in range(max_overlap, MIN_OVERLAP_MATCH_CHARS - 1, -1):
+        if previous_normalized[-overlap_len:] == current_normalized[:overlap_len]:
+            best_overlap = overlap_len
+            break
+
+    if best_overlap <= 0:
+        return current
+
+    cut_index = current_index_map[best_overlap - 1]
+    trimmed = current[cut_index:].lstrip()
+    return trimmed or current
 
 
 def _normalize_transcript_spacing(text: str, *, language: str | None) -> str:
@@ -846,6 +889,17 @@ def _normalize_transcript_spacing(text: str, *, language: str | None) -> str:
     return value
 
 
+def _normalize_overlap_compare_text(text: str) -> tuple[str, list[int]]:
+    normalized_chars: list[str] = []
+    index_map: list[int] = []
+    for index, char in enumerate((text or "").strip()):
+        if OVERLAP_COMPARE_DROP_RE.fullmatch(char):
+            continue
+        normalized_chars.append(char)
+        index_map.append(index + 1)
+    return "".join(normalized_chars), index_map
+
+
 def _normalize_compare_text(text: str) -> str:
     return re.sub(r"\s+", "", (text or "").strip())
 
@@ -862,6 +916,42 @@ def _is_repetition_noise(text: str) -> bool:
     run_len = len(matched.group(0))
     # 1箇所の反復だけで大半を占める場合はノイズ扱い。
     return run_len >= max(36, int(len(normalized) * 0.45))
+
+
+def _collapse_repeated_phrase_loops(text: str) -> str:
+    tokens = [token.strip() for token in PHRASE_TOKEN_RE.findall(text or "") if token.strip()]
+    if len(tokens) < 4:
+        return text
+
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        collapsed = False
+        max_unit = min(3, (len(tokens) - i) // 2)
+        for unit_size in range(max_unit, 0, -1):
+            unit = tokens[i : i + unit_size]
+            if len(unit) < unit_size:
+                continue
+
+            repeats = 1
+            cursor = i + unit_size
+            while cursor + unit_size <= len(tokens) and tokens[cursor : cursor + unit_size] == unit:
+                repeats += 1
+                cursor += unit_size
+
+            if repeats >= 3:
+                out.extend(unit[: unit_size])
+                out.extend(unit[: unit_size])
+                i = cursor
+                collapsed = True
+                break
+
+        if not collapsed:
+            out.append(tokens[i])
+            i += 1
+
+    collapsed_text = " ".join(out).strip()
+    return collapsed_text or text
 
 
 def _is_near_duplicate(current: str, previous: str) -> bool:
@@ -1031,7 +1121,16 @@ def _parse_chunk_message(payload: dict[str, Any]) -> ChunkMessage | None:
     except Exception:  # noqa: BLE001
         return None
 
+    screenshot_b64 = _as_str(payload.get("screenshot"))
+    screenshot_bytes: bytes | None = None
+    if screenshot_b64:
+        try:
+            screenshot_bytes = base64.b64decode(screenshot_b64, validate=True)
+        except Exception:  # noqa: BLE001
+            screenshot_bytes = None
+
     mime_type = _as_str(payload.get("mimeType")) or "audio/webm"
+    screenshot_mime_type = _as_str(payload.get("screenshotMimeType")) or None
     seq = _as_int(payload.get("seq"), 0)
     offset_ms = max(0, _as_int(payload.get("offsetMs"), 0))
     duration_ms = max(200, _as_int(payload.get("durationMs"), 2000))
@@ -1042,7 +1141,29 @@ def _parse_chunk_message(payload: dict[str, Any]) -> ChunkMessage | None:
         duration_ms=duration_ms,
         mime_type=mime_type,
         audio_bytes=audio_bytes,
+        screenshot_mime_type=screenshot_mime_type,
+        screenshot_bytes=screenshot_bytes,
     )
+
+
+def _store_screenshot_for_chunk(session: LiveSession, item: ChunkMessage) -> str | None:
+    if not item.screenshot_bytes or not item.screenshot_mime_type:
+        return None
+    try:
+        filename = session.store.save_screenshot(
+            seq=item.seq,
+            mime_type=item.screenshot_mime_type,
+            image_bytes=item.screenshot_bytes,
+        )
+        return f"/api/transcripts/{session.session_id}/screenshots/{filename}"
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Screenshot save failed: session=%s seq=%s",
+            session.session_id,
+            item.seq,
+            exc_info=True,
+        )
+        return None
 
 
 def _clamp_diarization_speakers(value: int) -> int:
@@ -1177,15 +1298,48 @@ async def get_jsonl(session_id: str) -> Response:
     return FileResponse(str(path), media_type="application/x-ndjson")
 
 
-@app.get("/api/transcript/{session_id}.srt", response_model=None)
-async def get_srt(session_id: str) -> Response:
-    path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
+@app.get("/api/transcript/{session_id}.zip", response_model=None)
+async def get_zip(session_id: str) -> Response:
+    txt_path = resolve_transcript_path(settings.transcripts_dir, session_id, "txt")
+    jsonl_path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
+    if not txt_path or not jsonl_path or not txt_path.exists() or not jsonl_path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(txt_path, arcname=f"{session_id}.txt")
+        archive.write(jsonl_path, arcname=f"{session_id}.jsonl")
+
+        screenshots_dir = settings.transcripts_dir / "_screenshots" / session_id
+        if screenshots_dir.exists():
+            for screenshot_path in sorted(screenshots_dir.iterdir()):
+                if screenshot_path.is_file():
+                    archive.write(
+                        screenshot_path,
+                        arcname=f"{session_id}/screenshots/{screenshot_path.name}",
+                    )
+
+    buffer.seek(0)
+    headers = {"Content-Disposition": f'attachment; filename="{session_id}.zip"'}
+    return Response(content=buffer.getvalue(), media_type="application/zip", headers=headers)
+
+
+@app.get("/api/transcripts/{session_id}/screenshots/{filename}", response_model=None)
+async def get_screenshot(session_id: str, filename: str) -> Response:
+    path = resolve_screenshot_path(settings.transcripts_dir, session_id, filename)
     if not path or not path.exists():
         return HTMLResponse(status_code=404, content="not found")
 
-    records = read_jsonl_records(path)
-    srt = format_srt(records)
-    return PlainTextResponse(status_code=200, content=srt, media_type="text/plain; charset=utf-8")
+    suffix = path.suffix.lower()
+    media_type = "application/octet-stream"
+    if suffix == ".webp":
+        media_type = "image/webp"
+    elif suffix in {".jpg", ".jpeg"}:
+        media_type = "image/jpeg"
+    elif suffix == ".png":
+        media_type = "image/png"
+
+    return FileResponse(str(path), media_type=media_type)
 
 
 WEB_DIR = Path("web")

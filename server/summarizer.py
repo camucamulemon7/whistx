@@ -122,7 +122,7 @@ class OpenAISummarizer:
         mode: str = "proofread",
         trace_context: dict[str, str] | None = None,
     ) -> ProofreadResult:
-        clean_text = (text or "").strip()
+        clean_text = _normalize_proofread_source_text((text or "").strip())
         if not clean_text:
             return ProofreadResult(text="", model=self.model)
 
@@ -137,7 +137,7 @@ class OpenAISummarizer:
         mode: str = "proofread",
         trace_context: dict[str, str] | None = None,
     ) -> ProofreadResult:
-        clean_text = (text or "").strip()
+        clean_text = _normalize_proofread_source_text((text or "").strip())
         if not clean_text:
             return ProofreadResult(text="", model=self.model)
 
@@ -160,7 +160,7 @@ class OpenAISummarizer:
                 corrected_chunks.append(corrected)
                 trailing_context = corrected[-800:]
 
-        merged = "\n\n".join(part for part in corrected_chunks if part).strip()
+        merged = _normalize_proofread_source_text("\n\n".join(part for part in corrected_chunks if part).strip())
         reduced = False
         if merged and len(merged) <= chunk_chars:
             merged = self._proofread_consistency_pass(
@@ -187,7 +187,7 @@ class OpenAISummarizer:
         mode: str = "proofread",
         trace_context: dict[str, str] | None = None,
     ):
-        clean_text = (text or "").strip()
+        clean_text = _normalize_proofread_source_text((text or "").strip())
         if not clean_text:
             yield {"type": "done", "model": self.model, "chunkCount": 0}
             return
@@ -398,20 +398,22 @@ class OpenAISummarizer:
             "stream": True,
         }
 
+        parts: list[str] = []
+        for event in self._create_chat_completion_stream(request_payload):
+            delta = _extract_stream_delta_text(event)
+            if delta:
+                parts.append(delta)
+                yield delta
+
+        final_text = "".join(parts).strip()
         with self._generation(
             name=f"proofread.stream.{mode}",
             input={"language": language, "text": text, "hasContext": bool(trailing_context)},
+            output={"text": final_text, "chars": len(final_text)},
             model_parameters={"temperature": self.temperature, "stream": True},
             trace_context=trace_context,
-        ) as generation:
-            parts: list[str] = []
-            for event in self._create_chat_completion_stream(request_payload):
-                delta = _extract_stream_delta_text(event)
-                if delta:
-                    parts.append(delta)
-                    yield delta
-            final_text = "".join(parts).strip()
-            generation.update(output={"text": final_text, "chars": len(final_text)})
+        ):
+            pass
 
     def _proofread_consistency_pass(
         self,
@@ -462,6 +464,7 @@ class OpenAISummarizer:
         *,
         name: str,
         input: Any,
+        output: Any = None,
         model_parameters: dict[str, Any] | None = None,
         trace_context: dict[str, str] | None = None,
     ):
@@ -471,6 +474,7 @@ class OpenAISummarizer:
             name=name,
             model=self.model,
             input=input,
+            output=output,
             model_parameters=model_parameters or {},
             trace_context=trace_context,
         )
@@ -671,6 +675,7 @@ def _build_proofread_prompt(
             "Rules:\\n"
             "- Keep the original meaning and uncertainty.\\n"
             "- Do not add new facts or inferred content.\\n"
+            "- If adjacent lines repeat because of chunk overlap, merge them into one natural sentence.\\n"
             "- Fix obvious repetition noise and punctuation/readability.\\n"
             "- Keep proper nouns as-is when uncertain.\\n"
             "- Output only the corrected transcript text.\\n\\n"
@@ -689,6 +694,7 @@ def _build_proofread_prompt(
         "以下は音声認識の文字起こしです。日本語として校正してください。\\n"
         "ルール:\\n"
         "- 意味は変えない。新しい情報を追加しない。\\n"
+        "- チャンク overlap 由来で前後に同じ文や句がまたがっていたら、重複を1回に統合して自然につなぐ。\\n"
         "- 不自然な繰り返し・誤字・句読点を修正する。\\n"
         "- 固有名詞は不確実なら無理に変えない。\\n"
         "- 出力は校正済み本文のみ。説明は不要。\\n\\n"
@@ -722,6 +728,7 @@ def _build_proofread_consistency_prompt(text: str, language: str, *, mode: str =
             "Unify the formatting of the corrected transcript below.\n"
             "- Keep the meaning unchanged.\n"
             "- Preserve paragraph order.\n"
+            "- Merge any overlap-boundary duplication into one natural sentence.\n"
             "- Standardize punctuation and spacing only where needed.\n"
             "- Output only the finalized transcript.\n\n"
             f"Corrected transcript:\n{text}"
@@ -731,6 +738,7 @@ def _build_proofread_consistency_prompt(text: str, language: str, *, mode: str =
         "以下の校正済み文字起こし全体の整合を取ってください。\n"
         "- 意味は変えない\n"
         "- 段落順は維持する\n"
+        "- overlap 境界由来の重複文や重複句があれば、1回に統合して自然な文章にする\n"
         "- 句読点、表記ゆれ、不要な空白だけを必要最小限で整える\n"
         "- 出力は最終本文のみ\n\n"
         f"校正済み本文:\n{text}"
@@ -893,6 +901,72 @@ def _hard_wrap_text(text: str, *, max_chars: int) -> list[str]:
 def _effective_proofread_chunk_chars(max_chars: int) -> int:
     safe_max = max(2_000, int(max_chars or 0))
     return min(safe_max, 8_000)
+
+
+PROOFREAD_SPLIT_SENTENCE_RE = re.compile(r"(?<=[。！？!?\.])(?:\s+|\n+)")
+PROOFREAD_NORMALIZE_DROP_RE = re.compile(r"[\s、。，．・：；！？!?,.:;()\[\]{}<>\"'「」『』]+")
+PROOFREAD_MIN_OVERLAP_CHARS = 10
+PROOFREAD_MAX_OVERLAP_CHARS = 72
+
+
+def _normalize_proofread_source_text(text: str) -> str:
+    clean = (text or "").strip()
+    if not clean:
+        return ""
+
+    blocks = [part.strip() for part in re.split(r"\n{2,}", clean) if part.strip()]
+    normalized_blocks = [_merge_adjacent_overlap_sentences(block) for block in blocks]
+    return "\n\n".join(part for part in normalized_blocks if part).strip()
+
+
+def _merge_adjacent_overlap_sentences(text: str) -> str:
+    sentences = [part.strip() for part in PROOFREAD_SPLIT_SENTENCE_RE.split((text or "").strip()) if part.strip()]
+    if len(sentences) < 2:
+        return (text or "").strip()
+
+    merged: list[str] = [sentences[0]]
+    for sentence in sentences[1:]:
+        previous = merged[-1]
+        trimmed_sentence = _trim_overlap_sentence_prefix(sentence, previous)
+        if not trimmed_sentence:
+            continue
+        merged.append(trimmed_sentence)
+    return " ".join(merged).strip()
+
+
+def _trim_overlap_sentence_prefix(current: str, previous: str) -> str:
+    prev_normalized, _ = _normalize_proofread_compare_text(previous)
+    curr_normalized, curr_index_map = _normalize_proofread_compare_text(current)
+    if not prev_normalized or not curr_normalized:
+        return current.strip()
+
+    max_overlap = min(len(prev_normalized), len(curr_normalized), PROOFREAD_MAX_OVERLAP_CHARS)
+    if max_overlap < PROOFREAD_MIN_OVERLAP_CHARS:
+        return current.strip()
+
+    best_overlap = 0
+    for overlap_len in range(max_overlap, PROOFREAD_MIN_OVERLAP_CHARS - 1, -1):
+        if prev_normalized[-overlap_len:] == curr_normalized[:overlap_len]:
+            best_overlap = overlap_len
+            break
+
+    if best_overlap <= 0:
+        return current.strip()
+
+    cut_index = curr_index_map[best_overlap - 1]
+    trimmed = current[cut_index:].lstrip()
+    return trimmed.strip()
+
+
+def _normalize_proofread_compare_text(text: str) -> tuple[str, list[int]]:
+    normalized_chars: list[str] = []
+    index_map: list[int] = []
+    for index, char in enumerate((text or "").strip()):
+        if PROOFREAD_NORMALIZE_DROP_RE.fullmatch(char):
+            continue
+        normalized_chars.append(char)
+        index_map.append(index + 1)
+    return "".join(normalized_chars), index_map
 
 
 def _group_texts_for_reduce(texts: list[str], *, max_chars: int) -> list[list[str]]:
