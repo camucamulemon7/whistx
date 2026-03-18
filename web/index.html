@@ -390,6 +390,18 @@
       </div>
 
       <div class="side-panel-section">
+        <div class="setting-group setting-group-toggle side-panel-toggle">
+          <span class="setting-label">差分スキップ</span>
+          <label for="screenshotDiffSkipEnabled" class="toggle-control">
+            <input id="screenshotDiffSkipEnabled" type="checkbox" checked />
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span id="screenshotDiffSkipStateText" class="toggle-text">ON</span>
+          </label>
+        </div>
+        <p class="chunk-description">前回送信画像とほぼ同じ場合はサムネイル送信を省略します</p>
+      </div>
+
+      <div class="side-panel-section">
         <div class="chunk-header">
           <span class="chunk-label">チャンク秒数</span>
           <span id="chunkHint" class="chunk-hint">精度重視</span>

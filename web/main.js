@@ -27,6 +27,8 @@ const diarizationMaxSpeakersEl = $("#diarizationMaxSpeakers");
 const diarizationSpeakerHintEl = $("#diarizationSpeakerHint");
 const captureScreenshotsEnabledEl = $("#captureScreenshotsEnabled");
 const captureScreenshotsStateTextEl = $("#captureScreenshotsStateText");
+const screenshotDiffSkipEnabledEl = $("#screenshotDiffSkipEnabled");
+const screenshotDiffSkipStateTextEl = $("#screenshotDiffSkipStateText");
 const chunkSecondsEl = $("#chunkSeconds");
 const promptEl = $("#prompt");
 const summaryPromptEl = $("#summaryPrompt");
@@ -76,6 +78,11 @@ const AUDIO_LEVEL_GAIN = 22;
 const AUDIO_LEVEL_EXPONENT = 0.65;
 const AUDIO_LEVEL_COLUMNS = 21;
 const AUDIO_LEVEL_SEGMENTS = 10;
+const SCREENSHOT_DIFF_WIDTH = 64;
+const SCREENSHOT_DIFF_HEIGHT = 36;
+const SCREENSHOT_DIFF_PIXEL_THRESHOLD = 12;
+const SCREENSHOT_DIFF_MEAN_THRESHOLD = 4;
+const SCREENSHOT_DIFF_CHANGED_RATIO_THRESHOLD = 0.015;
 const DEFAULT_SOC_PROMPT_TEMPLATE = `SoC, ASIC, chiplet, CPU, GPU, NPU, DSP, ISP, VPU, DPU, MCU, PMU, NoC, interconnect, AXI, AXI4, AXI-Lite, AHB, APB, ACE, CHI, UCIe, PCIe, CXL, DDR, DDR4, DDR5, LPDDR4, LPDDR5, HBM, SRAM, ROM, eMMC, UFS, PHY, SerDes, PLL, DLL, RC oscillator, clock, clock tree, clock gating, reset, async reset, sync reset, power domain, voltage island, retention, isolation, level shifter, DVFS, AVS, UPF, CPF, RTL, SystemVerilog, Verilog, VHDL, UVM, testbench, assertion, SVA, lint, SpyGlass, CDC, RDC, STA, MCMM, OCV, AOCV, POCV, derate, setup, hold, recovery, removal, skew, jitter, uncertainty, timing closure, timing path, false path, multicycle path, path group, endpoint, startpoint, slack, WNS, TNS, violating path, critical path, synthesis, logic synthesis, Design Compiler, Genus, netlist, mapped netlist, unmapped netlist, compile, incremental compile, retiming, boundary optimization, datapath optimization, resource sharing, register balancing, ECO, formal, equivalence check, LEC, Conformal, Formality, gate-level simulation, GLS, SDF, back annotation, place and route, place-and-route, PnR, floorplan, floorplanning, macro placement, standard cell, utilization, density, congestion, global placement, detailed placement, legalization, CTS, clock tree synthesis, useful skew, hold fixing, setup fixing, routing, global route, detailed route, track assignment, antenna, filler cell, decap, tap cell, endcap, spare cell, spare gate, metal fill, density fill, ECO route, route guide, signoff, sign-off, DRC, LVS, ERC, extraction, parasitic extraction, RC extraction, SPEF, DEF, LEF, Liberty, .lib, TLU+, QRC, StarRC, Quantus, IR drop, dynamic IR drop, static IR drop, EM, electromigration, voltage drop, power integrity, signal integrity, SI, crosstalk, noise, glitch, overshoot, undershoot, hotspot, thermal, leakage, dynamic power, switching power, internal power, leakage power, power analysis, PrimeTime PX, PrimePower, Voltus, RedHawk, vectorless, VCD, FSDB, SAIF, toggle rate, activity factor, inrush current, rush current, decoupling capacitor, decap cell, package model, bump, substrate, interposer, TSV, process node, 28nm, 16nm, 12nm, 7nm, 5nm, 4nm, 3nm, FinFET, GAA, foundry, TSMC, Samsung, Intel, PDK, DFM, manufacturability, yield, wafer, lot, mask, reticle, tape-out, respin, metal fix, MPW, shuttle, bring-up, validation, characterization, errata, workaround, DFT, scan, scan chain, scan compression, EDT, ATPG, stuck-at, transition fault, path delay fault, bridging fault, JTAG, boundary scan, MBIST, LBIST, BISR, repair, fuse, eFuse, OTP, secure boot, TrustZone, TEE, firmware, bootloader, NAND, NAND flash, Toggle NAND, ONFI, raw NAND, managed NAND, SLC, MLC, TLC, QLC, PLC, 3D NAND, V-NAND, charge trap, floating gate, page, block, plane, die, LUN, bad block, bad block management, BBT, ECC, BCH, LDPC, RAID, read disturb, program disturb, erase disturb, wear leveling, garbage collection, overprovisioning, endurance, retention, BER, bit error rate, read retry, soft decoding, threshold voltage, ISPP, incremental step pulse programming, erase verify, program verify, copyback, cache read, cache program, multi-plane, interleaving, channel, CE, RE, WE, ALE, CLE, R/B, spare area, OOB, metadata, FTL, flash translation layer, NVMe, SATA, controller, queue depth, throughput, latency, bandwidth, QoS, arbiter, scheduler, mux, demux, crossbar, SRAM compiler, memory compiler, register file, dual port RAM, single port RAM, SRAM macro, macro, hard macro, soft macro, black box, hierarchy, partition, block-level, top-level, full-chip, chip top, top module, hierarchy flattening, dont_touch, set_false_path, set_multicycle_path, create_clock, generated clock, propagated clock, ideal clock, set_input_delay, set_output_delay, set_clock_uncertainty, set_clock_groups, operating condition, corner, slow corner, fast corner, typical corner, SS, FF, TT, RCmax, RCmin, setup view, hold view.`;
 
 const state = {
@@ -97,6 +104,7 @@ const state = {
   log: [],
   summary: "",
   proofread: "",
+  asrAvailable: true,
   proofreadAvailable: true,
   proofreadInFlight: false,
   proofreadMode: "proofread",
@@ -132,6 +140,9 @@ const state = {
   displayCaptureVideo: null,
   screenshotCanvas: null,
   captureScreenshotsEnabled: true,
+  screenshotDiffSkipEnabled: true,
+  screenshotDiffCanvas: null,
+  previousScreenshotSignature: null,
   panelCollapsed: {
     transcript: false,
     proofread: false,
@@ -308,6 +319,26 @@ function applyCaptureScreenshotsEnabled(value, options = {}) {
   if (persist) {
     try {
       localStorage.setItem("whistx_capture_screenshots_enabled", enabled ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function applyScreenshotDiffSkipEnabled(value, options = {}) {
+  const persist = options.persist !== false;
+  const enabled = !!value;
+  state.screenshotDiffSkipEnabled = enabled;
+  state.previousScreenshotSignature = null;
+  if (screenshotDiffSkipEnabledEl) {
+    screenshotDiffSkipEnabledEl.checked = enabled;
+  }
+  if (screenshotDiffSkipStateTextEl) {
+    screenshotDiffSkipStateTextEl.textContent = enabled ? "ON" : "OFF";
+  }
+  if (persist) {
+    try {
+      localStorage.setItem("whistx_screenshot_diff_skip_enabled", enabled ? "1" : "0");
     } catch {
       // ignore
     }
@@ -1006,8 +1037,13 @@ async function captureDisplayScreenshot() {
   if (!ctx) return null;
   ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
 
+  const signature = buildScreenshotSignature(canvas);
+  if (shouldSkipScreenshotByDiff(signature)) {
+    return null;
+  }
+
   const blob = await new Promise((resolve) => {
-    canvas.toBlob((nextBlob) => resolve(nextBlob), "image/webp", 0.82);
+    canvas.toBlob((nextBlob) => resolve(nextBlob), "image/webp", 0.7);
   });
   if (!blob) return null;
 
@@ -1016,6 +1052,58 @@ async function captureDisplayScreenshot() {
     mimeType: blob.type || "image/webp",
     data: arrayBufferToBase64(buffer),
   };
+}
+
+function buildScreenshotSignature(sourceCanvas) {
+  const canvas = state.screenshotDiffCanvas || document.createElement("canvas");
+  state.screenshotDiffCanvas = canvas;
+  canvas.width = SCREENSHOT_DIFF_WIDTH;
+  canvas.height = SCREENSHOT_DIFF_HEIGHT;
+
+  const ctx = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.drawImage(sourceCanvas, 0, 0, SCREENSHOT_DIFF_WIDTH, SCREENSHOT_DIFF_HEIGHT);
+
+  const { data } = ctx.getImageData(0, 0, SCREENSHOT_DIFF_WIDTH, SCREENSHOT_DIFF_HEIGHT);
+  const signature = new Uint8Array(SCREENSHOT_DIFF_WIDTH * SCREENSHOT_DIFF_HEIGHT);
+  for (let src = 0, dst = 0; src < data.length; src += 4, dst += 1) {
+    signature[dst] = ((data[src] * 77) + (data[src + 1] * 150) + (data[src + 2] * 29)) >> 8;
+  }
+  return signature;
+}
+
+function shouldSkipScreenshotByDiff(signature) {
+  if (!state.screenshotDiffSkipEnabled || !signature) {
+    if (signature) {
+      state.previousScreenshotSignature = signature;
+    }
+    return false;
+  }
+
+  const previous = state.previousScreenshotSignature;
+  if (!(previous instanceof Uint8Array) || previous.length !== signature.length) {
+    state.previousScreenshotSignature = signature;
+    return false;
+  }
+
+  let diffSum = 0;
+  let changedPixels = 0;
+  for (let i = 0; i < signature.length; i += 1) {
+    const delta = Math.abs(signature[i] - previous[i]);
+    diffSum += delta;
+    if (delta >= SCREENSHOT_DIFF_PIXEL_THRESHOLD) {
+      changedPixels += 1;
+    }
+  }
+
+  const meanDiff = diffSum / signature.length;
+  const changedRatio = changedPixels / signature.length;
+  if (meanDiff < SCREENSHOT_DIFF_MEAN_THRESHOLD && changedRatio < SCREENSHOT_DIFF_CHANGED_RATIO_THRESHOLD) {
+    return true;
+  }
+
+  state.previousScreenshotSignature = signature;
+  return false;
 }
 
 async function requestMicStream(sourceMode = "mic") {
@@ -1260,6 +1348,50 @@ async function ensureSocket() {
 
   await waitForOpen(ws);
   return ws;
+}
+
+function waitForSessionReady(ws) {
+  return new Promise((resolve, reject) => {
+    const onMessage = (event) => {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      if (data.type === "info" && data.message === "ready") {
+        cleanup();
+        resolve(data);
+        return;
+      }
+
+      if (data.type === "error" && (data.message === "session_create_failed" || data.message === "not_started")) {
+        cleanup();
+        reject(new Error(String(data.detail || data.message || "session_start_failed")));
+      }
+    };
+
+    const onClose = () => {
+      cleanup();
+      reject(new Error("websocket_closed"));
+    };
+
+    const onError = () => {
+      cleanup();
+      reject(new Error("websocket_error"));
+    };
+
+    const cleanup = () => {
+      ws.removeEventListener("message", onMessage);
+      ws.removeEventListener("close", onClose);
+      ws.removeEventListener("error", onError);
+    };
+
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("close", onClose);
+    ws.addEventListener("error", onError);
+  });
 }
 
 function waitForOpen(ws) {
@@ -1679,6 +1811,11 @@ async function startRecording() {
   clearChunkTimer();
 
   try {
+    const health = await loadCapabilities();
+    if (!health?.asrReady || !health?.model) {
+      throw new Error("asr_not_ready");
+    }
+
     const ws = await ensureSocket();
     const stream = await prepareInputStream(selectedAudioSource);
     if (!hasAudioTrack(stream)) {
@@ -1693,6 +1830,7 @@ async function startRecording() {
     state.recorderOptions = mimeType ? { mimeType } : {};
     const diarizationOptions = resolveDiarizationStartOptions();
 
+    const readyPromise = waitForSessionReady(ws);
     ws.send(
       JSON.stringify({
         type: "start",
@@ -1706,6 +1844,7 @@ async function startRecording() {
         diarizationMaxSpeakers: diarizationOptions.diarizationMaxSpeakers,
       })
     );
+    await readyPromise;
 
     setUiRecording(true);
     if (selectedAudioSource === "display") {
@@ -1733,6 +1872,8 @@ async function startRecording() {
       );
     } else if (name === "NotAllowedError") {
       setStatus("start_failed: 権限が拒否されました");
+    } else if (message === "asr_not_ready") {
+      setStatus("start_failed: /api/health で ASR モデルが確認できません");
     } else {
       setStatus(`start_failed: ${message}`);
     }
@@ -1797,6 +1938,8 @@ function cleanupMedia() {
   }
   state.displayCaptureVideo = null;
   state.screenshotCanvas = null;
+  state.screenshotDiffCanvas = null;
+  state.previousScreenshotSignature = null;
 }
 
 async function copyAll() {
@@ -2154,6 +2297,12 @@ if (captureScreenshotsEnabledEl) {
   });
 }
 
+if (screenshotDiffSkipEnabledEl) {
+  screenshotDiffSkipEnabledEl.addEventListener("change", () => {
+    applyScreenshotDiffSkipEnabled(screenshotDiffSkipEnabledEl.checked);
+  });
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.sidebarOpen) {
     applySidebarOpen(false);
@@ -2196,6 +2345,13 @@ try {
   applyCaptureScreenshotsEnabled(savedCaptureScreenshots !== "0", { persist: false });
 } catch {
   applyCaptureScreenshotsEnabled(true, { persist: false });
+}
+
+try {
+  const savedScreenshotDiffSkip = localStorage.getItem("whistx_screenshot_diff_skip_enabled");
+  applyScreenshotDiffSkipEnabled(savedScreenshotDiffSkip !== "0", { persist: false });
+} catch {
+  applyScreenshotDiffSkipEnabled(true, { persist: false });
 }
 
 copyBtn.addEventListener("click", () => {
@@ -2316,8 +2472,11 @@ initTheme();
 async function loadCapabilities() {
   try {
     const response = await fetch("/api/health");
-    if (!response.ok) return;
+    if (!response.ok) return null;
     const health = await response.json();
+    if (connCountEl) {
+      connCountEl.textContent = String(health.activeConnections ?? 0);
+    }
     renderBanners(health.banners);
     applyBranding(health.uiBrandTitle, health.uiBrandTagline);
     if (Array.isArray(health.uiPromptTemplates) && health.uiPromptTemplates.length > 0) {
@@ -2330,6 +2489,7 @@ async function loadCapabilities() {
         .filter((template) => template.content);
     }
     renderPromptTemplateButtons(state.promptTemplates);
+    state.asrAvailable = !!health.asrReady && !!health.model;
     state.proofreadAvailable = !!health.proofreadModel;
     state.diarizationAvailable = !!health.diarizationEnabled;
 
@@ -2343,6 +2503,10 @@ async function loadCapabilities() {
       }
     } else if (proofreadBtn) {
       proofreadBtn.title = proofreadActionLabel();
+    }
+
+    if (!state.asrAvailable) {
+      setStatus("asr_unavailable");
     }
 
     if (diarizationToggleEl) {
@@ -2382,9 +2546,11 @@ async function loadCapabilities() {
     }
 
     applyDiarizationEnabled(state.diarizationEnabled, { persist: false });
-} catch {
-  // ignore capability check errors
-}
+    return health;
+  } catch {
+    // ignore capability check errors
+    return null;
+  }
 }
 
 renderPromptTemplateButtons(state.promptTemplates);

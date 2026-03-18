@@ -105,7 +105,7 @@ def resolve_transcript_path(root_dir: Path, session_id: str, ext: str) -> Path |
         return None
 
     safe_ext = ext.lower().strip(".")
-    if safe_ext not in {"txt", "jsonl", "srt"}:
+    if safe_ext not in {"txt", "jsonl"}:
         return None
 
     path = (root_dir / session_id).with_suffix(f".{safe_ext}")
@@ -156,37 +156,6 @@ def read_jsonl_records(path: Path) -> list[dict]:
     return out
 
 
-
-def format_srt(records: Iterable[dict]) -> str:
-    lines: list[str] = []
-    index = 1
-
-    for rec in records:
-        if rec.get("type") != "final":
-            continue
-
-        text = str(rec.get("text", "")).strip()
-        if not text:
-            continue
-
-        ts_start = _as_int(rec.get("tsStart"), 0)
-        ts_end = _as_int(rec.get("tsEnd"), ts_start)
-        if ts_end < ts_start:
-            ts_end = ts_start
-
-        lines.append(str(index))
-        lines.append(f"{_fmt_srt_time(ts_start)} --> {_fmt_srt_time(ts_end)}")
-        speaker = str(rec.get("speaker", "")).strip()
-        if speaker:
-            lines.append(f"[{speaker}] {text}")
-        else:
-            lines.append(text)
-        lines.append("")
-        index += 1
-
-    return "\n".join(lines)
-
-
 def _render_txt_line(rec: dict) -> str:
     text = str(rec.get("text", "")).strip()
     if not text:
@@ -221,18 +190,6 @@ def _image_ext_from_mime(mime_type: str) -> str:
     if "jpeg" in lowered or "jpg" in lowered:
         return ".jpg"
     return ".bin"
-
-
-
-def _fmt_srt_time(ms: int) -> str:
-    ms = max(0, int(ms))
-    h = ms // 3_600_000
-    ms -= h * 3_600_000
-    m = ms // 60_000
-    ms -= m * 60_000
-    s = ms // 1_000
-    ms -= s * 1_000
-    return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
 
 

@@ -4,7 +4,8 @@ ARG INSTALL_DIARIZATION=0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    HOME=/tmp
+    HOME=/tmp \
+    UV_SYSTEM_PYTHON=1
 
 WORKDIR /app
 
@@ -13,11 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /uvx /bin/
+
 COPY requirements.txt /app/requirements.txt
 COPY requirements-diarization.txt /app/requirements-diarization.txt
-RUN python -m pip install --upgrade pip \
-    && pip install --no-cache-dir -r /app/requirements.txt \
-    && if [ "${INSTALL_DIARIZATION}" = "1" ]; then pip install --no-cache-dir -r /app/requirements-diarization.txt; fi
+RUN uv pip install --system --no-cache -r /app/requirements.txt \
+    && if [ "${INSTALL_DIARIZATION}" = "1" ]; then uv pip install --system --no-cache -r /app/requirements-diarization.txt; fi
 
 COPY server /app/server
 COPY web /app/web
