@@ -1,12 +1,12 @@
 # whistx
 
-`whistx` is a browser-based transcription app built around an OpenAI-compatible ASR API.
+`whistx` is a browser-based transcription app built around an OpenAI-compatible Whisper ASR API.
 It records microphone audio, shared screen audio, or both, sends chunked audio to a FastAPI backend, and streams finalized transcript segments back to the UI.
 
 ## What It Does
 
 - Real-time chunk-based transcription over WebSocket
-- OpenAI-compatible ASR backend support
+- OpenAI-compatible Whisper ASR backend support
   - OpenAI `whisper-1`
   - OpenAI-compatible Whisper deployments
   - Other compatible backends configured via `ASR_BASE_URL` / `ASR_MODEL`
@@ -20,7 +20,6 @@ It records microphone audio, shared screen audio, or both, sends chunked audio t
 - Transcript export
   - `txt`
   - `jsonl`
-  - `srt`
 - Optional speaker diarization with `pyannote.audio`
 - Optional transcript summarization with an LLM backend
 - Optional transcript proofreading with an LLM backend
@@ -65,6 +64,8 @@ Files: [`server/`](./server)
 5. Finalized text is normalized and stored
 6. UI updates immediately with final segments
 
+Realtime ASR models are not supported in the current build. Use a Whisper-compatible `ASR_MODEL`.
+
 ## Requirements
 
 - Python 3.10+
@@ -106,6 +107,8 @@ Then open:
 cp .env.example .env
 ./start.sh
 ```
+
+The container image installs Python dependencies with `uv`.
 
 ### Podman (rootless)
 
@@ -325,7 +328,6 @@ Client messages:
 
 - `/api/transcript/{session_id}.txt`
 - `/api/transcript/{session_id}.jsonl`
-- `/api/transcript/{session_id}.srt`
 
 ## Notes on Accuracy
 

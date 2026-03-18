@@ -454,7 +454,7 @@ def load_settings() -> Settings:
     asr_model = (
         _env_first_non_empty("ASR_MODEL")
         or _env_first_non_empty("WHISPER_MODEL")
-        or "mistralai/Voxtral-Mini-4B-Realtime-2602"
+        or "whisper-1"
     )
     app_brand_title = _decode_env_text(_env_first_non_empty("APP_BRAND_TITLE") or "whistx")
     app_brand_tagline = _decode_env_text(

@@ -97,6 +97,7 @@ const state = {
   log: [],
   summary: "",
   proofread: "",
+  asrAvailable: true,
   proofreadAvailable: true,
   proofreadInFlight: false,
   proofreadMode: "proofread",
@@ -1262,6 +1263,50 @@ async function ensureSocket() {
   return ws;
 }
 
+function waitForSessionReady(ws) {
+  return new Promise((resolve, reject) => {
+    const onMessage = (event) => {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      if (data.type === "info" && data.message === "ready") {
+        cleanup();
+        resolve(data);
+        return;
+      }
+
+      if (data.type === "error" && (data.message === "session_create_failed" || data.message === "not_started")) {
+        cleanup();
+        reject(new Error(String(data.detail || data.message || "session_start_failed")));
+      }
+    };
+
+    const onClose = () => {
+      cleanup();
+      reject(new Error("websocket_closed"));
+    };
+
+    const onError = () => {
+      cleanup();
+      reject(new Error("websocket_error"));
+    };
+
+    const cleanup = () => {
+      ws.removeEventListener("message", onMessage);
+      ws.removeEventListener("close", onClose);
+      ws.removeEventListener("error", onError);
+    };
+
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("close", onClose);
+    ws.addEventListener("error", onError);
+  });
+}
+
 function waitForOpen(ws) {
   return new Promise((resolve, reject) => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -1679,6 +1724,11 @@ async function startRecording() {
   clearChunkTimer();
 
   try {
+    const health = await loadCapabilities();
+    if (!health?.asrReady || !health?.model) {
+      throw new Error("asr_not_ready");
+    }
+
     const ws = await ensureSocket();
     const stream = await prepareInputStream(selectedAudioSource);
     if (!hasAudioTrack(stream)) {
@@ -1693,6 +1743,7 @@ async function startRecording() {
     state.recorderOptions = mimeType ? { mimeType } : {};
     const diarizationOptions = resolveDiarizationStartOptions();
 
+    const readyPromise = waitForSessionReady(ws);
     ws.send(
       JSON.stringify({
         type: "start",
@@ -1706,6 +1757,7 @@ async function startRecording() {
         diarizationMaxSpeakers: diarizationOptions.diarizationMaxSpeakers,
       })
     );
+    await readyPromise;
 
     setUiRecording(true);
     if (selectedAudioSource === "display") {
@@ -1733,6 +1785,8 @@ async function startRecording() {
       );
     } else if (name === "NotAllowedError") {
       setStatus("start_failed: 権限が拒否されました");
+    } else if (message === "asr_not_ready") {
+      setStatus("start_failed: /api/health で ASR モデルが確認できません");
     } else {
       setStatus(`start_failed: ${message}`);
     }
@@ -2316,8 +2370,11 @@ initTheme();
 async function loadCapabilities() {
   try {
     const response = await fetch("/api/health");
-    if (!response.ok) return;
+    if (!response.ok) return null;
     const health = await response.json();
+    if (connCountEl) {
+      connCountEl.textContent = String(health.activeConnections ?? 0);
+    }
     renderBanners(health.banners);
     applyBranding(health.uiBrandTitle, health.uiBrandTagline);
     if (Array.isArray(health.uiPromptTemplates) && health.uiPromptTemplates.length > 0) {
@@ -2330,6 +2387,7 @@ async function loadCapabilities() {
         .filter((template) => template.content);
     }
     renderPromptTemplateButtons(state.promptTemplates);
+    state.asrAvailable = !!health.asrReady && !!health.model;
     state.proofreadAvailable = !!health.proofreadModel;
     state.diarizationAvailable = !!health.diarizationEnabled;
 
@@ -2343,6 +2401,10 @@ async function loadCapabilities() {
       }
     } else if (proofreadBtn) {
       proofreadBtn.title = proofreadActionLabel();
+    }
+
+    if (!state.asrAvailable) {
+      setStatus("asr_unavailable");
     }
 
     if (diarizationToggleEl) {
@@ -2382,9 +2444,11 @@ async function loadCapabilities() {
     }
 
     applyDiarizationEnabled(state.diarizationEnabled, { persist: false });
-} catch {
-  // ignore capability check errors
-}
+    return health;
+  } catch {
+    // ignore capability check errors
+    return null;
+  }
 }
 
 renderPromptTemplateButtons(state.promptTemplates);

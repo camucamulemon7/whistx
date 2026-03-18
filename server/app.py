@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -33,7 +33,6 @@ from .transcript_store import (
     resolve_screenshot_path,
     resolve_transcript_path,
 )
-from .voxtral_realtime import VoxtralRealtimeTranscriber
 
 
 logging.basicConfig(
@@ -81,6 +80,8 @@ class LiveSession:
     queue: asyncio.Queue[ChunkMessage | None]
     transcriber: SessionTranscriber
     overlap_tail_pcm: bytes
+    last_chunk_seq: int
+    last_chunk_offset_ms: int
 
 
 class SummarizeRequest(BaseModel):
@@ -191,6 +192,7 @@ async def health() -> JSONResponse:
         {
             "status": "ok",
             "model": settings.asr_model,
+            "asrReady": TRANSCRIBER_FACTORY is not None,
             "summaryModel": settings.summary_model if SUMMARIZER else None,
             "proofreadModel": settings.proofread_model if PROOFREADER else None,
             "diarizationEnabled": DIARIZER is not None,
@@ -419,6 +421,11 @@ async def ws_transcribe(ws: WebSocket) -> None:
                     await _safe_send(ws, {"type": "error", "message": "invalid_chunk"})
                     continue
 
+                ordering_error = _validate_chunk_order(session, chunk)
+                if ordering_error is not None:
+                    await _safe_send(ws, ordering_error)
+                    continue
+
                 if len(chunk.audio_bytes) > settings.max_chunk_bytes:
                     await _safe_send(
                         ws,
@@ -432,6 +439,8 @@ async def ws_transcribe(ws: WebSocket) -> None:
 
                 try:
                     session.queue.put_nowait(chunk)
+                    session.last_chunk_seq = chunk.seq
+                    session.last_chunk_offset_ms = chunk.offset_ms
                 except asyncio.QueueFull:
                     await _safe_send(
                         ws,
@@ -657,17 +666,15 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         queue=asyncio.Queue(maxsize=settings.max_queue_size),
         transcriber=TRANSCRIBER_FACTORY(),
         overlap_tail_pcm=b"",
+        last_chunk_seq=-1,
+        last_chunk_offset_ms=-1,
     )
 
 
 def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
     if _use_realtime_asr(settings.asr_model):
-        return lambda: VoxtralRealtimeTranscriber(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-            model=settings.asr_model,
-            ffmpeg_bin=settings.ffmpeg_bin,
-            observer=LANGFUSE_OBSERVER,
+        raise RuntimeError(
+            "Realtime ASR models are not supported in the current build. Use a Whisper-compatible ASR_MODEL."
         )
 
     return lambda: OpenAIWhisperTranscriber(
@@ -1144,6 +1151,36 @@ def _parse_chunk_message(payload: dict[str, Any]) -> ChunkMessage | None:
         screenshot_mime_type=screenshot_mime_type,
         screenshot_bytes=screenshot_bytes,
     )
+
+
+def _validate_chunk_order(session: LiveSession, chunk: ChunkMessage) -> dict[str, Any] | None:
+    if chunk.seq < 0:
+        return {
+            "type": "error",
+            "message": "invalid_chunk_sequence",
+            "detail": "seq_must_be_non_negative",
+            "seq": chunk.seq,
+        }
+
+    if session.last_chunk_seq >= 0 and chunk.seq <= session.last_chunk_seq:
+        return {
+            "type": "error",
+            "message": "invalid_chunk_sequence",
+            "detail": "seq_must_strictly_increase",
+            "seq": chunk.seq,
+            "previousSeq": session.last_chunk_seq,
+        }
+
+    if session.last_chunk_offset_ms >= 0 and chunk.offset_ms < session.last_chunk_offset_ms:
+        return {
+            "type": "error",
+            "message": "invalid_chunk_offset",
+            "detail": "offset_ms_must_be_monotonic",
+            "offsetMs": chunk.offset_ms,
+            "previousOffsetMs": session.last_chunk_offset_ms,
+        }
+
+    return None
 
 
 def _store_screenshot_for_chunk(session: LiveSession, item: ChunkMessage) -> str | None:
