@@ -6,6 +6,7 @@ import difflib
 import json
 import logging
 import re
+import secrets
 import zipfile
 from dataclasses import dataclass
 from contextlib import contextmanager
@@ -14,17 +15,36 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
+from .auth import SESSION_COOKIE_NAME, authenticate_user, create_user, create_user_session, delete_user_session
 from .asr import SessionTranscriber
 from .audio_pipeline import AudioPreprocessor
 from .config import settings
+from .db import get_db, init_db
+from .deps import get_current_user
 from .diarizer import AudioChunk, PyannoteSpeakerDiarizer, SpeakerTurn
 from .langfuse_observer import make_langfuse_observer
+from .models import TranscriptHistory, User
 from .openai_whisper import OpenAIWhisperTranscriber
+from .schemas import HistorySaveRequest, LoginRequest, RegisterRequest
+from .services.history_service import (
+    HistoryError,
+    build_history_detail_payload,
+    build_history_list_item,
+    count_histories,
+    get_history_file_path,
+    get_history_for_user,
+    list_histories,
+    resolve_history_screenshot_path,
+    save_history,
+)
 from .summarizer import OpenAISummarizer
 from .transcript_store import (
     TranscriptRecord,
@@ -59,6 +79,7 @@ class ChunkMessage:
 @dataclass(slots=True)
 class LiveSession:
     session_id: str
+    access_token: str
     language: str | None
     audio_source: str
     base_prompt: str
@@ -109,6 +130,7 @@ LANGFUSE_OBSERVER = None
 async def on_startup() -> None:
     global TRANSCRIBER_FACTORY, AUDIO_PREPROCESSOR, SUMMARIZER, PROOFREADER, DIARIZER, LANGFUSE_OBSERVER
 
+    init_db()
     LANGFUSE_OBSERVER = make_langfuse_observer(
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,
@@ -205,9 +227,235 @@ async def health() -> JSONResponse:
             "uiBrandTitle": settings.app_brand_title,
             "uiBrandTagline": settings.app_brand_tagline,
             "uiPromptTemplates": list(settings.ui_prompt_templates),
+            "selfSignupEnabled": settings.enable_self_signup,
             "activeConnections": len(ACTIVE_SOCKETS),
         }
     )
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    user = _get_optional_user(request, db)
+    return JSONResponse(
+        {
+            "authenticated": user is not None,
+            "user": _serialize_user(user) if user is not None else None,
+            "selfSignupEnabled": settings.enable_self_signup,
+        }
+    )
+
+
+@app.post("/api/auth/login")
+async def auth_login(
+    payload: LoginRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    user = authenticate_user(db, email=payload.email, password=payload.password)
+    if user is None:
+        db.rollback()
+        return JSONResponse(status_code=401, content={"error": "invalid_credentials"})
+
+    session = create_user_session(
+        db,
+        user=user,
+        user_agent=request.headers.get("user-agent"),
+        ip_address=request.client.host if request.client else None,
+    )
+    db.commit()
+
+    response = JSONResponse({"ok": True, "user": _serialize_user(user)})
+    _set_session_cookie(response, request, session.id)
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    delete_user_session(db, request.cookies.get(SESSION_COOKIE_NAME))
+    db.commit()
+    response = JSONResponse({"ok": True})
+    _clear_session_cookie(response, request)
+    return response
+
+
+@app.post("/api/auth/register")
+async def auth_register(
+    payload: RegisterRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    if not settings.enable_self_signup:
+        return JSONResponse(status_code=403, content={"error": "self_signup_disabled"})
+
+    email = payload.email.strip().lower()
+    if len(payload.password) < 8:
+        return JSONResponse(status_code=400, content={"error": "password_too_short"})
+
+    existing = db.scalar(select(User).where(User.email == email))
+    if existing is not None:
+        return JSONResponse(status_code=409, content={"error": "email_already_exists"})
+
+    try:
+        user = create_user(
+            db,
+            email=email,
+            password=payload.password,
+            display_name=payload.display_name,
+            is_admin=False,
+        )
+        session = create_user_session(
+            db,
+            user=user,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+        db.commit()
+    except ValueError:
+        db.rollback()
+        return JSONResponse(status_code=400, content={"error": "password_too_short"})
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse(status_code=409, content={"error": "email_already_exists"})
+
+    response = JSONResponse({"ok": True, "user": _serialize_user(user)})
+    _set_session_cookie(response, request, session.id)
+    return response
+
+
+@app.post("/api/history")
+async def create_history(
+    payload: HistorySaveRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    try:
+        history = save_history(
+            db,
+            user=user,
+            runtime_session_id=payload.runtimeSessionId.strip(),
+            runtime_session_token=payload.runtimeSessionToken,
+            title=payload.title,
+            summary_text=payload.summaryText,
+            proofread_text=payload.proofreadText,
+        )
+        db.commit()
+    except HistoryError as exc:
+        db.rollback()
+        return JSONResponse(status_code=exc.status_code, content={"error": exc.code})
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse(status_code=409, content={"error": "history_already_saved"})
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "history": {
+                "id": history.id,
+                "title": history.title,
+                "savedAt": history.saved_at.isoformat(),
+                "segmentCount": history.segment_count,
+            },
+        }
+    )
+
+
+@app.get("/api/history")
+async def get_history_list(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    q: str | None = Query(default=None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    items = list_histories(db, user=user, limit=limit, offset=offset, query=q)
+    total = count_histories(db, user=user, query=q)
+    return JSONResponse(
+        {
+            "items": [build_history_list_item(item) for item in items],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+
+
+@app.get("/api/history/{history_id}")
+async def get_history_detail(
+    history_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    if history is None:
+        return JSONResponse(status_code=404, content={"error": "history_not_found"})
+    return JSONResponse(build_history_detail_payload(history))
+
+
+@app.get("/api/history/{history_id}/download.txt", response_model=None)
+async def download_history_txt(
+    history_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    path = get_history_file_path(history, history.txt_path) if history is not None else None
+    if history is None or path is None or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+    return FileResponse(str(path), media_type="text/plain", filename=f"{history.id}.txt")
+
+
+@app.get("/api/history/{history_id}/download.jsonl", response_model=None)
+async def download_history_jsonl(
+    history_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    path = get_history_file_path(history, history.jsonl_path) if history is not None else None
+    if history is None or path is None or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+    return FileResponse(str(path), media_type="application/x-ndjson", filename=f"{history.id}.jsonl")
+
+
+@app.get("/api/history/{history_id}/download.zip", response_model=None)
+async def download_history_zip(
+    history_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    path = get_history_file_path(history, history.zip_path) if history is not None else None
+    if history is None or path is None or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+    return FileResponse(str(path), media_type="application/zip", filename=f"{history.id}.zip")
+
+
+@app.get("/api/history/{history_id}/screenshots/{filename}", response_model=None)
+async def get_history_screenshot(
+    history_id: str,
+    filename: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    if history is None:
+        return HTMLResponse(status_code=404, content="not found")
+    path = resolve_history_screenshot_path(history, filename)
+    if path is None or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+
+    suffix = path.suffix.lower()
+    media_type = "application/octet-stream"
+    if suffix == ".webp":
+        media_type = "image/webp"
+    elif suffix in {".jpg", ".jpeg"}:
+        media_type = "image/jpeg"
+    elif suffix == ".png":
+        media_type = "image/png"
+    return FileResponse(str(path), media_type=media_type)
 
 
 @app.post("/api/summarize")
@@ -401,6 +649,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
                         "message": "ready",
                         "state": "ready",
                         "sessionId": session.session_id,
+                        "sessionToken": session.access_token,
                         "backend": f"openai:{settings.asr_model}",
                         "diarizationEnabled": session.collect_audio_for_diarization,
                         "diarizationNumSpeakers": session.diarization_num_speakers,
@@ -633,6 +882,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
 
     base_session_id = TranscriptStore.sanitize_or_generate(_as_str(payload.get("sessionId")))
     runtime_session_id = TranscriptStore.make_runtime_session_id(base_session_id)
+    access_token = secrets.token_urlsafe(18)
 
     language = _normalize_asr_language(_as_str(payload.get("language")))
     audio_source = _normalize_audio_source(_as_str(payload.get("audioSource")))
@@ -643,8 +893,9 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         _parse_diarization_speaker_params(payload)
     )
 
-    return LiveSession(
+    session = LiveSession(
         session_id=runtime_session_id,
+        access_token=access_token,
         language=language,
         audio_source=audio_source,
         base_prompt=prompt,
@@ -669,6 +920,20 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         last_chunk_seq=-1,
         last_chunk_offset_ms=-1,
     )
+    session.store.write_metadata(
+        {
+            "sessionId": runtime_session_id,
+            "accessToken": access_token,
+            "language": language,
+            "audioSource": audio_source,
+            "diarizationEnabled": session.collect_audio_for_diarization,
+            "diarizationNumSpeakers": diarization_num_speakers,
+            "diarizationMinSpeakers": diarization_min_speakers,
+            "diarizationMaxSpeakers": diarization_max_speakers,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    return session
 
 
 def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
@@ -1192,7 +1457,7 @@ def _store_screenshot_for_chunk(session: LiveSession, item: ChunkMessage) -> str
             mime_type=item.screenshot_mime_type,
             image_bytes=item.screenshot_bytes,
         )
-        return f"/api/transcripts/{session.session_id}/screenshots/{filename}"
+        return f"/api/transcripts/{session.session_id}/screenshots/{filename}?token={session.access_token}"
     except Exception:  # noqa: BLE001
         logger.warning(
             "Screenshot save failed: session=%s seq=%s",
@@ -1319,8 +1584,67 @@ def _format_sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _runtime_access_allowed(session_id: str, token: str | None) -> bool:
+    base_path = resolve_transcript_path(settings.transcripts_dir, session_id, "txt")
+    if base_path is None:
+        return False
+    metadata_path = base_path.with_suffix(".meta.json")
+    if not metadata_path.exists():
+        return True
+    try:
+        loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    metadata = loaded if isinstance(loaded, dict) else {}
+    required = str(metadata.get("accessToken") or "").strip()
+    if not required:
+        return True
+    return secrets.compare_digest(required, str(token or ""))
+
+
+def _serialize_user(user: User | None) -> dict[str, Any] | None:
+    if user is None:
+        return None
+    return {
+        "id": user.id,
+        "email": user.email,
+        "displayName": user.display_name,
+    }
+
+
+def _get_optional_user(request: Request, db: Session) -> User | None:
+    from .auth import get_user_by_session_id
+
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    return get_user_by_session_id(db, session_id)
+
+
+def _set_session_cookie(response: Response, request: Request, session_id: str) -> None:
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_id,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+        max_age=settings.app_session_days * 24 * 60 * 60,
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response, request: Request) -> None:
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        secure=request.url.scheme == "https",
+        httponly=True,
+        samesite="lax",
+    )
+
+
 @app.get("/api/transcript/{session_id}.txt", response_model=None)
-async def get_txt(session_id: str) -> Response:
+async def get_txt(session_id: str, token: str | None = Query(default=None)) -> Response:
+    if not _runtime_access_allowed(session_id, token):
+        return HTMLResponse(status_code=404, content="not found")
     path = resolve_transcript_path(settings.transcripts_dir, session_id, "txt")
     if not path or not path.exists():
         return HTMLResponse(status_code=404, content="not found")
@@ -1328,7 +1652,9 @@ async def get_txt(session_id: str) -> Response:
 
 
 @app.get("/api/transcript/{session_id}.jsonl", response_model=None)
-async def get_jsonl(session_id: str) -> Response:
+async def get_jsonl(session_id: str, token: str | None = Query(default=None)) -> Response:
+    if not _runtime_access_allowed(session_id, token):
+        return HTMLResponse(status_code=404, content="not found")
     path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
     if not path or not path.exists():
         return HTMLResponse(status_code=404, content="not found")
@@ -1336,7 +1662,9 @@ async def get_jsonl(session_id: str) -> Response:
 
 
 @app.get("/api/transcript/{session_id}.zip", response_model=None)
-async def get_zip(session_id: str) -> Response:
+async def get_zip(session_id: str, token: str | None = Query(default=None)) -> Response:
+    if not _runtime_access_allowed(session_id, token):
+        return HTMLResponse(status_code=404, content="not found")
     txt_path = resolve_transcript_path(settings.transcripts_dir, session_id, "txt")
     jsonl_path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
     if not txt_path or not jsonl_path or not txt_path.exists() or not jsonl_path.exists():
@@ -1362,7 +1690,9 @@ async def get_zip(session_id: str) -> Response:
 
 
 @app.get("/api/transcripts/{session_id}/screenshots/{filename}", response_model=None)
-async def get_screenshot(session_id: str, filename: str) -> Response:
+async def get_screenshot(session_id: str, filename: str, token: str | None = Query(default=None)) -> Response:
+    if not _runtime_access_allowed(session_id, token):
+        return HTMLResponse(status_code=404, content="not found")
     path = resolve_screenshot_path(settings.transcripts_dir, session_id, filename)
     if not path or not path.exists():
         return HTMLResponse(status_code=404, content="not found")

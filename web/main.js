@@ -48,6 +48,29 @@ const proofreadModeEl = $("#proofreadMode");
 const copyBtn = $("#copyBtn");
 const copyProofreadBtn = $("#copyProofreadBtn");
 const clearBtn = $("#clearBtn");
+const saveBtn = $("#saveBtn");
+const saveTitleInputEl = $("#saveTitleInput");
+const saveStateBadgeEl = $("#saveStateBadge");
+const loginBtn = $("#loginBtn");
+const logoutBtn = $("#logoutBtn");
+const historyBtn = $("#historyBtn");
+const authUserLabelEl = $("#authUserLabel");
+const authGuestViewEl = $("#authGuestView");
+const authUserViewEl = $("#authUserView");
+const authPanelUserTextEl = $("#authPanelUserText");
+const loginEmailEl = $("#loginEmail");
+const loginPasswordEl = $("#loginPassword");
+const loginSubmitBtn = $("#loginSubmitBtn");
+const registerDisplayNameEl = $("#registerDisplayName");
+const registerEmailEl = $("#registerEmail");
+const registerPasswordEl = $("#registerPassword");
+const registerBtn = $("#registerBtn");
+const registerHintEl = $("#registerHint");
+const logoutPanelBtn = $("#logoutPanelBtn");
+const historyRefreshBtn = $("#historyRefreshBtn");
+const historySearchInputEl = $("#historySearchInput");
+const historyListEl = $("#historyList");
+const historyEmptyEl = $("#historyEmpty");
 
 const dlTxt = $("#dlTxt");
 const dlJsonl = $("#dlJsonl");
@@ -97,11 +120,16 @@ const state = {
   finalizingStop: false,
   recording: false,
   runtimeSessionId: "",
+  runtimeSessionToken: "",
+  savedHistoryId: null,
+  viewingHistoryId: null,
+  saveInFlight: false,
   seq: 0,
   offsetMs: 0,
   chunkMs: CHUNK_DEFAULT_SECONDS * 1000,
   pendingSendChain: Promise.resolve(),
   log: [],
+  segments: [],
   summary: "",
   proofread: "",
   asrAvailable: true,
@@ -155,6 +183,20 @@ const state = {
       content: DEFAULT_SOC_PROMPT_TEMPLATE,
     },
   ],
+  auth: {
+    authenticated: false,
+    user: null,
+  },
+  history: {
+    items: [],
+    loading: false,
+    selectedId: null,
+    total: 0,
+    limit: 20,
+    offset: 0,
+    query: "",
+  },
+  selfSignupEnabled: false,
 };
 
 function selectedLanguage() {
@@ -683,8 +725,154 @@ function showToast(message, type = "default", duration = 2500) {
   }, duration);
 }
 
+function renderEmptyTranscriptState() {
+  logEl.innerHTML = `
+    <div class="empty-state">
+      <div class="empty-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" x2="12" y1="19" y2="22"/>
+        </svg>
+      </div>
+      <p class="empty-title">まだ文字起こしがありません</p>
+      <p class="empty-description">録音を開始すると、リアルタイムで文字起こしが表示されます</p>
+    </div>
+  `;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function serializeUserLabel(user) {
+  if (!user) return "ゲスト";
+  return String(user.displayName || user.email || "ログイン済み");
+}
+
+function setSaveBadge(label, saved = false) {
+  if (!saveStateBadgeEl) return;
+  saveStateBadgeEl.textContent = label;
+  saveStateBadgeEl.classList.toggle("is-saved", !!saved);
+}
+
+function updateSaveControls() {
+  const hasSegments = state.segments.length > 0;
+  const authenticated = !!state.auth.authenticated;
+  const saved = !!state.savedHistoryId;
+  const viewingHistory = !!state.viewingHistoryId;
+
+  if (saveBtn) {
+    saveBtn.disabled = !authenticated || !hasSegments || state.saveInFlight || saved || viewingHistory;
+    saveBtn.textContent = state.saveInFlight ? "保存中..." : "保存";
+    saveBtn.title = authenticated ? "" : "ログインが必要です";
+  }
+  if (saveTitleInputEl) {
+    saveTitleInputEl.disabled = viewingHistory || state.saveInFlight;
+  }
+  setSaveBadge(saved ? "保存済み" : authenticated ? "未保存" : "ログインが必要", saved);
+}
+
+function formatHistoryMeta(item) {
+  const parts = [];
+  if (item.savedAt) parts.push(new Date(item.savedAt).toLocaleString("ja-JP"));
+  if (item.language) parts.push(item.language);
+  if (Number.isFinite(Number(item.segmentCount))) parts.push(`${item.segmentCount} segments`);
+  if (item.hasDiarization) parts.push("speaker");
+  return parts.join(" / ");
+}
+
+function updateHistoryEmptyState(message = "") {
+  if (!historyEmptyEl) return;
+  if (message) {
+    historyEmptyEl.hidden = false;
+    historyEmptyEl.textContent = message;
+    return;
+  }
+  if (!state.auth.authenticated) {
+    historyEmptyEl.hidden = false;
+    historyEmptyEl.textContent = "ログインすると保存済み履歴がここに表示されます";
+    return;
+  }
+  historyEmptyEl.hidden = state.history.items.length > 0;
+  historyEmptyEl.textContent = "保存済み履歴はまだありません";
+}
+
+function renderHistoryList() {
+  if (!historyListEl) return;
+  historyListEl.innerHTML = "";
+  state.history.items.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "history-item";
+    if (state.history.selectedId === item.id) {
+      button.classList.add("is-active");
+    }
+    button.innerHTML = `
+      <div class="history-item-title">${escapeHtml(item.title || "Untitled")}</div>
+      <div class="history-item-meta">${escapeHtml(formatHistoryMeta(item))}</div>
+      <div class="history-item-preview">${escapeHtml(item.preview || "")}</div>
+    `;
+    button.addEventListener("click", () => {
+      openHistoryDetail(item.id);
+    });
+    historyListEl.appendChild(button);
+  });
+  updateHistoryEmptyState();
+}
+
+function renderAuthState() {
+  const authenticated = !!state.auth.authenticated;
+  if (authUserLabelEl) {
+    authUserLabelEl.textContent = serializeUserLabel(state.auth.user);
+  }
+  if (authPanelUserTextEl) {
+    authPanelUserTextEl.textContent = serializeUserLabel(state.auth.user);
+  }
+  if (loginBtn) {
+    loginBtn.hidden = authenticated;
+  }
+  if (logoutBtn) {
+    logoutBtn.hidden = !authenticated;
+  }
+  if (historyBtn) {
+    historyBtn.disabled = !authenticated;
+  }
+  if (authGuestViewEl) {
+    authGuestViewEl.hidden = authenticated;
+  }
+  if (authUserViewEl) {
+    authUserViewEl.hidden = !authenticated;
+  }
+  if (registerBtn) {
+    registerBtn.disabled = !state.selfSignupEnabled;
+  }
+  if (registerHintEl) {
+    registerHintEl.textContent = state.selfSignupEnabled
+      ? "必要に応じて新規ユーザーを作成できます"
+      : "新規登録は無効です";
+  }
+  updateHistoryEmptyState();
+  updateSaveControls();
+}
+
+function resetCurrentSaveState() {
+  state.runtimeSessionToken = "";
+  state.savedHistoryId = null;
+  state.viewingHistoryId = null;
+  if (saveTitleInputEl) {
+    saveTitleInputEl.value = "";
+  }
+  updateDownloadLinks();
+  updateSaveControls();
+}
+
 function updateSegmentCount() {
-  const count = state.log.length;
+  const count = state.segments.length;
   segmentCountEl.textContent = `${count} segments`;
 
   // Trigger animation
@@ -694,7 +882,10 @@ function updateSegmentCount() {
 }
 
 function extractTranscriptText() {
-  const fromState = state.log.join("\n").trim();
+  const fromState = state.segments
+    .map((segment) => renderTranscriptText(segment.text, segment.speaker))
+    .join("\n")
+    .trim();
   if (fromState) return fromState;
 
   const rows = Array.from(logEl.querySelectorAll(".log-row .text"));
@@ -703,6 +894,13 @@ function extractTranscriptText() {
 }
 
 function updateDownloadLinks() {
+  if (state.viewingHistoryId) {
+    dlTxt.href = `/api/history/${state.viewingHistoryId}/download.txt`;
+    dlJsonl.href = `/api/history/${state.viewingHistoryId}/download.jsonl`;
+    dlZip.href = `/api/history/${state.viewingHistoryId}/download.zip`;
+    return;
+  }
+
   if (!state.runtimeSessionId) {
     dlTxt.href = "#";
     dlJsonl.href = "#";
@@ -710,9 +908,10 @@ function updateDownloadLinks() {
     return;
   }
 
-  dlTxt.href = `/api/transcript/${state.runtimeSessionId}.txt`;
-  dlJsonl.href = `/api/transcript/${state.runtimeSessionId}.jsonl`;
-  dlZip.href = `/api/transcript/${state.runtimeSessionId}.zip`;
+  const suffix = state.runtimeSessionToken ? `?token=${encodeURIComponent(state.runtimeSessionToken)}` : "";
+  dlTxt.href = `/api/transcript/${state.runtimeSessionId}.txt${suffix}`;
+  dlJsonl.href = `/api/transcript/${state.runtimeSessionId}.jsonl${suffix}`;
+  dlZip.href = `/api/transcript/${state.runtimeSessionId}.zip${suffix}`;
 }
 
 function setSummary(text, meta) {
@@ -815,8 +1014,17 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "") {
   logEl.scrollTop = logEl.scrollHeight;
 
   state.log.push(text);
+  state.segments.push({
+    text,
+    tsStart,
+    tsEnd,
+    seq,
+    speaker,
+    screenshotPath,
+  });
   updateSegmentCount();
   markProofreadStale();
+  updateSaveControls();
 
   // Remove 'new' class after animation
   setTimeout(() => row.classList.remove("new"), 300);
@@ -840,6 +1048,11 @@ function applySpeakerPatch(segments) {
     textNode.dataset.rawText = raw;
     textNode.dataset.speaker = speaker;
     textNode.textContent = renderTranscriptText(raw, speaker);
+
+    const target = state.segments.find((item) => Number(item.seq) === seq);
+    if (target) {
+      target.speaker = speaker;
+    }
   }
 }
 
@@ -1306,6 +1519,7 @@ async function ensureSocket() {
       if (data.message) setStatus(String(data.message));
       if (data.sessionId) {
         state.runtimeSessionId = String(data.sessionId);
+        state.runtimeSessionToken = String(data.sessionToken || "");
         updateDownloadLinks();
       }
       return;
@@ -1806,8 +2020,17 @@ async function startRecording() {
   state.seq = 0;
   state.offsetMs = 0;
   state.runtimeSessionId = "";
+  state.runtimeSessionToken = "";
+  state.history.selectedId = null;
   state.finalizingStop = false;
   state.pendingSendChain = Promise.resolve();
+  state.log = [];
+  state.segments = [];
+  renderEmptyTranscriptState();
+  setSummary("", "未生成");
+  setProofread("", "未生成");
+  resetCurrentSaveState();
+  renderHistoryList();
   clearChunkTimer();
 
   try {
@@ -1943,7 +2166,7 @@ function cleanupMedia() {
 }
 
 async function copyAll() {
-  const text = state.log.join("\n").trim();
+  const text = extractTranscriptText();
   if (!text) {
     showToast("コピーする内容がありません", "error");
     return;
@@ -2097,7 +2320,7 @@ async function proofreadAll() {
 }
 
 async function summarizeAll() {
-  const text = state.log.join("\n").trim();
+  const text = extractTranscriptText();
   if (!text) {
     showToast("要約する文字起こしがありません", "error");
     setStatus("summary_no_text");
@@ -2166,25 +2389,19 @@ async function summarizeAll() {
 
 function clearView() {
   state.log = [];
+  state.segments = [];
+  state.history.selectedId = null;
+  state.viewingHistoryId = null;
+  state.savedHistoryId = null;
 
-  // Restore empty state
-  logEl.innerHTML = `
-    <div class="empty-state">
-      <div class="empty-icon">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-          <line x1="12" x2="12" y1="19" y2="22"/>
-        </svg>
-      </div>
-      <p class="empty-title">まだ文字起こしがありません</p>
-      <p class="empty-description">録音を開始すると、リアルタイムで文字起こしが表示されます</p>
-    </div>
-  `;
+  renderEmptyTranscriptState();
 
   updateSegmentCount();
   setSummary("", "未生成");
   setProofread("", "未生成");
+  updateDownloadLinks();
+  updateSaveControls();
+  renderHistoryList();
   showToast("クリアしました", "success");
 }
 
@@ -2288,6 +2505,62 @@ if (sidebarCloseBtn) {
 if (sidebarBackdropEl) {
   sidebarBackdropEl.addEventListener("click", () => {
     applySidebarOpen(false);
+  });
+}
+
+if (loginBtn) {
+  loginBtn.addEventListener("click", () => {
+    applySidebarOpen(true);
+    loginEmailEl?.focus();
+  });
+}
+
+if (logoutBtn) {
+  logoutBtn.addEventListener("click", () => {
+    logout();
+  });
+}
+
+if (historyBtn) {
+  historyBtn.addEventListener("click", () => {
+    applySidebarOpen(true);
+  });
+}
+
+if (loginSubmitBtn) {
+  loginSubmitBtn.addEventListener("click", () => {
+    login();
+  });
+}
+
+if (registerBtn) {
+  registerBtn.addEventListener("click", () => {
+    registerAccount();
+  });
+}
+
+if (logoutPanelBtn) {
+  logoutPanelBtn.addEventListener("click", () => {
+    logout();
+  });
+}
+
+if (historyRefreshBtn) {
+  historyRefreshBtn.addEventListener("click", () => {
+    loadHistoryList();
+  });
+}
+
+if (historySearchInputEl) {
+  historySearchInputEl.addEventListener("change", () => {
+    state.history.query = String(historySearchInputEl.value || "").trim();
+    loadHistoryList();
+  });
+}
+
+if (saveBtn) {
+  saveBtn.addEventListener("click", () => {
+    saveCurrentHistory();
   });
 }
 
@@ -2492,6 +2765,8 @@ async function loadCapabilities() {
     state.asrAvailable = !!health.asrReady && !!health.model;
     state.proofreadAvailable = !!health.proofreadModel;
     state.diarizationAvailable = !!health.diarizationEnabled;
+    state.selfSignupEnabled = !!health.selfSignupEnabled;
+    renderAuthState();
 
     if (!state.proofreadAvailable) {
       setProofread(
@@ -2553,6 +2828,236 @@ async function loadCapabilities() {
   }
 }
 
+async function loadAuthState() {
+  try {
+    const response = await fetch("/api/auth/me");
+    if (!response.ok) return;
+    const payload = await response.json();
+    state.auth.authenticated = !!payload.authenticated;
+    state.auth.user = payload.user || null;
+    state.selfSignupEnabled = !!payload.selfSignupEnabled;
+    renderAuthState();
+    if (state.auth.authenticated) {
+      await loadHistoryList();
+    } else {
+      state.history.items = [];
+      state.history.selectedId = null;
+      renderHistoryList();
+    }
+  } catch {
+    // ignore auth bootstrap errors
+  }
+}
+
+async function login() {
+  const email = String(loginEmailEl?.value || "").trim();
+  const password = String(loginPasswordEl?.value || "");
+  if (!email || !password) {
+    showToast("メールアドレスとパスワードを入力してください", "error");
+    return;
+  }
+
+  const response = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+
+  if (!response.ok) {
+    showToast("ログインに失敗しました", "error");
+    return;
+  }
+
+  const payload = await response.json();
+  state.auth.authenticated = true;
+  state.auth.user = payload.user || null;
+  renderAuthState();
+  await loadHistoryList();
+  showToast("ログインしました", "success");
+}
+
+async function registerAccount() {
+  if (!state.selfSignupEnabled) {
+    showToast("新規登録は無効です", "error");
+    return;
+  }
+  const email = String(registerEmailEl?.value || "").trim();
+  const password = String(registerPasswordEl?.value || "");
+  const displayName = String(registerDisplayNameEl?.value || "").trim();
+  if (!email || password.length < 8) {
+    showToast("メールアドレスと8文字以上のパスワードを入力してください", "error");
+    return;
+  }
+
+  const response = await fetch("/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, display_name: displayName || null }),
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    showToast(payload.error === "email_already_exists" ? "既に存在するメールアドレスです" : "新規登録に失敗しました", "error");
+    return;
+  }
+
+  const payload = await response.json();
+  state.auth.authenticated = true;
+  state.auth.user = payload.user || null;
+  renderAuthState();
+  await loadHistoryList();
+  showToast("アカウントを作成しました", "success");
+}
+
+async function logout() {
+  await fetch("/api/auth/logout", { method: "POST" }).catch(() => null);
+  state.auth.authenticated = false;
+  state.auth.user = null;
+  state.history.items = [];
+  state.history.selectedId = null;
+  state.viewingHistoryId = null;
+  state.savedHistoryId = null;
+  state.log = [];
+  state.segments = [];
+  renderEmptyTranscriptState();
+  setSummary("", "未生成");
+  setProofread("", "未生成");
+  renderAuthState();
+  renderHistoryList();
+  updateDownloadLinks();
+  showToast("ログアウトしました", "success");
+}
+
+async function loadHistoryList() {
+  if (!state.auth.authenticated) {
+    state.history.items = [];
+    renderHistoryList();
+    return;
+  }
+  const params = new URLSearchParams({
+    limit: String(state.history.limit),
+    offset: String(state.history.offset),
+  });
+  if (state.history.query) {
+    params.set("q", state.history.query);
+  }
+
+  const response = await fetch(`/api/history?${params.toString()}`);
+  if (!response.ok) {
+    updateHistoryEmptyState("履歴の取得に失敗しました");
+    return;
+  }
+  const payload = await response.json();
+  state.history.items = Array.isArray(payload.items) ? payload.items : [];
+  state.history.total = Number(payload.total || 0);
+  renderHistoryList();
+}
+
+function renderHistoryDetail(payload) {
+  state.history.selectedId = payload.id;
+  state.viewingHistoryId = payload.id;
+  state.savedHistoryId = payload.id;
+  state.log = [];
+  state.segments = [];
+  renderEmptyTranscriptState();
+  logEl.innerHTML = "";
+  (payload.segments || []).forEach((segment) => {
+    addLogLine(
+      String(segment.text || ""),
+      Number(segment.tsStart || 0),
+      Number(segment.tsEnd || 0),
+      Number(segment.seq),
+      String(segment.speaker || ""),
+      String(segment.screenshotUrl || "")
+    );
+  });
+  if (!payload.segments || payload.segments.length === 0) {
+    renderEmptyTranscriptState();
+  }
+  setSummary(payload.summaryText || "", payload.savedAt ? `保存: ${new Date(payload.savedAt).toLocaleString("ja-JP")}` : "履歴");
+  setProofread(payload.proofreadText || "", payload.savedAt ? `保存: ${new Date(payload.savedAt).toLocaleString("ja-JP")}` : "履歴");
+  if (saveTitleInputEl) {
+    saveTitleInputEl.value = String(payload.title || "");
+  }
+  updateDownloadLinks();
+  updateSaveControls();
+  renderHistoryList();
+}
+
+async function openHistoryDetail(historyId) {
+  if (state.recording) {
+    showToast("録音中は履歴を開けません", "error");
+    return;
+  }
+  const response = await fetch(`/api/history/${historyId}`);
+  if (!response.ok) {
+    showToast("履歴の取得に失敗しました", "error");
+    return;
+  }
+  const payload = await response.json();
+  renderHistoryDetail(payload);
+}
+
+function buildAutoSaveTitle() {
+  const explicit = String(saveTitleInputEl?.value || "").trim();
+  if (explicit) return explicit;
+  const transcript = extractTranscriptText().replace(/\s+/g, " ").trim();
+  if (transcript) return transcript.slice(0, 30);
+  const language = selectedLanguage() || "Transcript";
+  return `${language} ${new Date().toLocaleString("ja-JP")}`;
+}
+
+async function saveCurrentHistory() {
+  if (!state.auth.authenticated) {
+    showToast("ログインが必要です", "error");
+    applySidebarOpen(true);
+    loginEmailEl?.focus();
+    return;
+  }
+  if (!state.runtimeSessionId || state.segments.length === 0) {
+    showToast("保存できる文字起こしがありません", "error");
+    return;
+  }
+
+  state.saveInFlight = true;
+  updateSaveControls();
+  const response = await fetch("/api/history", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      runtimeSessionId: state.runtimeSessionId,
+      runtimeSessionToken: state.runtimeSessionToken,
+      title: buildAutoSaveTitle(),
+      summaryText: state.summary || null,
+      proofreadText: state.proofread || null,
+    }),
+  }).catch(() => null);
+  state.saveInFlight = false;
+  updateSaveControls();
+
+  if (!response) {
+    showToast("保存に失敗しました", "error");
+    return;
+  }
+  if (response.status === 409) {
+    showToast("このセッションは既に保存済みです", "error");
+    return;
+  }
+  if (!response.ok) {
+    showToast("保存に失敗しました", "error");
+    return;
+  }
+
+  const payload = await response.json();
+  state.savedHistoryId = payload.history?.id || null;
+  state.viewingHistoryId = state.savedHistoryId;
+  state.history.selectedId = state.savedHistoryId;
+  updateDownloadLinks();
+  updateSaveControls();
+  await loadHistoryList();
+  showToast("保存しました", "success");
+}
+
 renderPromptTemplateButtons(state.promptTemplates);
 
 // Initialize empty states
@@ -2560,6 +3065,7 @@ updateSegmentCount();
 updateDownloadLinks();
 setSummary("", "未生成");
 setProofread("", "未生成");
+renderAuthState();
 applyProofreadMode(proofreadModeEl?.value || "proofread");
 if (summaryBtnLabelEl) {
   summaryBtnLabelEl.textContent = "実行";
@@ -2569,19 +3075,7 @@ setStatus("idle");
 
 // Show initial empty state for transcript
 if (logEl && !logEl.querySelector(".log-row")) {
-  logEl.innerHTML = `
-    <div class="empty-state">
-      <div class="empty-icon">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-          <line x1="12" x2="12" y1="19" y2="22"/>
-        </svg>
-      </div>
-      <p class="empty-title">まだ文字起こしがありません</p>
-      <p class="empty-description">録音を開始すると、リアルタイムで文字起こしが表示されます</p>
-    </div>
-  `;
+  renderEmptyTranscriptState();
 }
 
 (() => {
@@ -2655,4 +3149,7 @@ if (logEl && !logEl.querySelector(".log-row")) {
   );
 })();
 
-loadCapabilities();
+(async () => {
+  await loadCapabilities();
+  await loadAuthState();
+})();

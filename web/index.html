@@ -40,6 +40,12 @@
               <span class="status-label">SEGMENTS</span>
               <span id="connCount" class="status-value">0</span>
             </div>
+            <div class="auth-controls" aria-label="ユーザー操作">
+              <span id="authUserLabel" class="auth-user-label">ゲスト</span>
+              <button id="loginBtn" type="button" class="header-action-btn">ログイン</button>
+              <button id="logoutBtn" type="button" class="header-action-btn" hidden>ログアウト</button>
+              <button id="historyBtn" type="button" class="header-action-btn" disabled>履歴</button>
+            </div>
             <!-- Theme Toggle -->
             <div class="theme-toggle-wrapper">
               <button id="sidebarToggle" type="button" class="theme-toggle-btn" aria-label="サイドパネルを開く" title="サイドパネル">
@@ -261,6 +267,17 @@
             </div>
 
             <div class="downloads-bar">
+              <div class="save-controls">
+                <input
+                  id="saveTitleInput"
+                  type="text"
+                  class="save-title-input"
+                  placeholder="保存タイトル（未入力なら自動生成）"
+                  maxlength="255"
+                />
+                <button id="saveBtn" type="button" class="btn-action" disabled>保存</button>
+                <span id="saveStateBadge" class="save-state-badge">未保存</span>
+              </div>
               <span class="downloads-label">Export</span>
               <a id="dlTxt" href="#" download class="download-link">TXT</a>
               <a id="dlJsonl" href="#" download class="download-link">JSONL</a>
@@ -375,6 +392,53 @@
             <line x1="6" y1="6" x2="18" y2="18"/>
           </svg>
         </button>
+      </div>
+
+      <div class="side-panel-section">
+        <div class="side-panel-section-header">
+          <div>
+            <h3 class="side-panel-subtitle">ユーザー</h3>
+            <p class="chunk-description">ログインすると保存済み履歴を見返せます</p>
+          </div>
+        </div>
+        <div id="authGuestView" class="auth-panel">
+          <input id="loginEmail" type="email" class="side-panel-input" placeholder="メールアドレス" autocomplete="email" />
+          <input id="loginPassword" type="password" class="side-panel-input" placeholder="パスワード" autocomplete="current-password" />
+          <button id="loginSubmitBtn" type="button" class="btn-action auth-submit-btn">ログイン</button>
+          <div class="auth-divider"></div>
+          <input id="registerDisplayName" type="text" class="side-panel-input" placeholder="表示名（任意）" autocomplete="nickname" />
+          <input id="registerEmail" type="email" class="side-panel-input" placeholder="登録メールアドレス" autocomplete="email" />
+          <input id="registerPassword" type="password" class="side-panel-input" placeholder="登録パスワード（8文字以上）" autocomplete="new-password" />
+          <button id="registerBtn" type="button" class="btn-secondary auth-submit-btn">新規登録</button>
+          <p id="registerHint" class="chunk-description">新規登録は無効です</p>
+        </div>
+        <div id="authUserView" class="auth-panel" hidden>
+          <div class="auth-user-card">
+            <span class="status-label">SIGNED IN</span>
+            <strong id="authPanelUserText">-</strong>
+          </div>
+          <button id="logoutPanelBtn" type="button" class="btn-secondary auth-submit-btn">ログアウト</button>
+        </div>
+      </div>
+
+      <div class="side-panel-section">
+        <div class="side-panel-section-header">
+          <div>
+            <h3 class="side-panel-subtitle">履歴</h3>
+            <p class="chunk-description">保存済みの文字起こしだけが一覧に表示されます</p>
+          </div>
+          <button id="historyRefreshBtn" type="button" class="icon-btn" aria-label="履歴を更新" title="更新">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 2v6h-6"/>
+              <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+              <path d="M3 22v-6h6"/>
+              <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+            </svg>
+          </button>
+        </div>
+        <input id="historySearchInput" type="search" class="side-panel-input" placeholder="タイトルや本文で検索" />
+        <div id="historyList" class="history-list" aria-live="polite"></div>
+        <p id="historyEmpty" class="chunk-description">ログインすると保存済み履歴がここに表示されます</p>
       </div>
 
       <div class="side-panel-section">

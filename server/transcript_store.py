@@ -35,6 +35,7 @@ class TranscriptStore:
         self.base_path = root_dir / session_id
         self.jsonl_path = self.base_path.with_suffix(".jsonl")
         self.txt_path = self.base_path.with_suffix(".txt")
+        self.metadata_path = self.base_path.with_suffix(".meta.json")
         self.chunks_dir = self.root_dir / "_chunks" / session_id
         self.screenshots_dir = self.root_dir / "_screenshots" / session_id
 
@@ -43,6 +44,23 @@ class TranscriptStore:
         self.txt_path.touch(exist_ok=True)
         self.chunks_dir.mkdir(parents=True, exist_ok=True)
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+    def write_metadata(self, payload: dict) -> None:
+        self.metadata_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def read_metadata(self) -> dict:
+        if not self.metadata_path.exists():
+            return {}
+        try:
+            parsed = json.loads(self.metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+        return {}
 
     def append_final(self, record: TranscriptRecord) -> None:
         payload = asdict(record)

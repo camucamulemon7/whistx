@@ -13,7 +13,13 @@ class Settings:
     host: str
     port: int
     ws_path: str
+    app_data_dir: Path
     transcripts_dir: Path
+    app_db_url: str
+    app_session_secret: str
+    app_session_days: int
+    enable_self_signup: bool
+    history_dir: Path
     openai_api_key: str
     openai_base_url: str | None
     asr_model: str
@@ -430,6 +436,11 @@ def load_settings() -> Settings:
         or str(app_data_dir / "transcripts")
     )
     transcripts_dir.mkdir(parents=True, exist_ok=True)
+    history_dir = Path(
+        _env_first_non_empty("APP_HISTORY_DIR")
+        or str(app_data_dir / "history")
+    )
+    history_dir.mkdir(parents=True, exist_ok=True)
     diarization_work_dir = Path(
         _env_first_non_empty("DIARIZATION_WORK_DIR")
         or str(app_data_dir / "diarization")
@@ -465,7 +476,13 @@ def load_settings() -> Settings:
         host=_env_first_non_empty("APP_HOST", "HOST") or "0.0.0.0",
         port=_to_int_alias(8005, "APP_PORT", "PORT"),
         ws_path=_env_first_non_empty("APP_WS_PATH", "WS_PATH") or "/ws/transcribe",
+        app_data_dir=app_data_dir,
         transcripts_dir=transcripts_dir,
+        app_db_url=_env_first_non_empty("APP_DB_URL") or f"sqlite:///{app_data_dir / 'app.db'}",
+        app_session_secret=_env_first_non_empty("APP_SESSION_SECRET") or "change-me",
+        app_session_days=max(1, _to_int("APP_SESSION_DAYS", 7)),
+        enable_self_signup=_to_bool("ENABLE_SELF_SIGNUP", False),
+        history_dir=history_dir,
         openai_api_key=asr_api_key,
         openai_base_url=base_url,
         asr_model=asr_model,
