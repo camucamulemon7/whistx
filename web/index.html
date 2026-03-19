@@ -40,6 +40,11 @@
               <span class="status-label">SEGMENTS</span>
               <span id="connCount" class="status-value">0</span>
             </div>
+            <div id="authUserView" class="header-user-chip" hidden>
+              <span id="authUserLabel" class="header-user-label">-</span>
+              <button id="adminQueueBtn" type="button" class="header-user-logout" hidden>承認待ち</button>
+              <button id="logoutBtn" type="button" class="header-user-logout">ログアウト</button>
+            </div>
             <!-- Theme Toggle -->
             <div class="theme-toggle-wrapper">
               <button id="sidebarToggle" type="button" class="theme-toggle-btn" aria-label="サイドパネルを開く" title="サイドパネル">
@@ -75,140 +80,179 @@
       <main class="main-content">
         <section id="bannersContainer" class="banners-container reveal" aria-label="お知らせ" hidden></section>
 
-        <!-- Quick Settings Panel -->
-        <section class="settings-panel glass-panel reveal" aria-label="設定">
-          <div class="settings-layout">
-            <div class="record-hero record-hero-inline">
-              <div id="audioLevelIndicator" class="audio-level-indicator" hidden>
-                <div class="audio-level-shell">
-                  <span class="audio-level-label">INPUT</span>
-                  <div id="audioLevelMatrix" class="audio-level-matrix" aria-hidden="true"></div>
+        <section class="workspace-shell">
+          <aside class="history-rail glass-panel reveal delay-2" aria-label="履歴一覧">
+            <div class="history-rail-header">
+              <div class="history-rail-copy">
+                <h2 class="history-rail-title">履歴</h2>
+                <p class="history-rail-description">保存済みのセッションをチャットのように見返せます</p>
+              </div>
+              <div class="history-rail-actions">
+                <span id="historyCountBadge" class="history-count-badge">0件</span>
+              </div>
+            </div>
+            <label class="history-search">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <circle cx="11" cy="11" r="8"/>
+                <path d="M21 21l-4.35-4.35"/>
+              </svg>
+              <input id="historySearchInput" type="search" class="side-panel-input history-search-input" placeholder="タイトルや本文を検索" />
+            </label>
+            <div id="historyList" class="history-list" aria-live="polite"></div>
+            <p id="historyEmpty" class="chunk-description">ログイン後に履歴が表示されます</p>
+          </aside>
+
+          <div class="workspace-main">
+            <!-- Quick Settings Panel -->
+            <section class="settings-panel glass-panel reveal" aria-label="設定">
+              <div class="settings-layout">
+                <div class="record-hero record-hero-inline">
+                  <div id="audioLevelIndicator" class="audio-level-indicator" hidden>
+                    <div class="audio-level-shell">
+                      <span class="audio-level-label">INPUT</span>
+                      <div id="audioLevelMatrix" class="audio-level-matrix" aria-hidden="true"></div>
+                    </div>
+                  </div>
+
+                  <button
+                    id="startBtn"
+                    class="record-btn"
+                    type="button"
+                    aria-label="録音を開始"
+                    aria-describedby="recordBtnHint"
+                    aria-pressed="false"
+                  >
+                    <div class="record-btn-inner">
+                      <svg class="record-icon" width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+                        <circle cx="12" cy="12" r="6"/>
+                      </svg>
+                      <svg class="stop-icon" width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
+                        <rect x="6" y="6" width="12" height="12" rx="2"/>
+                      </svg>
+                    </div>
+                    <span class="record-label">録音開始</span>
+                  </button>
+                  <span id="recordBtnHint" class="sr-only">タップでマイクからの録音を開始します</span>
+                </div>
+
+                <div class="settings-main">
+                  <div class="settings-row">
+                    <div class="setting-group">
+                      <label for="language" class="setting-label">言語</label>
+                      <div class="select-wrapper">
+                        <select id="language">
+                          <option value="ja" selected>日本語</option>
+                          <option value="en">English</option>
+                          <option value="">自動検出</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="setting-group">
+                      <label for="audioSource" class="setting-label">音声ソース</label>
+                      <div class="select-wrapper">
+                        <select id="audioSource">
+                          <option value="mic" selected>マイク</option>
+                          <option value="display">画面共有</option>
+                          <option value="both">両方</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="setting-group setting-group-toggle">
+                      <span class="setting-label">話者分離</span>
+                      <label for="diarizationEnabled" class="toggle-control">
+                        <input id="diarizationEnabled" type="checkbox" checked />
+                        <span class="toggle-track" aria-hidden="true"></span>
+                        <span id="diarizationStateText" class="toggle-text">ON</span>
+                      </label>
+                    </div>
+                    <div class="setting-group setting-group-toggle">
+                      <span class="setting-label">入力自動補正</span>
+                      <label for="autoGainEnabled" class="toggle-control">
+                        <input id="autoGainEnabled" type="checkbox" checked />
+                        <span class="toggle-track" aria-hidden="true"></span>
+                        <span id="autoGainStateText" class="toggle-text">ON</span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </div>
-
-              <button
-                id="startBtn"
-                class="record-btn"
-                type="button"
-                aria-label="録音を開始"
-                aria-describedby="recordBtnHint"
-                aria-pressed="false"
-              >
-                <div class="record-btn-inner">
-                  <svg class="record-icon" width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
-                    <circle cx="12" cy="12" r="6"/>
-                  </svg>
-                  <svg class="stop-icon" width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
-                    <rect x="6" y="6" width="12" height="12" rx="2"/>
-                  </svg>
-                </div>
-                <span class="record-label">録音開始</span>
-              </button>
-              <span id="recordBtnHint" class="sr-only">タップでマイクからの録音を開始します</span>
-            </div>
-
-            <div class="settings-main">
-              <div class="settings-row">
+              <div id="diarizationConfigRow" class="diarization-config-row">
                 <div class="setting-group">
-                  <label for="language" class="setting-label">言語</label>
+                  <label for="diarizationSpeakerMode" class="setting-label">話者数推定</label>
                   <div class="select-wrapper">
-                    <select id="language">
-                      <option value="ja" selected>日本語</option>
-                      <option value="en">English</option>
-                      <option value="">自動検出</option>
+                    <select id="diarizationSpeakerMode">
+                      <option value="auto" selected>自動</option>
+                      <option value="fixed">固定人数</option>
+                      <option value="range">範囲指定</option>
                     </select>
                   </div>
                 </div>
                 <div class="setting-group">
-                  <label for="audioSource" class="setting-label">音声ソース</label>
-                  <div class="select-wrapper">
-                    <select id="audioSource">
-                      <option value="mic" selected>マイク</option>
-                      <option value="display">画面共有</option>
-                      <option value="both">両方</option>
-                    </select>
-                  </div>
+                  <label for="diarizationSpeakerCount" class="setting-label">固定人数</label>
+                  <input
+                    id="diarizationSpeakerCount"
+                    type="number"
+                    min="1"
+                    max="12"
+                    step="1"
+                    value="2"
+                    class="setting-number-input"
+                    aria-label="固定話者数"
+                  />
                 </div>
-                <div class="setting-group setting-group-toggle">
-                  <span class="setting-label">話者分離</span>
-                  <label for="diarizationEnabled" class="toggle-control">
-                    <input id="diarizationEnabled" type="checkbox" checked />
-                    <span class="toggle-track" aria-hidden="true"></span>
-                    <span id="diarizationStateText" class="toggle-text">ON</span>
-                  </label>
+                <div class="setting-group">
+                  <label for="diarizationMinSpeakers" class="setting-label">最小人数</label>
+                  <input
+                    id="diarizationMinSpeakers"
+                    type="number"
+                    min="1"
+                    max="12"
+                    step="1"
+                    value="2"
+                    class="setting-number-input"
+                    aria-label="最小話者数"
+                  />
+                </div>
+                <div class="setting-group">
+                  <label for="diarizationMaxSpeakers" class="setting-label">最大人数</label>
+                  <input
+                    id="diarizationMaxSpeakers"
+                    type="number"
+                    min="1"
+                    max="12"
+                    step="1"
+                    value="4"
+                    class="setting-number-input"
+                    aria-label="最大話者数"
+                  />
                 </div>
               </div>
-            </div>
-          </div>
-          <div id="diarizationConfigRow" class="diarization-config-row">
-            <div class="setting-group">
-              <label for="diarizationSpeakerMode" class="setting-label">話者数推定</label>
-              <div class="select-wrapper">
-                <select id="diarizationSpeakerMode">
-                  <option value="auto" selected>自動</option>
-                  <option value="fixed">固定人数</option>
-                  <option value="range">範囲指定</option>
-                </select>
-              </div>
-            </div>
-            <div class="setting-group">
-              <label for="diarizationSpeakerCount" class="setting-label">固定人数</label>
-              <input
-                id="diarizationSpeakerCount"
-                type="number"
-                min="1"
-                max="12"
-                step="1"
-                value="2"
-                class="setting-number-input"
-                aria-label="固定話者数"
-              />
-            </div>
-            <div class="setting-group">
-              <label for="diarizationMinSpeakers" class="setting-label">最小人数</label>
-              <input
-                id="diarizationMinSpeakers"
-                type="number"
-                min="1"
-                max="12"
-                step="1"
-                value="2"
-                class="setting-number-input"
-                aria-label="最小話者数"
-              />
-            </div>
-            <div class="setting-group">
-              <label for="diarizationMaxSpeakers" class="setting-label">最大人数</label>
-              <input
-                id="diarizationMaxSpeakers"
-                type="number"
-                min="1"
-                max="12"
-                step="1"
-                value="4"
-                class="setting-number-input"
-                aria-label="最大話者数"
-              />
-            </div>
-          </div>
-          <p id="diarizationSpeakerHint" class="setting-hint"></p>
-          <p id="audioSourceHint" class="setting-hint">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <path d="M12 16v-4"/>
-              <path d="M12 8h.01"/>
-            </svg>
-            <span id="audioSourceHintText">画面共有音声はブラウザ制約で取得できない場合があります。タブ共有が最も安定します</span>
-          </p>
-        </section>
+              <p id="diarizationSpeakerHint" class="setting-hint"></p>
+              <p id="audioSourceHint" class="setting-hint">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M12 16v-4"/>
+                  <path d="M12 8h.01"/>
+                </svg>
+                <span id="audioSourceHintText">画面共有音声はブラウザ制約で取得できない場合があります。タブ共有が最も安定します</span>
+              </p>
+              <p class="setting-hint">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M12 16v-4"/>
+                  <path d="M12 8h.01"/>
+                </svg>
+                <span>入力音量が数秒以上小さいときだけ、録音ゲインをゆっくり持ち上げます</span>
+              </p>
+            </section>
 
-        <!-- Workspace Panels -->
-        <section
-          id="workspacePanels"
-          class="workspace-panels reveal delay-2"
-          aria-label="文字起こしと校正結果"
-          style="--panel-left: 1.35fr; --panel-center: 0.95fr; --panel-right: 0.9fr;"
-        >
+            <!-- Workspace Panels -->
+            <section
+              id="workspacePanels"
+              class="workspace-panels reveal delay-2"
+              aria-label="文字起こしと校正結果"
+              style="--panel-left: 1.35fr; --panel-center: 0.95fr; --panel-right: 0.9fr;"
+            >
           <!-- Transcript Panel -->
           <section class="transcript-panel glass-panel" aria-label="文字起こし結果">
             <header class="panel-header">
@@ -224,11 +268,11 @@
                 <h2 class="panel-title">文字起こし</h2>
                 <span id="segmentCount" class="panel-badge">0</span>
               </div>
-              <div class="panel-actions">
-                <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="transcript" aria-label="文字起こしをたたむ" title="たたむ">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6"/>
-                  </svg>
+            <div class="panel-actions">
+              <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="transcript" aria-label="文字起こしをたたむ" title="たたむ">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="15 18 9 12 15 6"/>
+                </svg>
                 </button>
                 <button id="copyBtn" type="button" class="icon-btn" aria-label="コピー" title="コピー">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -261,6 +305,17 @@
             </div>
 
             <div class="downloads-bar">
+              <div class="save-controls">
+                <input
+                  id="saveTitleInput"
+                  type="text"
+                  class="save-title-input"
+                  placeholder="保存タイトル（未入力なら自動生成）"
+                  maxlength="255"
+                />
+                <button id="saveBtn" type="button" class="btn-action" disabled>保存</button>
+                <span id="saveStateBadge" class="save-state-badge">未保存</span>
+              </div>
               <span class="downloads-label">Export</span>
               <a id="dlTxt" href="#" download class="download-link">TXT</a>
               <a id="dlJsonl" href="#" download class="download-link">JSONL</a>
@@ -341,6 +396,12 @@
                   <polyline points="15 18 9 12 15 6"/>
                 </svg>
               </button>
+              <button id="copySummaryBtn" type="button" class="icon-btn" aria-label="要約をコピー" title="要約をコピー">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+              </button>
               <button id="summaryBtn" type="button" class="btn-action" aria-label="要約を生成">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polygon points="13,2 3,14 12,14 11,22 21,10 12,10 13,2"/>
@@ -355,6 +416,8 @@
               </div>
             </div>
           </section>
+        </section>
+          </div>
         </section>
       </main>
 
@@ -461,5 +524,86 @@
         ></textarea>
       </div>
     </aside>
+
+      <div id="authGuestView" class="auth-overlay" hidden>
+      <div class="auth-overlay-backdrop"></div>
+      <section class="auth-card glass-panel" aria-label="ログイン">
+        <div class="auth-card-header">
+          <div class="brand auth-brand">
+            <div class="brand-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" x2="12" y1="19" y2="22"/>
+              </svg>
+            </div>
+            <div class="brand-text">
+              <h2 class="auth-title">ログイン</h2>
+              <p class="auth-description">保存履歴を使うにはログインが必要です</p>
+            </div>
+          </div>
+        </div>
+        <div id="authBootstrapSection" class="auth-block" hidden>
+          <div class="auth-block-title">初回管理者アカウント作成</div>
+          <div class="auth-form">
+            <input id="bootstrapDisplayName" type="text" class="side-panel-input auth-input" placeholder="表示名" autocomplete="name" />
+            <input id="bootstrapEmail" type="email" class="side-panel-input auth-input" placeholder="管理者メールアドレス" autocomplete="email" />
+            <input id="bootstrapPassword" type="password" class="side-panel-input auth-input" placeholder="パスワード（8文字以上）" autocomplete="new-password" />
+            <button id="bootstrapAdminBtn" type="button" class="btn-action auth-submit-btn">管理者を作成</button>
+          </div>
+        </div>
+        <div id="authLoginSection" class="auth-block">
+          <div class="auth-block-title">ログイン</div>
+          <div class="auth-form">
+            <input id="loginEmail" type="email" class="side-panel-input auth-input" placeholder="メールアドレス" autocomplete="email" />
+            <input id="loginPassword" type="password" class="side-panel-input auth-input" placeholder="パスワード" autocomplete="current-password" />
+            <button id="loginSubmitBtn" type="button" class="btn-action auth-submit-btn">ログイン</button>
+            <a id="keycloakLoginBtn" href="/api/auth/keycloak/login" class="btn-secondary auth-submit-btn auth-provider-btn" hidden>Keycloakでログイン</a>
+            <button id="guestLoginBtn" type="button" class="btn-secondary auth-submit-btn">ゲストで利用</button>
+          </div>
+        </div>
+        <div id="authRegisterSection" class="auth-block" hidden>
+          <div class="auth-block-title">新規登録リクエスト</div>
+          <div class="auth-form">
+            <input id="registerDisplayName" type="text" class="side-panel-input auth-input" placeholder="表示名" autocomplete="name" />
+            <input id="registerEmail" type="email" class="side-panel-input auth-input" placeholder="メールアドレス" autocomplete="email" />
+            <input id="registerPassword" type="password" class="side-panel-input auth-input" placeholder="パスワード（8文字以上）" autocomplete="new-password" />
+            <button id="registerBtn" type="button" class="btn-action auth-submit-btn">承認を申請</button>
+            <p id="registerHint" class="auth-inline-hint"></p>
+          </div>
+        </div>
+        <p class="auth-footnote">ゲストでも利用できますが、履歴保存はできません。</p>
+      </section>
+    </div>
+
+    <div id="adminQueueModal" class="screenshot-modal" hidden>
+      <div class="screenshot-modal-backdrop" data-admin-modal-close></div>
+      <div class="screenshot-modal-dialog glass-panel admin-queue-dialog" role="dialog" aria-modal="true" aria-label="承認待ちユーザー">
+        <button id="adminQueueClose" type="button" class="icon-btn screenshot-modal-close" aria-label="閉じる">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+        <div class="admin-queue-header">
+          <h2 class="auth-title">承認待ちユーザー</h2>
+          <p class="auth-description">新規登録されたアカウントをここで承認します。</p>
+        </div>
+        <div id="adminPendingList" class="admin-pending-list"></div>
+      </div>
+    </div>
+
+    <div id="screenshotModal" class="screenshot-modal" hidden>
+      <div class="screenshot-modal-backdrop" data-modal-close></div>
+      <div class="screenshot-modal-dialog glass-panel" role="dialog" aria-modal="true" aria-label="スクリーンショット拡大表示">
+        <button id="screenshotModalClose" type="button" class="icon-btn screenshot-modal-close" aria-label="閉じる">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+        <img id="screenshotModalImage" class="screenshot-modal-image" alt="スクリーンショット" />
+      </div>
+    </div>
   </body>
 </html>

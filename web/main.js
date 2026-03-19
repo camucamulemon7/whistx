@@ -29,6 +29,8 @@ const captureScreenshotsEnabledEl = $("#captureScreenshotsEnabled");
 const captureScreenshotsStateTextEl = $("#captureScreenshotsStateText");
 const screenshotDiffSkipEnabledEl = $("#screenshotDiffSkipEnabled");
 const screenshotDiffSkipStateTextEl = $("#screenshotDiffSkipStateText");
+const autoGainEnabledEl = $("#autoGainEnabled");
+const autoGainStateTextEl = $("#autoGainStateText");
 const chunkSecondsEl = $("#chunkSeconds");
 const promptEl = $("#prompt");
 const summaryPromptEl = $("#summaryPrompt");
@@ -48,6 +50,46 @@ const proofreadModeEl = $("#proofreadMode");
 const copyBtn = $("#copyBtn");
 const copyProofreadBtn = $("#copyProofreadBtn");
 const clearBtn = $("#clearBtn");
+const saveBtn = $("#saveBtn");
+const saveTitleInputEl = $("#saveTitleInput");
+const saveStateBadgeEl = $("#saveStateBadge");
+const loginBtn = $("#loginBtn");
+const logoutBtn = $("#logoutBtn");
+const historyBtn = $("#historyBtn");
+const authUserLabelEl = $("#authUserLabel");
+const authGuestViewEl = $("#authGuestView");
+const authUserViewEl = $("#authUserView");
+const authPanelUserTextEl = $("#authPanelUserText");
+const adminQueueBtn = $("#adminQueueBtn");
+const loginEmailEl = $("#loginEmail");
+const loginPasswordEl = $("#loginPassword");
+const loginSubmitBtn = $("#loginSubmitBtn");
+const keycloakLoginBtnEl = $("#keycloakLoginBtn");
+const guestLoginBtn = $("#guestLoginBtn");
+const bootstrapDisplayNameEl = $("#bootstrapDisplayName");
+const bootstrapEmailEl = $("#bootstrapEmail");
+const bootstrapPasswordEl = $("#bootstrapPassword");
+const bootstrapAdminBtnEl = $("#bootstrapAdminBtn");
+const authBootstrapSectionEl = $("#authBootstrapSection");
+const authLoginSectionEl = $("#authLoginSection");
+const authRegisterSectionEl = $("#authRegisterSection");
+const registerDisplayNameEl = $("#registerDisplayName");
+const registerEmailEl = $("#registerEmail");
+const registerPasswordEl = $("#registerPassword");
+const registerBtn = $("#registerBtn");
+const registerHintEl = $("#registerHint");
+const logoutPanelBtn = $("#logoutPanelBtn");
+const historySearchInputEl = $("#historySearchInput");
+const historyListEl = $("#historyList");
+const historyEmptyEl = $("#historyEmpty");
+const historyCountBadgeEl = $("#historyCountBadge");
+const copySummaryBtnEl = $("#copySummaryBtn");
+const screenshotModalEl = $("#screenshotModal");
+const screenshotModalCloseEl = $("#screenshotModalClose");
+const screenshotModalImageEl = $("#screenshotModalImage");
+const adminQueueModalEl = $("#adminQueueModal");
+const adminQueueCloseEl = $("#adminQueueClose");
+const adminPendingListEl = $("#adminPendingList");
 
 const dlTxt = $("#dlTxt");
 const dlJsonl = $("#dlJsonl");
@@ -60,6 +102,13 @@ const summaryMetaEl = $("#summaryMeta");
 const proofreadTextEl = $("#proofreadText");
 const proofreadMetaEl = $("#proofreadMeta");
 const toastContainer = $("#toastContainer");
+const appEl = document.querySelector(".app");
+const mainContentEl = document.querySelector(".main-content");
+const historyRailEl = document.querySelector(".history-rail");
+const transcriptPanelEl = document.querySelector(".transcript-panel");
+const proofreadPanelEl = document.querySelector(".proofread-panel");
+const summaryPanelEl = document.querySelector(".summary-panel");
+const sidePanelSections = Array.from(document.querySelectorAll(".side-panel-section"));
 
 const CHUNK_MIN_SECONDS = 15;
 const CHUNK_MAX_SECONDS = 60;
@@ -68,8 +117,8 @@ const DIARIZATION_SPEAKER_MIN = 1;
 const DIARIZATION_SPEAKER_MAX = 12;
 
 const VAD_SAMPLE_MS = 80;
-const VAD_MIN_SPEECH_RATIO = 0.06;
-const VAD_MIN_ACTIVE_MS = 160;
+const VAD_MIN_SPEECH_RATIO = 0.025;
+const VAD_MIN_ACTIVE_MS = 120;
 const VAD_SEGMENT_MIN_MS = 12_000;
 const VAD_SEGMENT_MAX_SILENCE_MS = 1_100;
 const VAD_SEGMENT_MIN_SILENCE_MS = 450;
@@ -78,12 +127,28 @@ const AUDIO_LEVEL_GAIN = 22;
 const AUDIO_LEVEL_EXPONENT = 0.65;
 const AUDIO_LEVEL_COLUMNS = 21;
 const AUDIO_LEVEL_SEGMENTS = 10;
+const AUTO_GAIN_ANALYZE_MS = 1200;
+const AUTO_GAIN_MIN_RMS = 0.018;
+const AUTO_GAIN_TARGET_RMS = 0.04;
+const AUTO_GAIN_MAX = 2.8;
+const AUTO_GAIN_SMOOTHING = 0.22;
 const SCREENSHOT_DIFF_WIDTH = 64;
 const SCREENSHOT_DIFF_HEIGHT = 36;
 const SCREENSHOT_DIFF_PIXEL_THRESHOLD = 12;
 const SCREENSHOT_DIFF_MEAN_THRESHOLD = 4;
 const SCREENSHOT_DIFF_CHANGED_RATIO_THRESHOLD = 0.015;
 const DEFAULT_SOC_PROMPT_TEMPLATE = `SoC, ASIC, chiplet, CPU, GPU, NPU, DSP, ISP, VPU, DPU, MCU, PMU, NoC, interconnect, AXI, AXI4, AXI-Lite, AHB, APB, ACE, CHI, UCIe, PCIe, CXL, DDR, DDR4, DDR5, LPDDR4, LPDDR5, HBM, SRAM, ROM, eMMC, UFS, PHY, SerDes, PLL, DLL, RC oscillator, clock, clock tree, clock gating, reset, async reset, sync reset, power domain, voltage island, retention, isolation, level shifter, DVFS, AVS, UPF, CPF, RTL, SystemVerilog, Verilog, VHDL, UVM, testbench, assertion, SVA, lint, SpyGlass, CDC, RDC, STA, MCMM, OCV, AOCV, POCV, derate, setup, hold, recovery, removal, skew, jitter, uncertainty, timing closure, timing path, false path, multicycle path, path group, endpoint, startpoint, slack, WNS, TNS, violating path, critical path, synthesis, logic synthesis, Design Compiler, Genus, netlist, mapped netlist, unmapped netlist, compile, incremental compile, retiming, boundary optimization, datapath optimization, resource sharing, register balancing, ECO, formal, equivalence check, LEC, Conformal, Formality, gate-level simulation, GLS, SDF, back annotation, place and route, place-and-route, PnR, floorplan, floorplanning, macro placement, standard cell, utilization, density, congestion, global placement, detailed placement, legalization, CTS, clock tree synthesis, useful skew, hold fixing, setup fixing, routing, global route, detailed route, track assignment, antenna, filler cell, decap, tap cell, endcap, spare cell, spare gate, metal fill, density fill, ECO route, route guide, signoff, sign-off, DRC, LVS, ERC, extraction, parasitic extraction, RC extraction, SPEF, DEF, LEF, Liberty, .lib, TLU+, QRC, StarRC, Quantus, IR drop, dynamic IR drop, static IR drop, EM, electromigration, voltage drop, power integrity, signal integrity, SI, crosstalk, noise, glitch, overshoot, undershoot, hotspot, thermal, leakage, dynamic power, switching power, internal power, leakage power, power analysis, PrimeTime PX, PrimePower, Voltus, RedHawk, vectorless, VCD, FSDB, SAIF, toggle rate, activity factor, inrush current, rush current, decoupling capacitor, decap cell, package model, bump, substrate, interposer, TSV, process node, 28nm, 16nm, 12nm, 7nm, 5nm, 4nm, 3nm, FinFET, GAA, foundry, TSMC, Samsung, Intel, PDK, DFM, manufacturability, yield, wafer, lot, mask, reticle, tape-out, respin, metal fix, MPW, shuttle, bring-up, validation, characterization, errata, workaround, DFT, scan, scan chain, scan compression, EDT, ATPG, stuck-at, transition fault, path delay fault, bridging fault, JTAG, boundary scan, MBIST, LBIST, BISR, repair, fuse, eFuse, OTP, secure boot, TrustZone, TEE, firmware, bootloader, NAND, NAND flash, Toggle NAND, ONFI, raw NAND, managed NAND, SLC, MLC, TLC, QLC, PLC, 3D NAND, V-NAND, charge trap, floating gate, page, block, plane, die, LUN, bad block, bad block management, BBT, ECC, BCH, LDPC, RAID, read disturb, program disturb, erase disturb, wear leveling, garbage collection, overprovisioning, endurance, retention, BER, bit error rate, read retry, soft decoding, threshold voltage, ISPP, incremental step pulse programming, erase verify, program verify, copyback, cache read, cache program, multi-plane, interleaving, channel, CE, RE, WE, ALE, CLE, R/B, spare area, OOB, metadata, FTL, flash translation layer, NVMe, SATA, controller, queue depth, throughput, latency, bandwidth, QoS, arbiter, scheduler, mux, demux, crossbar, SRAM compiler, memory compiler, register file, dual port RAM, single port RAM, SRAM macro, macro, hard macro, soft macro, black box, hierarchy, partition, block-level, top-level, full-chip, chip top, top module, hierarchy flattening, dont_touch, set_false_path, set_multicycle_path, create_clock, generated clock, propagated clock, ideal clock, set_input_delay, set_output_delay, set_clock_uncertainty, set_clock_groups, operating condition, corner, slow corner, fast corner, typical corner, SS, FF, TT, RCmax, RCmin, setup view, hold view.`;
+
+const runtimeUi = {
+  injectedStyle: null,
+  overlayEl: null,
+  loginOverlayEl: null,
+  historyDrawerEl: null,
+  screenshotModalEl: null,
+  screenshotModalImageEl: null,
+  summaryCopyBtnEl: null,
+  appLocked: true,
+};
 
 const state = {
   ws: null,
@@ -96,12 +161,18 @@ const state = {
   chunkTimer: null,
   finalizingStop: false,
   recording: false,
+  recordingAudioSource: "mic",
   runtimeSessionId: "",
+  runtimeSessionToken: "",
+  savedHistoryId: null,
+  viewingHistoryId: null,
+  saveInFlight: false,
   seq: 0,
   offsetMs: 0,
   chunkMs: CHUNK_DEFAULT_SECONDS * 1000,
   pendingSendChain: Promise.resolve(),
   log: [],
+  segments: [],
   summary: "",
   proofread: "",
   asrAvailable: true,
@@ -137,10 +208,17 @@ const state = {
   captureContext: null,
   captureSources: [],
   captureDestination: null,
+  captureGainNode: null,
+  captureMonitorAnalyser: null,
+  captureMonitorBuffer: null,
+  captureAutoGainTimer: null,
+  captureAutoGainLevel: 1,
+  captureAutoGainSmoothedRms: 0,
   displayCaptureVideo: null,
   screenshotCanvas: null,
   captureScreenshotsEnabled: true,
   screenshotDiffSkipEnabled: true,
+  autoGainEnabled: true,
   screenshotDiffCanvas: null,
   previousScreenshotSignature: null,
   panelCollapsed: {
@@ -155,6 +233,26 @@ const state = {
       content: DEFAULT_SOC_PROMPT_TEMPLATE,
     },
   ],
+  auth: {
+    authenticated: false,
+    isGuest: false,
+    user: null,
+    bootstrapAdminRequired: false,
+    pendingApprovalCount: 0,
+    keycloakEnabled: false,
+    keycloakButtonLabel: "Keycloakでログイン",
+  },
+  history: {
+    items: [],
+    loading: false,
+    selectedId: null,
+    total: 0,
+    limit: 20,
+    offset: 0,
+    query: "",
+  },
+  selfSignupEnabled: false,
+  adminPendingUsers: [],
 };
 
 function selectedLanguage() {
@@ -343,6 +441,424 @@ function applyScreenshotDiffSkipEnabled(value, options = {}) {
       // ignore
     }
   }
+}
+
+function applyAutoGainEnabled(value, options = {}) {
+  const persist = options.persist !== false;
+  const enabled = !!value;
+  state.autoGainEnabled = enabled;
+  if (autoGainEnabledEl) {
+    autoGainEnabledEl.checked = enabled;
+  }
+  if (autoGainStateTextEl) {
+    autoGainStateTextEl.textContent = enabled ? "ON" : "OFF";
+  }
+  if (persist) {
+    try {
+      localStorage.setItem("whistx_auto_gain_enabled", enabled ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }
+  updateCaptureAutoGainState();
+}
+
+function ensureRuntimeUi() {
+  if (runtimeUi.injectedStyle) return;
+
+  runtimeUi.injectedStyle = document.createElement("style");
+  runtimeUi.injectedStyle.id = "whistx-runtime-ui";
+  runtimeUi.injectedStyle.textContent = `
+    body.whistx-auth-locked {
+      overflow: hidden;
+    }
+
+    body.whistx-auth-locked .app {
+      filter: blur(10px) saturate(0.85);
+      pointer-events: none;
+      user-select: none;
+    }
+
+    .whistx-auth-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2000;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background:
+        radial-gradient(circle at top left, rgba(47, 125, 115, 0.22), transparent 36%),
+        radial-gradient(circle at bottom right, rgba(138, 90, 31, 0.16), transparent 34%),
+        rgba(10, 10, 10, 0.68);
+      backdrop-filter: blur(14px);
+    }
+
+    .whistx-auth-card {
+      width: min(440px, calc(100vw - 32px));
+      padding: 28px;
+      border-radius: 24px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-primary);
+      box-shadow: var(--shadow-2xl);
+      display: grid;
+      gap: 16px;
+    }
+
+    .whistx-auth-card h2 {
+      font-size: 28px;
+      letter-spacing: -0.03em;
+    }
+
+    .whistx-auth-card p {
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .whistx-auth-field {
+      display: grid;
+      gap: 8px;
+    }
+
+    .whistx-auth-field input {
+      width: 100%;
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid var(--border-primary);
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      font-size: 15px;
+    }
+
+    .whistx-auth-actions {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .whistx-auth-actions .btn-action,
+    .whistx-auth-actions .btn-secondary {
+      flex: 1;
+      justify-content: center;
+    }
+
+    .whistx-history-drawer,
+    .history-rail {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-height: 100%;
+      padding: 20px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .whistx-history-drawer::before,
+    .history-rail::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(180deg, rgba(47, 125, 115, 0.06), transparent 20%);
+      pointer-events: none;
+    }
+
+    .whistx-history-header,
+    .history-rail-header {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .whistx-history-title,
+    .history-rail-title {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .whistx-history-subtitle,
+    .history-rail-description {
+      color: var(--text-secondary);
+      font-size: 13px;
+      margin-top: 4px;
+    }
+
+    .whistx-history-toolbar {
+      display: grid;
+      gap: 10px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .whistx-history-search,
+    #historySearchInput {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border-primary);
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+    }
+
+    .whistx-history-list,
+    #historyList {
+      display: grid;
+      gap: 12px;
+      overflow: auto;
+      padding-right: 2px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .whistx-history-item,
+    .history-item {
+      display: grid;
+      gap: 8px;
+      padding: 14px;
+      border-radius: 18px;
+      border: 1px solid var(--border-primary);
+      background: var(--bg-elevated);
+      text-align: left;
+      cursor: pointer;
+      transition: transform 150ms var(--ease-out-quart), border-color 150ms var(--ease-out-quart), box-shadow 150ms var(--ease-out-quart);
+    }
+
+    .whistx-history-item:hover,
+    .history-item:hover {
+      transform: translateY(-1px);
+      border-color: var(--accent-300);
+      box-shadow: var(--shadow-md);
+    }
+
+    .whistx-history-item.is-active,
+    .history-item.is-active {
+      border-color: var(--accent-500);
+      box-shadow: var(--shadow-lg);
+    }
+
+    .whistx-history-item-title,
+    .history-item-title {
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.4;
+    }
+
+    .whistx-history-item-meta,
+    .history-item-meta {
+      color: var(--text-tertiary);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .whistx-history-item-preview,
+    .history-item-preview {
+      color: var(--text-secondary);
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .whistx-history-empty,
+    #historyEmpty {
+      color: var(--text-secondary);
+      font-size: 13px;
+      padding: 8px 2px 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    .whistx-summary-copy-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .whistx-image-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 2100;
+      display: none;
+      place-items: center;
+      padding: 24px;
+      background: rgba(10, 10, 10, 0.76);
+      backdrop-filter: blur(10px);
+    }
+
+    .whistx-image-modal.is-open {
+      display: grid;
+    }
+
+    .whistx-image-modal-card {
+      position: relative;
+      max-width: min(96vw, 1400px);
+      max-height: 92vh;
+      padding: 14px;
+      border-radius: 20px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-primary);
+      box-shadow: var(--shadow-2xl);
+    }
+
+    .whistx-image-modal-card img {
+      display: block;
+      max-width: 100%;
+      max-height: calc(92vh - 28px);
+      border-radius: 14px;
+      object-fit: contain;
+    }
+
+    .whistx-image-modal-close {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 34px;
+      height: 34px;
+      border-radius: 999px;
+      border: 1px solid var(--border-primary);
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+    }
+
+    .whistx-image-modal-close:hover {
+      background: var(--bg-secondary);
+    }
+
+    .whistx-auth-hidden,
+    .whistx-history-hidden {
+      display: none !important;
+    }
+
+    .whistx-history-drawer .side-panel-input,
+    .history-rail .side-panel-input {
+      width: 100%;
+    }
+
+    .whistx-history-drawer .whistx-history-footer,
+    .history-rail .whistx-history-footer {
+      margin-top: auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .whistx-history-drawer .whistx-history-user,
+    .history-rail .whistx-history-user {
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+
+    @media (max-width: 1100px) {
+      .whistx-history-drawer {
+        min-height: auto;
+      }
+
+      .whistx-auth-card {
+        width: min(480px, calc(100vw - 24px));
+      }
+    }
+  `;
+  document.head.appendChild(runtimeUi.injectedStyle);
+}
+
+function buildRuntimeUi() {
+  runtimeUi.loginOverlayEl = authGuestViewEl || null;
+  runtimeUi.historyDrawerEl = historyRailEl || null;
+  runtimeUi.screenshotModalEl = screenshotModalEl || null;
+  runtimeUi.screenshotModalImageEl = screenshotModalImageEl || null;
+  runtimeUi.summaryCopyBtnEl = copySummaryBtnEl || null;
+
+  if (runtimeUi.historyDrawerEl && !runtimeUi.historyDrawerEl.querySelector("#historyUserLabel")) {
+    const footer = document.createElement("div");
+    footer.className = "whistx-history-footer";
+    footer.innerHTML = `<span class="whistx-history-user" id="historyUserLabel"></span>`;
+    runtimeUi.historyDrawerEl.appendChild(footer);
+  }
+
+  // Hide the old auth/history side-panel sections entirely.
+  sidePanelSections.forEach((section) => {
+    if (section.querySelector("#loginEmail") || section.querySelector("#registerEmail")) {
+      section.classList.add("whistx-auth-hidden");
+      section.hidden = true;
+      section.setAttribute("aria-hidden", "true");
+    }
+    if (section.querySelector("#historySearchInput") || section.querySelector("#historyRefreshBtn")) {
+      section.classList.add("whistx-history-hidden");
+      section.hidden = true;
+      section.setAttribute("aria-hidden", "true");
+    }
+  });
+
+  if (loginBtn) loginBtn.hidden = true;
+  if (historyBtn) historyBtn.hidden = true;
+  if (authUserLabelEl) authUserLabelEl.textContent = "";
+
+  if (runtimeUi.summaryCopyBtnEl && !runtimeUi.summaryCopyBtnEl.dataset.bound) {
+    runtimeUi.summaryCopyBtnEl.dataset.bound = "1";
+    runtimeUi.summaryCopyBtnEl.addEventListener("click", () => {
+      copySummaryText();
+    });
+  }
+
+  if (runtimeUi.screenshotModalEl && !runtimeUi.screenshotModalEl.dataset.bound) {
+    runtimeUi.screenshotModalEl.dataset.bound = "1";
+    runtimeUi.screenshotModalEl.addEventListener("click", (event) => {
+      if (event.target === runtimeUi.screenshotModalEl || event.target?.matches?.("[data-modal-close]")) {
+        hideScreenshotModal();
+      }
+    });
+    screenshotModalCloseEl?.addEventListener("click", hideScreenshotModal);
+  }
+}
+
+function setAppLocked(locked) {
+  runtimeUi.appLocked = !!locked;
+  document.body.classList.toggle("whistx-auth-locked", runtimeUi.appLocked);
+  if (runtimeUi.loginOverlayEl) {
+    runtimeUi.loginOverlayEl.hidden = !runtimeUi.appLocked;
+  }
+  if (startBtn) {
+    startBtn.disabled = runtimeUi.appLocked;
+  }
+  if (summaryBtn) {
+    summaryBtn.disabled = runtimeUi.appLocked;
+  }
+  if (proofreadBtn) {
+    proofreadBtn.disabled = runtimeUi.appLocked;
+  }
+  if (clearBtn) {
+    clearBtn.disabled = runtimeUi.appLocked;
+  }
+  if (saveBtn && runtimeUi.appLocked) {
+    saveBtn.disabled = true;
+  }
+}
+
+function showScreenshotModal(src, alt = "スクリーンショット") {
+  if (!runtimeUi.screenshotModalEl || !runtimeUi.screenshotModalImageEl) return;
+  runtimeUi.screenshotModalImageEl.src = src;
+  runtimeUi.screenshotModalImageEl.alt = alt;
+  runtimeUi.screenshotModalEl.hidden = false;
+  runtimeUi.screenshotModalEl.classList.add("is-open");
+  document.body.style.overflow = "hidden";
+}
+
+function hideScreenshotModal() {
+  if (!runtimeUi.screenshotModalEl || !runtimeUi.screenshotModalImageEl) return;
+  runtimeUi.screenshotModalEl.classList.remove("is-open");
+  runtimeUi.screenshotModalEl.hidden = true;
+  runtimeUi.screenshotModalImageEl.src = "";
+  document.body.style.overflow = "";
 }
 
 function setupWorkspaceResizers() {
@@ -683,8 +1199,282 @@ function showToast(message, type = "default", duration = 2500) {
   }, duration);
 }
 
+function renderEmptyTranscriptState() {
+  logEl.innerHTML = `
+    <div class="empty-state">
+      <div class="empty-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" x2="12" y1="19" y2="22"/>
+        </svg>
+      </div>
+      <p class="empty-title">まだ文字起こしがありません</p>
+      <p class="empty-description">録音を開始すると、リアルタイムで文字起こしが表示されます</p>
+    </div>
+  `;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function serializeUserLabel(user) {
+  if (!user) return "ゲスト";
+  return String(user.displayName || user.email || "ログイン済み");
+}
+
+function canUseWorkspace() {
+  return !!state.auth.authenticated || !!state.auth.isGuest;
+}
+
+function persistGuestMode(enabled) {
+  try {
+    if (enabled) {
+      localStorage.setItem("whistx_guest_mode", "1");
+    } else {
+      localStorage.removeItem("whistx_guest_mode");
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function setSaveBadge(label, saved = false) {
+  if (!saveStateBadgeEl) return;
+  saveStateBadgeEl.textContent = label;
+  saveStateBadgeEl.classList.toggle("is-saved", !!saved);
+}
+
+function updateSaveControls() {
+  const hasSegments = state.segments.length > 0;
+  const authenticated = !!state.auth.authenticated;
+  const isGuest = !!state.auth.isGuest;
+  const saved = !!state.savedHistoryId;
+  const viewingHistory = !!state.viewingHistoryId;
+  const recordingLocked = !!state.recording || !!state.finalizingStop;
+
+  if (saveBtn) {
+    saveBtn.disabled =
+      !authenticated || isGuest || recordingLocked || !hasSegments || state.saveInFlight || saved || viewingHistory;
+    saveBtn.textContent = state.saveInFlight ? "保存中..." : "保存";
+    saveBtn.title = recordingLocked
+      ? "録音中は保存できません"
+      : isGuest
+        ? "ゲストでは保存できません"
+        : authenticated
+          ? ""
+          : "ログインが必要です";
+  }
+  if (saveTitleInputEl) {
+    saveTitleInputEl.disabled = viewingHistory || state.saveInFlight || recordingLocked;
+  }
+  setSaveBadge(
+    saved ? "保存済み" : recordingLocked ? "録音中は保存不可" : isGuest ? "ゲストでは保存不可" : authenticated ? "未保存" : "ログインが必要",
+    saved
+  );
+}
+
+function formatHistoryMeta(item) {
+  const parts = [];
+  if (item.savedAt) parts.push(new Date(item.savedAt).toLocaleString("ja-JP"));
+  if (item.language) parts.push(formatLanguageLabel(item.language));
+  return parts.join(" / ");
+}
+
+function formatLanguageLabel(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "ja") return "日本語";
+  if (normalized === "en") return "英語";
+  if (!normalized || normalized === "auto") return "自動";
+  return String(value);
+}
+
+function updateHistoryEmptyState(message = "") {
+  if (!historyEmptyEl) return;
+  if (message) {
+    historyEmptyEl.hidden = false;
+    historyEmptyEl.textContent = message;
+    return;
+  }
+  if (state.auth.isGuest) {
+    historyEmptyEl.hidden = false;
+    historyEmptyEl.textContent = "ゲストでは履歴は利用できません";
+    return;
+  }
+  if (!state.auth.authenticated) {
+    historyEmptyEl.hidden = false;
+    historyEmptyEl.textContent = state.auth.bootstrapAdminRequired
+      ? "初回管理者アカウントを作成すると履歴がここに表示されます"
+      : "ログインすると保存済み履歴がここに表示されます";
+    return;
+  }
+  historyEmptyEl.hidden = state.history.items.length > 0;
+  historyEmptyEl.textContent = "保存済み履歴はまだありません";
+}
+
+function renderHistoryList() {
+  if (!historyListEl) return;
+  historyListEl.innerHTML = "";
+  if (historyCountBadgeEl) {
+    historyCountBadgeEl.textContent = `${state.history.total || state.history.items.length || 0}件`;
+  }
+  state.history.items.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "history-item";
+    if (state.history.selectedId === item.id) {
+      button.classList.add("is-active");
+    }
+    const savedAt = item.savedAt
+      ? new Date(item.savedAt).toLocaleString("ja-JP", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      : "日時不明";
+    const language = formatLanguageLabel(item.language || "auto");
+    button.innerHTML = `
+      <div class="history-item-header">
+        <div class="history-item-title">${escapeHtml(item.title || "Untitled")}</div>
+        <div class="history-item-date">${escapeHtml(savedAt)}</div>
+      </div>
+      <div class="history-item-meta-row">
+        <span class="history-item-badge">${escapeHtml(language)}</span>
+      </div>
+      <div class="history-item-meta">${escapeHtml(formatHistoryMeta(item))}</div>
+      <div class="history-item-preview">${escapeHtml(item.preview || "")}</div>
+    `;
+    button.addEventListener("click", () => {
+      openHistoryDetail(item.id);
+    });
+    historyListEl.appendChild(button);
+  });
+  updateHistoryEmptyState();
+}
+
+function closeAdminQueueModal() {
+  if (!adminQueueModalEl) return;
+  adminQueueModalEl.hidden = true;
+  document.body.style.overflow = "";
+}
+
+function renderAdminPendingUsers() {
+  if (!adminPendingListEl) return;
+  adminPendingListEl.innerHTML = "";
+  if (!state.adminPendingUsers.length) {
+    adminPendingListEl.innerHTML = `
+      <div class="admin-pending-empty">
+        <p>承認待ちユーザーはありません。</p>
+      </div>
+    `;
+    return;
+  }
+  state.adminPendingUsers.forEach((item) => {
+    const article = document.createElement("article");
+    article.className = "admin-pending-item";
+    const createdAt = item.createdAt
+      ? new Date(item.createdAt).toLocaleString("ja-JP")
+      : "";
+    article.innerHTML = `
+      <div class="admin-pending-copy">
+        <div class="admin-pending-name">${escapeHtml(item.displayName || item.email || "pending")}</div>
+        <div class="admin-pending-email">${escapeHtml(item.email || "")}</div>
+        <div class="admin-pending-date">${escapeHtml(createdAt)}</div>
+      </div>
+      <button type="button" class="btn-action admin-pending-approve">承認</button>
+    `;
+    article.querySelector(".admin-pending-approve")?.addEventListener("click", () => {
+      approvePendingUser(item.id);
+    });
+    adminPendingListEl.appendChild(article);
+  });
+}
+
+function renderAuthState() {
+  const authenticated = !!state.auth.authenticated;
+  const isGuest = !!state.auth.isGuest;
+  const workspaceEnabled = authenticated || isGuest;
+  const bootstrapRequired = !!state.auth.bootstrapAdminRequired;
+  const isAdmin = !!state.auth.user?.isAdmin;
+  if (authUserLabelEl) {
+    authUserLabelEl.textContent = isGuest ? "" : serializeUserLabel(state.auth.user);
+  }
+  if (authPanelUserTextEl) {
+    authPanelUserTextEl.textContent = isGuest ? "" : serializeUserLabel(state.auth.user);
+  }
+  const historyUserLabelEl = $("#historyUserLabel");
+  if (historyUserLabelEl) {
+    historyUserLabelEl.textContent = authenticated ? serializeUserLabel(state.auth.user) : "";
+  }
+  if (loginBtn) {
+    loginBtn.hidden = workspaceEnabled;
+  }
+  if (logoutBtn) {
+    logoutBtn.hidden = !workspaceEnabled;
+  }
+  if (historyBtn) {
+    historyBtn.disabled = !authenticated;
+  }
+  if (authGuestViewEl) {
+    authGuestViewEl.hidden = workspaceEnabled;
+  }
+  if (authUserViewEl) {
+    authUserViewEl.hidden = !workspaceEnabled;
+  }
+  if (authBootstrapSectionEl) {
+    authBootstrapSectionEl.hidden = !bootstrapRequired;
+  }
+  if (authLoginSectionEl) {
+    authLoginSectionEl.hidden = bootstrapRequired;
+  }
+  if (authRegisterSectionEl) {
+    authRegisterSectionEl.hidden = bootstrapRequired || !state.selfSignupEnabled;
+  }
+  if (keycloakLoginBtnEl) {
+    keycloakLoginBtnEl.hidden = bootstrapRequired || !state.auth.keycloakEnabled;
+    keycloakLoginBtnEl.textContent = state.auth.keycloakButtonLabel || "Keycloakでログイン";
+  }
+  if (adminQueueBtn) {
+    adminQueueBtn.hidden = !authenticated || !isAdmin;
+    adminQueueBtn.textContent = state.auth.pendingApprovalCount > 0
+      ? `管理者 ${state.auth.pendingApprovalCount}`
+      : "管理者";
+  }
+  if (registerBtn) {
+    registerBtn.disabled = !state.selfSignupEnabled;
+  }
+  if (registerHintEl) {
+    if (bootstrapRequired) {
+      registerHintEl.textContent = "";
+    } else if (state.selfSignupEnabled) {
+      registerHintEl.textContent = "申請後は管理者の承認が完了するまでログインできません";
+    } else {
+      registerHintEl.textContent = "新規登録は現在無効です";
+    }
+  }
+  updateHistoryEmptyState();
+  updateSaveControls();
+}
+
+function resetCurrentSaveState() {
+  state.runtimeSessionToken = "";
+  state.savedHistoryId = null;
+  state.viewingHistoryId = null;
+  if (saveTitleInputEl) {
+    saveTitleInputEl.value = "";
+  }
+  updateDownloadLinks();
+  updateSaveControls();
+}
+
 function updateSegmentCount() {
-  const count = state.log.length;
+  const count = state.segments.length;
   segmentCountEl.textContent = `${count} segments`;
 
   // Trigger animation
@@ -694,7 +1484,10 @@ function updateSegmentCount() {
 }
 
 function extractTranscriptText() {
-  const fromState = state.log.join("\n").trim();
+  const fromState = state.segments
+    .map((segment) => renderTranscriptText(segment.text, segment.speaker))
+    .join("\n")
+    .trim();
   if (fromState) return fromState;
 
   const rows = Array.from(logEl.querySelectorAll(".log-row .text"));
@@ -703,6 +1496,13 @@ function extractTranscriptText() {
 }
 
 function updateDownloadLinks() {
+  if (state.viewingHistoryId) {
+    dlTxt.href = `/api/history/${state.viewingHistoryId}/download.txt`;
+    dlJsonl.href = `/api/history/${state.viewingHistoryId}/download.jsonl`;
+    dlZip.href = `/api/history/${state.viewingHistoryId}/download.zip`;
+    return;
+  }
+
   if (!state.runtimeSessionId) {
     dlTxt.href = "#";
     dlJsonl.href = "#";
@@ -710,9 +1510,10 @@ function updateDownloadLinks() {
     return;
   }
 
-  dlTxt.href = `/api/transcript/${state.runtimeSessionId}.txt`;
-  dlJsonl.href = `/api/transcript/${state.runtimeSessionId}.jsonl`;
-  dlZip.href = `/api/transcript/${state.runtimeSessionId}.zip`;
+  const suffix = state.runtimeSessionToken ? `?token=${encodeURIComponent(state.runtimeSessionToken)}` : "";
+  dlTxt.href = `/api/transcript/${state.runtimeSessionId}.txt${suffix}`;
+  dlJsonl.href = `/api/transcript/${state.runtimeSessionId}.jsonl${suffix}`;
+  dlZip.href = `/api/transcript/${state.runtimeSessionId}.zip${suffix}`;
 }
 
 function setSummary(text, meta) {
@@ -730,6 +1531,26 @@ function setSummary(text, meta) {
   }
 
   summaryMetaEl.textContent = meta || "未生成";
+}
+
+async function copySummaryText() {
+  if (!canUseWorkspace()) {
+    showToast("ログインが必要です", "error");
+    setAppLocked(true);
+    loginEmailEl?.focus();
+    return;
+  }
+  const text = String(state.summary || summaryTextEl?.textContent || "").trim();
+  if (!text) {
+    showToast("要約がありません", "error");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("要約をコピーしました", "success");
+  } catch {
+    showToast("要約のコピーに失敗しました", "error");
+  }
 }
 
 function setProofread(text, meta) {
@@ -799,12 +1620,20 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "") {
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     link.title = "スクリーンショットを開く";
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      showScreenshotModal(screenshotPath, `${formatMs(tsStart)} の画面キャプチャ`);
+    });
 
     const image = document.createElement("img");
     image.className = "log-screenshot";
     image.src = screenshotPath;
     image.alt = `${formatMs(tsStart)} の画面キャプチャ`;
     image.loading = "lazy";
+    image.addEventListener("click", (event) => {
+      event.preventDefault();
+      showScreenshotModal(screenshotPath, image.alt);
+    });
 
     link.append(image);
     body.append(link);
@@ -815,8 +1644,17 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "") {
   logEl.scrollTop = logEl.scrollHeight;
 
   state.log.push(text);
+  state.segments.push({
+    text,
+    tsStart,
+    tsEnd,
+    seq,
+    speaker,
+    screenshotPath,
+  });
   updateSegmentCount();
   markProofreadStale();
+  updateSaveControls();
 
   // Remove 'new' class after animation
   setTimeout(() => row.classList.remove("new"), 300);
@@ -840,6 +1678,11 @@ function applySpeakerPatch(segments) {
     textNode.dataset.rawText = raw;
     textNode.dataset.speaker = speaker;
     textNode.textContent = renderTranscriptText(raw, speaker);
+
+    const target = state.segments.find((item) => Number(item.seq) === seq);
+    if (target) {
+      target.speaker = speaker;
+    }
   }
 }
 
@@ -955,6 +1798,11 @@ function normalizeAudioSource(value) {
   return "mic";
 }
 
+function resetRuntimeSessionState() {
+  state.runtimeSessionId = "";
+  state.runtimeSessionToken = "";
+}
+
 function audioSourceHintText(source) {
   if (source === "display") {
     return "画面共有音声はブラウザ制約で取得できない場合があります。Chrome/Edge のタブ共有が最も安定します。";
@@ -983,9 +1831,9 @@ function applyAudioSource(value) {
 }
 
 function vadThresholdForSource(source) {
-  if (source === "display") return 0.006;
-  if (source === "both") return 0.008;
-  return 0.01;
+  if (source === "display") return 0.0045;
+  if (source === "both") return 0.0065;
+  return 0.0075;
 }
 
 function hasAudioTrack(stream) {
@@ -1177,12 +2025,21 @@ async function buildMixedAudioStream(streams) {
   await ensureAudioContextResumed(context);
 
   const destination = context.createMediaStreamDestination();
+  const mixBus = context.createGain();
+  const outputGain = context.createGain();
+  const monitorAnalyser = context.createAnalyser();
+  monitorAnalyser.fftSize = 2048;
+  monitorAnalyser.smoothingTimeConstant = 0.88;
   const sources = [];
+
+  mixBus.connect(monitorAnalyser);
+  mixBus.connect(outputGain);
+  outputGain.connect(destination);
 
   for (const stream of streams) {
     if (!hasAudioTrack(stream)) continue;
     const source = context.createMediaStreamSource(stream);
-    source.connect(destination);
+    source.connect(mixBus);
     sources.push(source);
   }
 
@@ -1196,7 +2053,77 @@ async function buildMixedAudioStream(streams) {
   state.captureContext = context;
   state.captureSources = sources;
   state.captureDestination = destination;
+  state.captureGainNode = outputGain;
+  state.captureMonitorAnalyser = monitorAnalyser;
+  state.captureMonitorBuffer = new Float32Array(monitorAnalyser.fftSize);
+  state.captureAutoGainLevel = 1;
+  state.captureAutoGainSmoothedRms = 0;
+  updateCaptureAutoGainState();
   return destination.stream;
+}
+
+function sampleCaptureAutoGainRms() {
+  if (!state.captureMonitorAnalyser || !state.captureMonitorBuffer) {
+    return 0;
+  }
+
+  state.captureMonitorAnalyser.getFloatTimeDomainData(state.captureMonitorBuffer);
+  let sum = 0;
+  for (let i = 0; i < state.captureMonitorBuffer.length; i += 1) {
+    const value = state.captureMonitorBuffer[i];
+    sum += value * value;
+  }
+  return Math.sqrt(sum / state.captureMonitorBuffer.length);
+}
+
+function updateCaptureAutoGainState() {
+  if (!state.captureGainNode || !state.captureContext) {
+    return;
+  }
+
+  if (state.captureAutoGainTimer) {
+    clearInterval(state.captureAutoGainTimer);
+    state.captureAutoGainTimer = null;
+  }
+
+  const now = state.captureContext.currentTime;
+  state.captureGainNode.gain.cancelScheduledValues(now);
+
+  if (!state.autoGainEnabled) {
+    state.captureAutoGainLevel = 1;
+    state.captureAutoGainSmoothedRms = 0;
+    state.captureGainNode.gain.setTargetAtTime(1, now, 0.35);
+    return;
+  }
+
+  const tick = () => {
+    if (!state.captureGainNode || !state.captureContext) {
+      return;
+    }
+
+    const rms = sampleCaptureAutoGainRms();
+    const smoothed = state.captureAutoGainSmoothedRms > 0
+      ? state.captureAutoGainSmoothedRms * (1 - AUTO_GAIN_SMOOTHING) + rms * AUTO_GAIN_SMOOTHING
+      : rms;
+    state.captureAutoGainSmoothedRms = smoothed;
+
+    let targetGain = 1;
+    if (smoothed > 0 && smoothed < AUTO_GAIN_MIN_RMS) {
+      targetGain = Math.min(AUTO_GAIN_MAX, AUTO_GAIN_TARGET_RMS / smoothed);
+    } else if (smoothed < AUTO_GAIN_TARGET_RMS) {
+      const ratio = (AUTO_GAIN_TARGET_RMS - smoothed) / Math.max(0.0001, AUTO_GAIN_TARGET_RMS - AUTO_GAIN_MIN_RMS);
+      targetGain = 1 + ratio * 0.75;
+    }
+
+    const easedGain = state.captureAutoGainLevel * 0.7 + targetGain * 0.3;
+    state.captureAutoGainLevel = Math.max(1, Math.min(AUTO_GAIN_MAX, easedGain));
+    const at = state.captureContext.currentTime;
+    state.captureGainNode.gain.cancelScheduledValues(at);
+    state.captureGainNode.gain.setTargetAtTime(state.captureAutoGainLevel, at, 0.45);
+  };
+
+  tick();
+  state.captureAutoGainTimer = setInterval(tick, AUTO_GAIN_ANALYZE_MS);
 }
 
 function bindDisplayEndEvents(displayStream) {
@@ -1243,7 +2170,7 @@ async function prepareInputStream(sourceMode) {
   if (mode === "mic") {
     const micStream = await requestMicStream(mode);
     state.micStream = micStream;
-    return micStream;
+    return buildMixedAudioStream([micStream]);
   }
 
   if (mode === "display") {
@@ -1263,9 +2190,15 @@ async function prepareInputStream(sourceMode) {
   const displayStream = await requestDisplayStream();
   const diagnostics = logDisplayCaptureDiagnostics(displayStream, mode);
   if (!hasAudioTrack(displayStream)) {
-    const error = new Error("display_audio_not_found");
-    error.diagnostics = diagnostics;
-    throw error;
+    showToast("画面共有音声が取れないため、マイクのみで開始します", "default", 5000);
+    state.vadRmsThreshold = vadThresholdForSource("mic");
+    state.recordingAudioSource = "mic";
+    state.displayStream = displayStream;
+    setupDisplayCaptureVideo(displayStream);
+    bindDisplayEndEvents(displayStream);
+    const micStream = await requestMicStream("mic");
+    state.micStream = micStream;
+    return buildMixedAudioStream([micStream]);
   }
   bindDisplayEndEvents(displayStream);
 
@@ -1306,6 +2239,7 @@ async function ensureSocket() {
       if (data.message) setStatus(String(data.message));
       if (data.sessionId) {
         state.runtimeSessionId = String(data.sessionId);
+        state.runtimeSessionToken = String(data.sessionToken || "");
         updateDownloadLinks();
       }
       return;
@@ -1593,6 +2527,10 @@ function stopVad() {
 }
 
 function cleanupCaptureGraph() {
+  if (state.captureAutoGainTimer) {
+    clearInterval(state.captureAutoGainTimer);
+    state.captureAutoGainTimer = null;
+  }
   state.captureSources.forEach((source) => {
     try {
       source.disconnect();
@@ -1602,6 +2540,11 @@ function cleanupCaptureGraph() {
   });
   state.captureSources = [];
   state.captureDestination = null;
+  state.captureGainNode = null;
+  state.captureMonitorAnalyser = null;
+  state.captureMonitorBuffer = null;
+  state.captureAutoGainLevel = 1;
+  state.captureAutoGainSmoothedRms = 0;
 
   if (state.captureContext) {
     state.captureContext.close().catch(() => {
@@ -1643,6 +2586,19 @@ function buildVadDecision(snapshot) {
   };
 }
 
+function shouldSkipChunkByVad(durationMs, vadDecision) {
+  if (!vadDecision?.enabled || !vadDecision.skip) {
+    return false;
+  }
+
+  const safeDurationMs = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
+  if (safeDurationMs >= 4_000) {
+    return false;
+  }
+
+  return vadDecision.speechRatio < 0.01 && vadDecision.activeMs < 80;
+}
+
 async function sendChunk(blob, mimeType, durationMsOverride, vadDecision) {
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
 
@@ -1657,7 +2613,7 @@ async function sendChunk(blob, mimeType, durationMsOverride, vadDecision) {
 
   if (!blob || blob.size === 0) return;
 
-  if (vadDecision?.enabled && vadDecision.skip) {
+  if (shouldSkipChunkByVad(durationMs, vadDecision)) {
     return;
   }
 
@@ -1799,15 +2755,31 @@ async function finalizeStop() {
 
 async function startRecording() {
   if (state.recording) return;
+  if (!canUseWorkspace()) {
+    showToast("ログインが必要です", "error");
+    setAppLocked(true);
+    loginEmailEl?.focus();
+    return;
+  }
 
   const selectedChunkSeconds = applyChunkSeconds(chunkSecondsEl.value || CHUNK_DEFAULT_SECONDS);
   state.chunkMs = selectedChunkSeconds * 1000;
   const selectedAudioSource = applyAudioSource(audioSourceEl?.value || "mic");
+  state.recordingAudioSource = selectedAudioSource;
   state.seq = 0;
   state.offsetMs = 0;
   state.runtimeSessionId = "";
+  state.runtimeSessionToken = "";
+  state.history.selectedId = null;
   state.finalizingStop = false;
   state.pendingSendChain = Promise.resolve();
+  state.log = [];
+  state.segments = [];
+  renderEmptyTranscriptState();
+  setSummary("", "未生成");
+  setProofread("", "未生成");
+  resetCurrentSaveState();
+  renderHistoryList();
   clearChunkTimer();
 
   try {
@@ -1847,9 +2819,10 @@ async function startRecording() {
     await readyPromise;
 
     setUiRecording(true);
-    if (selectedAudioSource === "display") {
+    const effectiveAudioSource = normalizeAudioSource(state.recordingAudioSource || selectedAudioSource);
+    if (effectiveAudioSource === "display") {
       setStatus("recording_display_audio");
-    } else if (selectedAudioSource === "both") {
+    } else if (effectiveAudioSource === "both") {
       setStatus("recording_mic_and_display");
     } else {
       setStatus("recording_mic");
@@ -1943,7 +2916,7 @@ function cleanupMedia() {
 }
 
 async function copyAll() {
-  const text = state.log.join("\n").trim();
+  const text = extractTranscriptText();
   if (!text) {
     showToast("コピーする内容がありません", "error");
     return;
@@ -1982,6 +2955,12 @@ async function copyProofread() {
 
 async function proofreadAll() {
   if (state.proofreadInFlight) {
+    return;
+  }
+  if (!canUseWorkspace()) {
+    showToast("ログインが必要です", "error");
+    setAppLocked(true);
+    loginEmailEl?.focus();
     return;
   }
   setStatus("proofread_requested");
@@ -2097,7 +3076,13 @@ async function proofreadAll() {
 }
 
 async function summarizeAll() {
-  const text = state.log.join("\n").trim();
+  if (!canUseWorkspace()) {
+    showToast("ログインが必要です", "error");
+    setAppLocked(true);
+    loginEmailEl?.focus();
+    return;
+  }
+  const text = extractTranscriptText();
   if (!text) {
     showToast("要約する文字起こしがありません", "error");
     setStatus("summary_no_text");
@@ -2165,26 +3150,26 @@ async function summarizeAll() {
 }
 
 function clearView() {
+  if (!canUseWorkspace()) {
+    showToast("ログインが必要です", "error");
+    setAppLocked(true);
+    loginEmailEl?.focus();
+    return;
+  }
   state.log = [];
+  state.segments = [];
+  state.history.selectedId = null;
+  state.viewingHistoryId = null;
+  state.savedHistoryId = null;
 
-  // Restore empty state
-  logEl.innerHTML = `
-    <div class="empty-state">
-      <div class="empty-icon">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-          <line x1="12" x2="12" y1="19" y2="22"/>
-        </svg>
-      </div>
-      <p class="empty-title">まだ文字起こしがありません</p>
-      <p class="empty-description">録音を開始すると、リアルタイムで文字起こしが表示されます</p>
-    </div>
-  `;
+  renderEmptyTranscriptState();
 
   updateSegmentCount();
   setSummary("", "未生成");
   setProofread("", "未生成");
+  updateDownloadLinks();
+  updateSaveControls();
+  renderHistoryList();
   showToast("クリアしました", "success");
 }
 
@@ -2199,6 +3184,18 @@ chunkSecondsEl.addEventListener("input", () => {
 if (audioSourceEl) {
   audioSourceEl.addEventListener("change", () => {
     applyAudioSource(audioSourceEl.value);
+  });
+}
+
+if (autoGainEnabledEl) {
+  autoGainEnabledEl.addEventListener("change", () => {
+    applyAutoGainEnabled(autoGainEnabledEl.checked);
+  });
+}
+
+if (guestLoginBtn) {
+  guestLoginBtn.addEventListener("click", () => {
+    loginAsGuest();
   });
 }
 
@@ -2291,6 +3288,88 @@ if (sidebarBackdropEl) {
   });
 }
 
+if (loginBtn) {
+  loginBtn.addEventListener("click", () => {
+    applySidebarOpen(true);
+    loginEmailEl?.focus();
+  });
+}
+
+if (logoutBtn) {
+  logoutBtn.addEventListener("click", () => {
+    logout();
+  });
+}
+
+if (adminQueueBtn) {
+  adminQueueBtn.addEventListener("click", () => {
+    window.location.href = "/admin";
+  });
+}
+
+if (historyBtn) {
+  historyBtn.addEventListener("click", () => {
+    applySidebarOpen(true);
+  });
+}
+
+if (loginSubmitBtn) {
+  loginSubmitBtn.addEventListener("click", () => {
+    login();
+  });
+}
+
+if (bootstrapAdminBtnEl) {
+  bootstrapAdminBtnEl.addEventListener("click", () => {
+    bootstrapAdmin();
+  });
+}
+
+[loginEmailEl, loginPasswordEl].forEach((element) => {
+  if (!element) return;
+  element.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      login();
+    }
+  });
+});
+
+[bootstrapDisplayNameEl, bootstrapEmailEl, bootstrapPasswordEl].forEach((element) => {
+  if (!element) return;
+  element.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      bootstrapAdmin();
+    }
+  });
+});
+
+if (registerBtn) {
+  registerBtn.addEventListener("click", () => {
+    registerAccount();
+  });
+}
+
+if (logoutPanelBtn) {
+  logoutPanelBtn.addEventListener("click", () => {
+    logout();
+  });
+}
+
+if (historySearchInputEl) {
+  historySearchInputEl.addEventListener("change", () => {
+    state.history.query = String(historySearchInputEl.value || "").trim();
+    loadHistoryList();
+  });
+}
+
+if (saveBtn) {
+  saveBtn.addEventListener("click", () => {
+    saveCurrentHistory();
+  });
+}
+
 if (captureScreenshotsEnabledEl) {
   captureScreenshotsEnabledEl.addEventListener("change", () => {
     applyCaptureScreenshotsEnabled(captureScreenshotsEnabledEl.checked);
@@ -2307,7 +3386,25 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.sidebarOpen) {
     applySidebarOpen(false);
   }
+  if (event.key === "Escape") {
+    hideScreenshotModal();
+    closeAdminQueueModal();
+  }
 });
+
+if (adminQueueCloseEl) {
+  adminQueueCloseEl.addEventListener("click", () => {
+    closeAdminQueueModal();
+  });
+}
+
+if (adminQueueModalEl) {
+  adminQueueModalEl.addEventListener("click", (event) => {
+    if (event.target === adminQueueModalEl || event.target?.matches?.("[data-admin-modal-close]")) {
+      closeAdminQueueModal();
+    }
+  });
+}
 
 window.addEventListener("resize", () => {
   updateWorkspaceGridTemplate();
@@ -2427,6 +3524,21 @@ function applyTheme(theme, options = {}) {
   return normalized;
 }
 
+function handleAuthErrorFromLocation() {
+  const url = new URL(window.location.href);
+  const authError = String(url.searchParams.get("authError") || "");
+  if (!authError) return;
+  if (authError === "approval_required") {
+    showToast("Keycloak ログイン後も管理者承認が必要です", "error");
+  } else if (authError === "keycloak_state") {
+    showToast("Keycloak ログインの状態確認に失敗しました", "error");
+  } else if (authError === "keycloak_failed") {
+    showToast("Keycloak ログインに失敗しました", "error");
+  }
+  url.searchParams.delete("authError");
+  window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+}
+
 function initTheme() {
   let savedTheme = "";
   try {
@@ -2468,6 +3580,7 @@ if (themeToggleBtn) {
 
 // Initialize theme on load
 initTheme();
+handleAuthErrorFromLocation();
 
 async function loadCapabilities() {
   try {
@@ -2492,6 +3605,10 @@ async function loadCapabilities() {
     state.asrAvailable = !!health.asrReady && !!health.model;
     state.proofreadAvailable = !!health.proofreadModel;
     state.diarizationAvailable = !!health.diarizationEnabled;
+    state.selfSignupEnabled = !!health.selfSignupEnabled;
+    state.auth.keycloakEnabled = !!health.keycloakEnabled;
+    state.auth.keycloakButtonLabel = String(health.keycloakButtonLabel || "Keycloakでログイン");
+    renderAuthState();
 
     if (!state.proofreadAvailable) {
       setProofread(
@@ -2553,13 +3670,409 @@ async function loadCapabilities() {
   }
 }
 
+async function loadAuthState() {
+  try {
+    const response = await fetch("/api/auth/me");
+    if (!response.ok) {
+      try {
+        state.auth.isGuest = localStorage.getItem("whistx_guest_mode") === "1";
+      } catch {
+        state.auth.isGuest = false;
+      }
+      setAppLocked(!canUseWorkspace());
+      renderAuthState();
+      return;
+    }
+    const payload = await response.json();
+    state.auth.authenticated = !!payload.authenticated;
+    state.auth.isGuest = false;
+    state.auth.user = payload.user || null;
+    state.selfSignupEnabled = !!payload.selfSignupEnabled;
+    state.auth.bootstrapAdminRequired = !!payload.bootstrapAdminRequired;
+    state.auth.pendingApprovalCount = Number(payload.pendingApprovalCount || 0);
+    state.auth.keycloakEnabled = !!payload.keycloakEnabled;
+    state.auth.keycloakButtonLabel = String(payload.keycloakButtonLabel || "Keycloakでログイン");
+    if (state.auth.authenticated) {
+      persistGuestMode(false);
+    } else {
+      try {
+        state.auth.isGuest = localStorage.getItem("whistx_guest_mode") === "1";
+      } catch {
+        state.auth.isGuest = false;
+      }
+    }
+    setAppLocked(!canUseWorkspace());
+    renderAuthState();
+    if (state.auth.authenticated) {
+      await loadHistoryList();
+      if (state.auth.user?.isAdmin) {
+        await loadPendingUsers();
+      }
+    } else if (state.auth.isGuest) {
+      state.history.items = [];
+      state.history.selectedId = null;
+      renderHistoryList();
+    } else {
+      state.history.items = [];
+      state.history.selectedId = null;
+      renderHistoryList();
+      if (state.auth.bootstrapAdminRequired) {
+        bootstrapDisplayNameEl?.focus();
+      } else {
+        loginEmailEl?.focus();
+      }
+    }
+  } catch {
+    // ignore auth bootstrap errors
+    try {
+      state.auth.isGuest = localStorage.getItem("whistx_guest_mode") === "1";
+      setAppLocked(!canUseWorkspace());
+      renderAuthState();
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function login() {
+  const email = String(loginEmailEl?.value || "").trim();
+  const password = String(loginPasswordEl?.value || "");
+  if (!email || !password) {
+    showToast("メールアドレスとパスワードを入力してください", "error");
+    return;
+  }
+
+  const response = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    showToast(payload.error === "approval_required" ? "管理者の承認後にログインできます" : "ログインに失敗しました", "error");
+    return;
+  }
+
+  const payload = await response.json();
+  state.auth.authenticated = true;
+  state.auth.isGuest = false;
+  state.auth.user = payload.user || null;
+  state.auth.bootstrapAdminRequired = false;
+  state.auth.pendingApprovalCount = Number(payload.pendingApprovalCount || 0);
+  persistGuestMode(false);
+  setAppLocked(false);
+  renderAuthState();
+  await loadHistoryList();
+  if (state.auth.user?.isAdmin) {
+    await loadPendingUsers();
+  }
+  showToast("ログインしました", "success");
+}
+
+async function bootstrapAdmin() {
+  const displayName = String(bootstrapDisplayNameEl?.value || "").trim();
+  const email = String(bootstrapEmailEl?.value || "").trim();
+  const password = String(bootstrapPasswordEl?.value || "");
+  if (!email || password.length < 8) {
+    showToast("メールアドレスと8文字以上のパスワードを入力してください", "error");
+    return;
+  }
+  const response = await fetch("/api/auth/bootstrap-admin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, display_name: displayName || null }),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    showToast(payload.error === "email_already_exists" ? "既に存在するメールアドレスです" : "管理者作成に失敗しました", "error");
+    return;
+  }
+  const payload = await response.json();
+  state.auth.authenticated = true;
+  state.auth.isGuest = false;
+  state.auth.user = payload.user || null;
+  state.auth.bootstrapAdminRequired = false;
+  state.auth.pendingApprovalCount = 0;
+  persistGuestMode(false);
+  setAppLocked(false);
+  renderAuthState();
+  await loadHistoryList();
+  await loadPendingUsers();
+  showToast("管理者アカウントを作成しました", "success");
+}
+
+async function registerAccount() {
+  if (!state.selfSignupEnabled) {
+    showToast("新規登録は無効です", "error");
+    return;
+  }
+  const email = String(registerEmailEl?.value || "").trim();
+  const password = String(registerPasswordEl?.value || "");
+  const displayName = String(registerDisplayNameEl?.value || "").trim();
+  if (!email || password.length < 8) {
+    showToast("メールアドレスと8文字以上のパスワードを入力してください", "error");
+    return;
+  }
+
+  const response = await fetch("/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, display_name: displayName || null }),
+  });
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    showToast(payload.error === "email_already_exists" ? "既に存在するメールアドレスです" : "新規登録に失敗しました", "error");
+    return;
+  }
+
+  showToast("登録申請を受け付けました。管理者の承認後にログインできます", "success");
+  if (registerPasswordEl) registerPasswordEl.value = "";
+}
+
+async function logout() {
+  await fetch("/api/auth/logout", { method: "POST" }).catch(() => null);
+  if (state.recording || state.finalizingStop) {
+    stopRecording();
+    for (let i = 0; i < 60 && (state.recording || state.finalizingStop); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  state.auth.authenticated = false;
+  state.auth.isGuest = false;
+  state.auth.user = null;
+  state.auth.pendingApprovalCount = 0;
+  state.history.total = 0;
+  state.history.items = [];
+  state.history.selectedId = null;
+  state.viewingHistoryId = null;
+  state.savedHistoryId = null;
+  state.log = [];
+  state.segments = [];
+  renderEmptyTranscriptState();
+  setSummary("", "未生成");
+  setProofread("", "未生成");
+  resetRuntimeSessionState();
+  persistGuestMode(false);
+  setAppLocked(true);
+  renderAuthState();
+  renderHistoryList();
+  updateDownloadLinks();
+  loginEmailEl?.focus();
+  showToast("ログアウトしました", "success");
+}
+
+function loginAsGuest() {
+  state.auth.authenticated = false;
+  state.auth.isGuest = true;
+  state.auth.user = null;
+  state.auth.pendingApprovalCount = 0;
+  state.history.total = 0;
+  state.history.items = [];
+  state.history.selectedId = null;
+  state.viewingHistoryId = null;
+  resetRuntimeSessionState();
+  persistGuestMode(true);
+  setAppLocked(false);
+  renderAuthState();
+  renderHistoryList();
+  updateDownloadLinks();
+  showToast("ゲストモードで開始しました", "success");
+}
+
+async function loadPendingUsers() {
+  if (!state.auth.authenticated || !state.auth.user?.isAdmin) return;
+  const response = await fetch("/api/admin/pending-users");
+  if (!response.ok) {
+    showToast("承認待ち一覧の取得に失敗しました", "error");
+    return;
+  }
+  const payload = await response.json();
+  state.adminPendingUsers = Array.isArray(payload.items) ? payload.items : [];
+  state.auth.pendingApprovalCount = state.adminPendingUsers.length;
+  renderAuthState();
+  renderAdminPendingUsers();
+}
+
+async function openAdminQueueModal() {
+  if (!state.auth.user?.isAdmin) return;
+  await loadPendingUsers();
+  if (!adminQueueModalEl) return;
+  adminQueueModalEl.hidden = false;
+  document.body.style.overflow = "hidden";
+}
+
+async function approvePendingUser(userId) {
+  const response = await fetch(`/api/admin/pending-users/${userId}/approve`, { method: "POST" });
+  if (!response.ok) {
+    showToast("ユーザー承認に失敗しました", "error");
+    return;
+  }
+  showToast("ユーザーを承認しました", "success");
+  await loadPendingUsers();
+}
+
+async function loadHistoryList() {
+  if (!state.auth.authenticated) {
+    state.history.items = [];
+    state.history.total = 0;
+    renderHistoryList();
+    return;
+  }
+  const params = new URLSearchParams({
+    limit: String(state.history.limit),
+    offset: String(state.history.offset),
+  });
+  if (state.history.query) {
+    params.set("q", state.history.query);
+  }
+
+  const response = await fetch(`/api/history?${params.toString()}`);
+  if (!response.ok) {
+    updateHistoryEmptyState("履歴の取得に失敗しました");
+    return;
+  }
+  const payload = await response.json();
+  state.history.items = Array.isArray(payload.items) ? payload.items : [];
+  state.history.total = Number(payload.total || 0);
+  renderHistoryList();
+}
+
+function renderHistoryDetail(payload) {
+  state.history.selectedId = payload.id;
+  state.viewingHistoryId = payload.id;
+  state.savedHistoryId = payload.id;
+  state.log = [];
+  state.segments = [];
+  renderEmptyTranscriptState();
+  logEl.innerHTML = "";
+  (payload.segments || []).forEach((segment) => {
+    addLogLine(
+      String(segment.text || ""),
+      Number(segment.tsStart || 0),
+      Number(segment.tsEnd || 0),
+      Number(segment.seq),
+      String(segment.speaker || ""),
+      String(segment.screenshotUrl || "")
+    );
+  });
+  if (!payload.segments || payload.segments.length === 0) {
+    renderEmptyTranscriptState();
+  }
+  setSummary(payload.summaryText || "", payload.savedAt ? `保存: ${new Date(payload.savedAt).toLocaleString("ja-JP")}` : "履歴");
+  setProofread(payload.proofreadText || "", payload.savedAt ? `保存: ${new Date(payload.savedAt).toLocaleString("ja-JP")}` : "履歴");
+  if (saveTitleInputEl) {
+    saveTitleInputEl.value = String(payload.title || "");
+  }
+  updateDownloadLinks();
+  updateSaveControls();
+  renderHistoryList();
+}
+
+async function openHistoryDetail(historyId) {
+  if (!state.auth.authenticated) {
+    showToast("ログインが必要です", "error");
+    setAppLocked(true);
+    loginEmailEl?.focus();
+    return;
+  }
+  if (state.recording) {
+    showToast("録音中は履歴を開けません", "error");
+    return;
+  }
+  const response = await fetch(`/api/history/${historyId}`);
+  if (!response.ok) {
+    showToast("履歴の取得に失敗しました", "error");
+    return;
+  }
+  const payload = await response.json();
+  renderHistoryDetail(payload);
+}
+
+function buildAutoSaveTitle() {
+  const explicit = String(saveTitleInputEl?.value || "").trim();
+  if (explicit) return explicit;
+  const transcript = extractTranscriptText().replace(/\s+/g, " ").trim();
+  if (transcript) return transcript.slice(0, 30);
+  const language = selectedLanguage() || "Transcript";
+  return `${language} ${new Date().toLocaleString("ja-JP")}`;
+}
+
+async function saveCurrentHistory() {
+  if (state.auth.isGuest) {
+    showToast("ゲストでは履歴保存できません", "error");
+    return;
+  }
+  if (!state.auth.authenticated) {
+    showToast("ログインが必要です", "error");
+    loginEmailEl?.focus();
+    return;
+  }
+  if (state.recording || state.finalizingStop) {
+    showToast("録音中は保存できません", "error");
+    return;
+  }
+  if (!state.runtimeSessionId || state.segments.length === 0) {
+    showToast("保存できる文字起こしがありません", "error");
+    return;
+  }
+
+  state.saveInFlight = true;
+  updateSaveControls();
+  const response = await fetch("/api/history", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      runtimeSessionId: state.runtimeSessionId,
+      runtimeSessionToken: state.runtimeSessionToken,
+      title: buildAutoSaveTitle(),
+      summaryText: state.summary || null,
+      proofreadText: state.proofread || null,
+    }),
+  }).catch(() => null);
+  state.saveInFlight = false;
+  updateSaveControls();
+
+  if (!response) {
+    showToast("保存に失敗しました", "error");
+    return;
+  }
+  if (response.status === 409) {
+    const payload = await response.json().catch(() => ({}));
+    showToast(
+      payload.error === "runtime_session_not_finalized"
+        ? "録音停止後に保存してください"
+        : "このセッションは既に保存済みです",
+      "error"
+    );
+    return;
+  }
+  if (!response.ok) {
+    showToast("保存に失敗しました", "error");
+    return;
+  }
+
+  const payload = await response.json();
+  state.savedHistoryId = payload.history?.id || null;
+  state.viewingHistoryId = state.savedHistoryId;
+  state.history.selectedId = state.savedHistoryId;
+  updateDownloadLinks();
+  updateSaveControls();
+  await loadHistoryList();
+  showToast("保存しました", "success");
+}
+
 renderPromptTemplateButtons(state.promptTemplates);
+buildRuntimeUi();
+setAppLocked(true);
 
 // Initialize empty states
 updateSegmentCount();
 updateDownloadLinks();
 setSummary("", "未生成");
 setProofread("", "未生成");
+renderAuthState();
 applyProofreadMode(proofreadModeEl?.value || "proofread");
 if (summaryBtnLabelEl) {
   summaryBtnLabelEl.textContent = "実行";
@@ -2569,19 +4082,7 @@ setStatus("idle");
 
 // Show initial empty state for transcript
 if (logEl && !logEl.querySelector(".log-row")) {
-  logEl.innerHTML = `
-    <div class="empty-state">
-      <div class="empty-icon">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-          <line x1="12" x2="12" y1="19" y2="22"/>
-        </svg>
-      </div>
-      <p class="empty-title">まだ文字起こしがありません</p>
-      <p class="empty-description">録音を開始すると、リアルタイムで文字起こしが表示されます</p>
-    </div>
-  `;
+  renderEmptyTranscriptState();
 }
 
 (() => {
@@ -2604,6 +4105,16 @@ if (logEl && !logEl.querySelector(".log-row")) {
     // ignore
   }
   applyAudioSource(initial);
+})();
+
+(() => {
+  let initial = true;
+  try {
+    initial = localStorage.getItem("whistx_auto_gain_enabled") !== "0";
+  } catch {
+    // ignore
+  }
+  applyAutoGainEnabled(initial, { persist: false });
 })();
 
 (() => {
@@ -2655,4 +4166,7 @@ if (logEl && !logEl.querySelector(".log-row")) {
   );
 })();
 
-loadCapabilities();
+(async () => {
+  await loadCapabilities();
+  await loadAuthState();
+})();

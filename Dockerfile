@@ -16,11 +16,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /uvx /bin/
 
+COPY pyproject.toml /app/pyproject.toml
 COPY requirements.txt /app/requirements.txt
 COPY requirements-diarization.txt /app/requirements-diarization.txt
 RUN uv pip install --system --no-cache -r /app/requirements.txt \
     && if [ "${INSTALL_DIARIZATION}" = "1" ]; then uv pip install --system --no-cache -r /app/requirements-diarization.txt; fi
 
+COPY alembic.ini /app/alembic.ini
+COPY alembic /app/alembic
 COPY server /app/server
 COPY web /app/web
 COPY entrypoint.sh /app/entrypoint.sh
