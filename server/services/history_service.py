@@ -247,12 +247,18 @@ def build_history_zip(*, zip_path: Path, artifact_dir: Path, include_summary: bo
 
 def copy_runtime_screenshot(runtime_session_id: str, row: dict[str, Any], target_dir: Path) -> str | None:
     raw_path = _as_str(row.get("screenshotPath"))
-    if not raw_path:
+    screenshots_root = settings.transcripts_dir / "_screenshots" / runtime_session_id
+    filename = Path(raw_path).name if raw_path else ""
+    src = screenshots_root / filename if filename else None
+    if not src or not src.exists():
+        seq = _as_int(row.get("seq"), -1)
+        if seq >= 0:
+            matches = sorted(screenshots_root.glob(f"{seq:06d}.*"))
+            if matches:
+                src = matches[0]
+                filename = src.name
+    if not src or not src.exists() or not filename:
         return None
-    filename = Path(raw_path).name
-    if not filename:
-        return None
-    src = settings.transcripts_dir / "_screenshots" / runtime_session_id / filename
     if not src.exists():
         return None
     shutil.copy2(src, target_dir / filename)

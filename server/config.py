@@ -19,6 +19,12 @@ class Settings:
     app_session_secret: str
     app_session_days: int
     enable_self_signup: bool
+    keycloak_enabled: bool
+    keycloak_issuer: str | None
+    keycloak_client_id: str
+    keycloak_client_secret: str
+    keycloak_scope: str
+    keycloak_button_label: str
     history_dir: Path
     openai_api_key: str
     openai_base_url: str | None
@@ -482,6 +488,12 @@ def load_settings() -> Settings:
         app_session_secret=_env_first_non_empty("APP_SESSION_SECRET") or "change-me",
         app_session_days=max(1, _to_int("APP_SESSION_DAYS", 7)),
         enable_self_signup=_to_bool("ENABLE_SELF_SIGNUP", False),
+        keycloak_enabled=_to_bool("KEYCLOAK_ENABLED", False),
+        keycloak_issuer=_env_first_non_empty("KEYCLOAK_ISSUER"),
+        keycloak_client_id=_env_first_non_empty("KEYCLOAK_CLIENT_ID") or "",
+        keycloak_client_secret=_env_first_non_empty("KEYCLOAK_CLIENT_SECRET") or "",
+        keycloak_scope=_env_first_non_empty("KEYCLOAK_SCOPE") or "openid profile email",
+        keycloak_button_label=_decode_env_text(_env_first_non_empty("KEYCLOAK_BUTTON_LABEL") or "Keycloakでログイン"),
         history_dir=history_dir,
         openai_api_key=asr_api_key,
         openai_base_url=base_url,

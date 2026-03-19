@@ -11,9 +11,13 @@ import zipfile
 from dataclasses import dataclass
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import hashlib
+import hmac
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlencode
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -23,17 +27,30 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .auth import SESSION_COOKIE_NAME, authenticate_user, create_user, create_user_session, delete_user_session
+from .auth import (
+    SESSION_COOKIE_NAME,
+    approve_user,
+    create_user,
+    create_user_session,
+    count_admin_users,
+    delete_user_session,
+    get_user_by_email,
+    get_user_by_identity,
+    has_admin_account,
+    list_all_users,
+    list_pending_users,
+    verify_password,
+)
 from .asr import SessionTranscriber
 from .audio_pipeline import AudioPreprocessor
 from .config import settings
 from .db import get_db, init_db
-from .deps import get_current_user
+from .deps import get_current_admin, get_current_user
 from .diarizer import AudioChunk, PyannoteSpeakerDiarizer, SpeakerTurn
 from .langfuse_observer import make_langfuse_observer
 from .models import TranscriptHistory, User
 from .openai_whisper import OpenAIWhisperTranscriber
-from .schemas import HistorySaveRequest, LoginRequest, RegisterRequest
+from .schemas import BootstrapAdminRequest, HistorySaveRequest, LoginRequest, RegisterRequest
 from .services.history_service import (
     HistoryError,
     build_history_detail_payload,
@@ -124,6 +141,9 @@ PROOFREADER: OpenAISummarizer | None = None
 DIARIZER: PyannoteSpeakerDiarizer | None = None
 ACTIVE_SOCKETS: set[WebSocket] = set()
 LANGFUSE_OBSERVER = None
+OIDC_STATE_COOKIE_NAME = "whistx_oidc_state"
+KEYCLOAK_PROVIDER = "keycloak"
+KEYCLOAK_DISCOVERY_CACHE: dict[str, Any] | None = None
 
 
 @app.on_event("startup")
@@ -228,6 +248,8 @@ async def health() -> JSONResponse:
             "uiBrandTagline": settings.app_brand_tagline,
             "uiPromptTemplates": list(settings.ui_prompt_templates),
             "selfSignupEnabled": settings.enable_self_signup,
+            "keycloakEnabled": _keycloak_login_enabled(),
+            "keycloakButtonLabel": settings.keycloak_button_label,
             "activeConnections": len(ACTIVE_SOCKETS),
         }
     )
@@ -236,11 +258,16 @@ async def health() -> JSONResponse:
 @app.get("/api/auth/me")
 async def auth_me(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     user = _get_optional_user(request, db)
+    bootstrap_admin_required = not has_admin_account(db)
     return JSONResponse(
         {
             "authenticated": user is not None,
             "user": _serialize_user(user) if user is not None else None,
             "selfSignupEnabled": settings.enable_self_signup,
+            "bootstrapAdminRequired": bootstrap_admin_required,
+            "pendingApprovalCount": len(list_pending_users(db)) if user is not None and user.is_admin else 0,
+            "keycloakEnabled": _keycloak_login_enabled(),
+            "keycloakButtonLabel": settings.keycloak_button_label,
         }
     )
 
@@ -251,10 +278,14 @@ async def auth_login(
     request: Request,
     db: Session = Depends(get_db),
 ) -> JSONResponse:
-    user = authenticate_user(db, email=payload.email, password=payload.password)
-    if user is None:
+    user = get_user_by_email(db, payload.email)
+    if user is None or not verify_password(user.password_hash, payload.password):
         db.rollback()
         return JSONResponse(status_code=401, content={"error": "invalid_credentials"})
+    if not user.is_active:
+        db.rollback()
+        return JSONResponse(status_code=403, content={"error": "approval_required"})
+    user.last_login_at = datetime.utcnow()
 
     session = create_user_session(
         db,
@@ -269,6 +300,127 @@ async def auth_login(
     return response
 
 
+@app.post("/api/auth/bootstrap-admin")
+async def auth_bootstrap_admin(
+    payload: BootstrapAdminRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    if has_admin_account(db):
+        return JSONResponse(status_code=409, content={"error": "admin_already_exists"})
+
+    email = payload.email.strip().lower()
+    existing = db.scalar(select(User).where(User.email == email))
+    if existing is not None:
+        return JSONResponse(status_code=409, content={"error": "email_already_exists"})
+
+    try:
+        user = create_user(
+            db,
+            email=email,
+            password=payload.password,
+            display_name=payload.display_name,
+            is_admin=True,
+            is_active=True,
+        )
+        user.approved_by_user_id = user.id
+        session = create_user_session(
+            db,
+            user=user,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+        db.commit()
+    except ValueError:
+        db.rollback()
+        return JSONResponse(status_code=400, content={"error": "password_too_short"})
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse(status_code=409, content={"error": "email_already_exists"})
+
+    response = JSONResponse({"ok": True, "user": _serialize_user(user)})
+    _set_session_cookie(response, request, session.id)
+    return response
+
+
+@app.get("/api/auth/keycloak/login")
+async def auth_keycloak_login(request: Request) -> Response:
+    if not _keycloak_login_enabled():
+        return JSONResponse(status_code=404, content={"error": "keycloak_disabled"})
+
+    discovery = await asyncio.to_thread(_get_keycloak_discovery)
+    state = secrets.token_urlsafe(24)
+    code_verifier = secrets.token_urlsafe(48)
+    code_challenge = _pkce_code_challenge(code_verifier)
+    redirect_uri = str(request.url_for("auth_keycloak_callback"))
+    authorization_url = _build_keycloak_authorization_url(
+        discovery=discovery,
+        redirect_uri=redirect_uri,
+        state=state,
+        code_challenge=code_challenge,
+    )
+
+    response = Response(status_code=302)
+    response.headers["Location"] = authorization_url
+    _set_oidc_state_cookie(
+        response,
+        request,
+        {"state": state, "code_verifier": code_verifier, "redirect_uri": redirect_uri},
+    )
+    return response
+
+
+@app.get("/api/auth/keycloak/callback")
+async def auth_keycloak_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    if not _keycloak_login_enabled():
+        return HTMLResponse(status_code=404, content="not found")
+
+    state_payload = _read_oidc_state_cookie(request)
+    _response = Response(status_code=302)
+    _clear_oidc_state_cookie(_response, request)
+
+    state = request.query_params.get("state") or ""
+    code = request.query_params.get("code") or ""
+    if not state_payload or not code or state_payload.get("state") != state:
+        _response.headers["Location"] = "/?authError=keycloak_state"
+        return _response
+
+    try:
+        discovery = await asyncio.to_thread(_get_keycloak_discovery)
+        token_payload = await asyncio.to_thread(
+            _exchange_keycloak_code,
+            discovery,
+            code,
+            str(state_payload.get("redirect_uri") or ""),
+            str(state_payload.get("code_verifier") or ""),
+        )
+        userinfo = await asyncio.to_thread(_fetch_keycloak_userinfo, discovery, str(token_payload.get("access_token") or ""))
+        user = _upsert_keycloak_user(db, userinfo)
+        session = create_user_session(
+            db,
+            user=user,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+        db.commit()
+    except PermissionError:
+        db.rollback()
+        _response.headers["Location"] = "/?authError=approval_required"
+        return _response
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning("keycloak login failed: %s", exc)
+        _response.headers["Location"] = "/?authError=keycloak_failed"
+        return _response
+
+    _set_session_cookie(_response, request, session.id)
+    _response.headers["Location"] = "/"
+    return _response
+
+
 @app.post("/api/auth/logout")
 async def auth_logout(
     request: Request,
@@ -281,12 +433,96 @@ async def auth_logout(
     return response
 
 
+@app.get("/api/admin/pending-users")
+async def admin_pending_users(
+    user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    items = [
+        {
+            "id": item.id,
+            "email": item.email,
+            "displayName": item.display_name,
+            "createdAt": item.created_at.isoformat(),
+        }
+        for item in list_pending_users(db)
+    ]
+    return JSONResponse({"items": items})
+
+
+@app.post("/api/admin/pending-users/{user_id}/approve")
+async def admin_approve_pending_user(
+    user_id: int,
+    user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    pending_user = db.get(User, user_id)
+    if pending_user is None or pending_user.is_active or pending_user.approved_at is not None:
+        return JSONResponse(status_code=404, content={"error": "pending_user_not_found"})
+
+    approve_user(db, user=pending_user, admin=user)
+    db.commit()
+    return JSONResponse({"ok": True, "user": _serialize_user(pending_user)})
+
+
+@app.get("/api/admin/users")
+async def admin_users(
+    user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    items = [
+        {
+            "id": item.id,
+            "email": item.email,
+            "displayName": item.display_name,
+            "isAdmin": bool(item.is_admin),
+            "isActive": bool(item.is_active),
+            "createdAt": item.created_at.isoformat(),
+            "lastLoginAt": item.last_login_at.isoformat() if item.last_login_at else None,
+            "approvedAt": item.approved_at.isoformat() if item.approved_at else None,
+        }
+        for item in list_all_users(db)
+    ]
+    return JSONResponse({"items": items})
+
+
+@app.post("/api/admin/users/{user_id}/role")
+async def admin_update_user_role(
+    user_id: int,
+    request: Request,
+    user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid_json"})
+
+    role = str(payload.get("role") or "").strip().lower()
+    if role not in {"admin", "member"}:
+        return JSONResponse(status_code=400, content={"error": "invalid_role"})
+
+    target = db.get(User, user_id)
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "user_not_found"})
+
+    make_admin = role == "admin"
+    if not make_admin and target.is_admin and count_admin_users(db) <= 1:
+        return JSONResponse(status_code=409, content={"error": "last_admin_forbidden"})
+
+    target.is_admin = make_admin
+    db.commit()
+    return JSONResponse({"ok": True, "user": _serialize_user(target)})
+
+
 @app.post("/api/auth/register")
 async def auth_register(
     payload: RegisterRequest,
-    request: Request,
     db: Session = Depends(get_db),
 ) -> JSONResponse:
+    if not has_admin_account(db):
+        return JSONResponse(status_code=409, content={"error": "bootstrap_admin_required"})
+
     if not settings.enable_self_signup:
         return JSONResponse(status_code=403, content={"error": "self_signup_disabled"})
 
@@ -305,12 +541,7 @@ async def auth_register(
             password=payload.password,
             display_name=payload.display_name,
             is_admin=False,
-        )
-        session = create_user_session(
-            db,
-            user=user,
-            user_agent=request.headers.get("user-agent"),
-            ip_address=request.client.host if request.client else None,
+            is_active=False,
         )
         db.commit()
     except ValueError:
@@ -320,9 +551,7 @@ async def auth_register(
         db.rollback()
         return JSONResponse(status_code=409, content={"error": "email_already_exists"})
 
-    response = JSONResponse({"ok": True, "user": _serialize_user(user)})
-    _set_session_cookie(response, request, session.id)
-    return response
+    return JSONResponse({"ok": True, "pending": True, "user": _serialize_user(user)})
 
 
 @app.post("/api/history")
@@ -1602,6 +1831,175 @@ def _runtime_access_allowed(session_id: str, token: str | None) -> bool:
     return secrets.compare_digest(required, str(token or ""))
 
 
+def _keycloak_login_enabled() -> bool:
+    return bool(settings.keycloak_enabled and settings.keycloak_issuer and settings.keycloak_client_id)
+
+
+def _pkce_code_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
+
+
+def _signed_payload(value: dict[str, Any]) -> str:
+    raw = json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    body = base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+    signature = hmac.new(settings.app_session_secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).digest()
+    token = base64.urlsafe_b64encode(signature).decode("utf-8").rstrip("=")
+    return f"{body}.{token}"
+
+
+def _unsigned_payload(value: str | None) -> dict[str, Any] | None:
+    if not value or "." not in value:
+        return None
+    body, token = value.split(".", 1)
+    expected = hmac.new(settings.app_session_secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).digest()
+    if not secrets.compare_digest(base64.urlsafe_b64encode(expected).decode("utf-8").rstrip("="), token):
+        return None
+    padded = body + "=" * (-len(body) % 4)
+    try:
+        return json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")))
+    except Exception:
+        return None
+
+
+def _set_oidc_state_cookie(response: Response, request: Request, payload: dict[str, Any]) -> None:
+    response.set_cookie(
+        key=OIDC_STATE_COOKIE_NAME,
+        value=_signed_payload(payload),
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+        max_age=10 * 60,
+        path="/",
+    )
+
+
+def _read_oidc_state_cookie(request: Request) -> dict[str, Any] | None:
+    return _unsigned_payload(request.cookies.get(OIDC_STATE_COOKIE_NAME))
+
+
+def _clear_oidc_state_cookie(response: Response, request: Request) -> None:
+    response.delete_cookie(
+        key=OIDC_STATE_COOKIE_NAME,
+        path="/",
+        secure=request.url.scheme == "https",
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _fetch_json(url: str, *, method: str = "GET", data: bytes | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    request = UrlRequest(url, method=method, data=data, headers=headers or {})
+    with urlopen(request, timeout=10) as response:  # noqa: S310
+        payload = response.read().decode("utf-8")
+    return json.loads(payload)
+
+
+def _get_keycloak_discovery() -> dict[str, Any]:
+    global KEYCLOAK_DISCOVERY_CACHE
+    if KEYCLOAK_DISCOVERY_CACHE is not None:
+        return KEYCLOAK_DISCOVERY_CACHE
+    issuer = str(settings.keycloak_issuer or "").rstrip("/")
+    discovery_url = f"{issuer}/.well-known/openid-configuration"
+    KEYCLOAK_DISCOVERY_CACHE = _fetch_json(discovery_url)
+    return KEYCLOAK_DISCOVERY_CACHE
+
+
+def _build_keycloak_authorization_url(
+    *,
+    discovery: dict[str, Any],
+    redirect_uri: str,
+    state: str,
+    code_challenge: str,
+) -> str:
+    params = {
+        "client_id": settings.keycloak_client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": settings.keycloak_scope,
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    return f"{discovery['authorization_endpoint']}?{urlencode(params)}"
+
+
+def _exchange_keycloak_code(
+    discovery: dict[str, Any],
+    code: str,
+    redirect_uri: str,
+    code_verifier: str,
+) -> dict[str, Any]:
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": settings.keycloak_client_id,
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier,
+    }
+    if settings.keycloak_client_secret:
+        data["client_secret"] = settings.keycloak_client_secret
+    encoded = urlencode(data).encode("utf-8")
+    return _fetch_json(
+        str(discovery["token_endpoint"]),
+        method="POST",
+        data=encoded,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+
+
+def _fetch_keycloak_userinfo(discovery: dict[str, Any], access_token: str) -> dict[str, Any]:
+    return _fetch_json(
+        str(discovery["userinfo_endpoint"]),
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+
+
+def _upsert_keycloak_user(db: Session, userinfo: dict[str, Any]) -> User:
+    subject = str(userinfo.get("sub") or "").strip()
+    email = str(userinfo.get("email") or "").strip().lower()
+    display_name = (
+        str(userinfo.get("name") or "").strip()
+        or str(userinfo.get("preferred_username") or "").strip()
+        or email
+    )
+    if not subject or not email:
+        raise RuntimeError("keycloak_userinfo_missing_identity")
+
+    user = get_user_by_identity(db, provider=KEYCLOAK_PROVIDER, subject=subject)
+    if user is None:
+        user = get_user_by_email(db, email)
+        if user is not None:
+            if user.auth_provider and user.auth_subject and (user.auth_provider != KEYCLOAK_PROVIDER or user.auth_subject != subject):
+                raise RuntimeError("keycloak_identity_conflict")
+            user.auth_provider = KEYCLOAK_PROVIDER
+            user.auth_subject = subject
+            user.display_name = user.display_name or display_name
+            if not user.is_active:
+                user.is_active = True
+            if user.approved_at is None:
+                user.approved_at = datetime.utcnow()
+        else:
+            user = create_user(
+                db,
+                email=email,
+                password=secrets.token_urlsafe(32),
+                display_name=display_name,
+                is_admin=False,
+                is_active=True,
+                auth_provider=KEYCLOAK_PROVIDER,
+                auth_subject=subject,
+            )
+    else:
+        if not user.is_active:
+            user.is_active = True
+        if user.approved_at is None:
+            user.approved_at = datetime.utcnow()
+        if display_name and not user.display_name:
+            user.display_name = display_name
+    return user
+
+
 def _serialize_user(user: User | None) -> dict[str, Any] | None:
     if user is None:
         return None
@@ -1609,6 +2007,9 @@ def _serialize_user(user: User | None) -> dict[str, Any] | None:
         "id": user.id,
         "email": user.email,
         "displayName": user.display_name,
+        "isAdmin": bool(user.is_admin),
+        "isActive": bool(user.is_active),
+        "approvedAt": user.approved_at.isoformat() if user.approved_at else None,
     }
 
 
@@ -1707,6 +2108,17 @@ async def get_screenshot(session_id: str, filename: str, token: str | None = Que
         media_type = "image/png"
 
     return FileResponse(str(path), media_type=media_type)
+
+
+@app.get("/admin", response_model=None)
+async def admin_page(
+    user: User = Depends(get_current_admin),
+) -> Response:
+    del user
+    path = Path("web") / "admin.html"
+    if not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+    return FileResponse(str(path), media_type="text/html")
 
 
 WEB_DIR = Path("web")

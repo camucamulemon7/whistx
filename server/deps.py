@@ -18,6 +18,16 @@ def get_current_user(
     return user
 
 
+def get_current_admin(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> User:
+    user = get_current_user(request, db)
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="admin_required")
+    return user
+
+
 def get_optional_user(
     request: Request,
     db: Session,

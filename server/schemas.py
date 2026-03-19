@@ -12,6 +12,10 @@ class RegisterRequest(LoginRequest):
     display_name: str | None = Field(default=None, max_length=120)
 
 
+class BootstrapAdminRequest(RegisterRequest):
+    pass
+
+
 class HistorySaveRequest(BaseModel):
     runtimeSessionId: str = Field(min_length=1, max_length=128)
     runtimeSessionToken: str = Field(min_length=1, max_length=128)
