@@ -72,6 +72,13 @@ class OpenAIWhisperTranscriber:
             )
 
             text = _extract_text(response).strip()
+            usage_details = _extract_usage_details(response)
+            estimated_tokens = _estimate_token_count(text)
+            effective_usage_details = usage_details or (
+                {"input": estimated_tokens, "output": 0, "total": estimated_tokens}
+                if estimated_tokens > 0
+                else None
+            )
             if _should_drop_as_silence(response, text):
                 text = ""
             logger.info(
@@ -80,10 +87,19 @@ class OpenAIWhisperTranscriber:
                 len(text),
             )
             if generation is not None:
-                generation.update(output={"text": text, "chars": len(text)})
+                generation.update(
+                    output={"text": text, "chars": len(text), "estimatedTokens": estimated_tokens},
+                    usage_details=effective_usage_details,
+                )
 
         start_ms, end_ms = _extract_bounds_ms(response)
-        return ASRChunkResult(text=text, start_ms=start_ms, end_ms=end_ms)
+        return ASRChunkResult(
+            text=text,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            usage_details=effective_usage_details,
+            estimated_tokens=estimated_tokens,
+        )
 
     def close(self) -> None:
         return None
@@ -140,6 +156,39 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _extract_usage_details(response: Any) -> dict[str, int] | None:
+    usage = _read_field(response, "usage")
+    if usage is None:
+        return None
+    prompt_tokens = _read_field(usage, "prompt_tokens")
+    completion_tokens = _read_field(usage, "completion_tokens")
+    total_tokens = _read_field(usage, "total_tokens")
+    payload: dict[str, int] = {}
+    for key, value in (
+        ("input", prompt_tokens),
+        ("output", completion_tokens),
+        ("total", total_tokens),
+    ):
+        try:
+            if value is not None:
+                payload[key] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return payload or None
+
+
+def _estimate_token_count(text: str) -> int:
+    clean = (text or "").strip()
+    if not clean:
+        return 0
+
+    ascii_chars = sum(1 for char in clean if ord(char) < 128)
+    non_ascii_chars = len(clean) - ascii_chars
+    ascii_tokens = ascii_chars / 4.0
+    non_ascii_tokens = non_ascii_chars / 1.5
+    return max(1, int(round(ascii_tokens + non_ascii_tokens)))
 
 
 

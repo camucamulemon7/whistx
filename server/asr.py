@@ -9,6 +9,8 @@ class ASRChunkResult:
     text: str
     start_ms: int | None
     end_ms: int | None
+    usage_details: dict[str, int] | None = None
+    estimated_tokens: int = 0
 
 
 class SessionTranscriber(Protocol):

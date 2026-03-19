@@ -120,6 +120,10 @@ class LiveSession:
     overlap_tail_pcm: bytes
     last_chunk_seq: int
     last_chunk_offset_ms: int
+    asr_input_tokens: int
+    asr_output_tokens: int
+    asr_total_tokens: int
+    asr_estimated_tokens: int
 
 
 class SummarizeRequest(BaseModel):
@@ -1027,6 +1031,11 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 continue
 
             text = result.text.strip()
+            usage = result.usage_details or {}
+            session.asr_input_tokens += max(0, int(usage.get("input", 0) or 0))
+            session.asr_output_tokens += max(0, int(usage.get("output", 0) or 0))
+            session.asr_total_tokens += max(0, int(usage.get("total", 0) or 0))
+            session.asr_estimated_tokens += max(0, int(result.estimated_tokens or 0))
             text = _sanitize_transcript_text(text, language=session.language)
             text = _trim_overlap_prefix(text, session.last_emitted_text)
             text = _sanitize_transcript_text(text, language=session.language)
@@ -1092,8 +1101,11 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 output={
                     "segmentCount": emitted_segments,
                     "charCount": emitted_chars,
+                    "estimatedTokens": session.asr_estimated_tokens,
                     "finalTranscript": _clip_trace_text("\n".join(session.transcript_history)),
                 },
+                metadata={"usageSource": "api" if session.asr_total_tokens > 0 else "estimated"},
+                model_parameters={"estimatedTokens": session.asr_estimated_tokens},
                 trace_context=trace_context,
             ):
                 pass
@@ -1148,6 +1160,10 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         overlap_tail_pcm=b"",
         last_chunk_seq=-1,
         last_chunk_offset_ms=-1,
+        asr_input_tokens=0,
+        asr_output_tokens=0,
+        asr_total_tokens=0,
+        asr_estimated_tokens=0,
     )
     session.store.write_metadata(
         {
