@@ -15,7 +15,11 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..config import settings
 from ..models import TranscriptHistory, TranscriptSegment, User
-from ..transcript_store import read_jsonl_records, resolve_transcript_path
+from ..transcript_store import (
+    is_runtime_transcript_finalized,
+    read_jsonl_records,
+    resolve_transcript_path,
+)
 
 
 class HistoryError(Exception):
@@ -113,6 +117,12 @@ def save_history(
         raise HistoryError("history_already_saved", 409)
 
     snapshot = load_runtime_snapshot(runtime_session_id)
+    if not is_runtime_transcript_finalized(
+        snapshot.metadata,
+        txt_path=snapshot.txt_path,
+        jsonl_path=snapshot.jsonl_path,
+    ):
+        raise HistoryError("runtime_session_not_finalized", 409)
     required_token = str(snapshot.metadata.get("accessToken") or "").strip()
     if required_token and required_token != runtime_session_token.strip():
         raise HistoryError("runtime_session_not_found", 404)
@@ -124,7 +134,10 @@ def save_history(
 
     summary_value = (summary_text or "").strip() or None
     proofread_value = (proofread_text or "").strip() or None
-    plain_text = snapshot.txt_path.read_text(encoding="utf-8").strip()
+    try:
+        plain_text = snapshot.txt_path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise HistoryError("transcript_read_failed", 500) from exc
     if not plain_text:
         plain_text = "\n".join(str(row.get("text") or "").strip() for row in snapshot.segments).strip()
     if not plain_text:
@@ -172,61 +185,65 @@ def save_history(
     metadata_path = artifact_dir / "metadata.json"
     zip_path = artifact_dir / "transcript.zip"
 
-    txt_path.write_text(plain_text + ("\n" if plain_text else ""), encoding="utf-8")
-    with jsonl_path.open("w", encoding="utf-8") as handle:
-        for row in copied_records:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    try:
+        txt_path.write_text(plain_text + ("\n" if plain_text else ""), encoding="utf-8")
+        with jsonl_path.open("w", encoding="utf-8") as handle:
+            for row in copied_records:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-    metadata = {
-        "historyId": history_id,
-        "runtimeSessionId": runtime_session_id,
-        "title": final_title,
-        "savedAt": saved_at.isoformat(),
-        "language": language,
-        "audioSource": audio_source,
-        "hasDiarization": has_diarization,
-        "segmentCount": len(db_segments),
-        "summaryText": summary_value,
-        "proofreadText": proofread_value,
-    }
-    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        metadata = {
+            "historyId": history_id,
+            "runtimeSessionId": runtime_session_id,
+            "title": final_title,
+            "savedAt": saved_at.isoformat(),
+            "language": language,
+            "audioSource": audio_source,
+            "hasDiarization": has_diarization,
+            "segmentCount": len(db_segments),
+            "summaryText": summary_value,
+            "proofreadText": proofread_value,
+        }
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    if summary_value:
-        (artifact_dir / "summary.txt").write_text(summary_value + "\n", encoding="utf-8")
-    if proofread_value:
-        (artifact_dir / "proofread.txt").write_text(proofread_value + "\n", encoding="utf-8")
+        if summary_value:
+            (artifact_dir / "summary.txt").write_text(summary_value + "\n", encoding="utf-8")
+        if proofread_value:
+            (artifact_dir / "proofread.txt").write_text(proofread_value + "\n", encoding="utf-8")
 
-    build_history_zip(
-        zip_path=zip_path,
-        artifact_dir=artifact_dir,
-        include_summary=bool(summary_value),
-        include_proofread=bool(proofread_value),
-    )
+        build_history_zip(
+            zip_path=zip_path,
+            artifact_dir=artifact_dir,
+            include_summary=bool(summary_value),
+            include_proofread=bool(proofread_value),
+        )
 
-    history = TranscriptHistory(
-        id=history_id,
-        user_id=user.id,
-        runtime_session_id=runtime_session_id,
-        title=final_title,
-        language=language,
-        audio_source=audio_source,
-        segment_count=len(db_segments),
-        plain_text=plain_text,
-        summary_text=summary_value,
-        proofread_text=proofread_value,
-        has_diarization=has_diarization,
-        artifact_dir=str(artifact_dir.relative_to(settings.history_dir)),
-        txt_path=str(txt_path.relative_to(settings.history_dir)),
-        jsonl_path=str(jsonl_path.relative_to(settings.history_dir)),
-        zip_path=str(zip_path.relative_to(settings.history_dir)),
-        created_at=saved_at,
-        updated_at=saved_at,
-        saved_at=saved_at,
-        segments=db_segments,
-    )
-    db.add(history)
-    db.flush()
-    return history
+        history = TranscriptHistory(
+            id=history_id,
+            user_id=user.id,
+            runtime_session_id=runtime_session_id,
+            title=final_title,
+            language=language,
+            audio_source=audio_source,
+            segment_count=len(db_segments),
+            plain_text=plain_text,
+            summary_text=summary_value,
+            proofread_text=proofread_value,
+            has_diarization=has_diarization,
+            artifact_dir=str(artifact_dir.relative_to(settings.history_dir)),
+            txt_path=str(txt_path.relative_to(settings.history_dir)),
+            jsonl_path=str(jsonl_path.relative_to(settings.history_dir)),
+            zip_path=str(zip_path.relative_to(settings.history_dir)),
+            created_at=saved_at,
+            updated_at=saved_at,
+            saved_at=saved_at,
+            segments=db_segments,
+        )
+        db.add(history)
+        db.flush()
+        return history
+    except Exception:
+        shutil.rmtree(artifact_dir, ignore_errors=True)
+        raise
 
 
 def build_history_zip(*, zip_path: Path, artifact_dir: Path, include_summary: bool, include_proofread: bool) -> None:

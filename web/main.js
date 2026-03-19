@@ -161,6 +161,7 @@ const state = {
   chunkTimer: null,
   finalizingStop: false,
   recording: false,
+  recordingAudioSource: "mic",
   runtimeSessionId: "",
   runtimeSessionToken: "",
   savedHistoryId: null,
@@ -1255,16 +1256,27 @@ function updateSaveControls() {
   const isGuest = !!state.auth.isGuest;
   const saved = !!state.savedHistoryId;
   const viewingHistory = !!state.viewingHistoryId;
+  const recordingLocked = !!state.recording || !!state.finalizingStop;
 
   if (saveBtn) {
-    saveBtn.disabled = !authenticated || isGuest || !hasSegments || state.saveInFlight || saved || viewingHistory;
+    saveBtn.disabled =
+      !authenticated || isGuest || recordingLocked || !hasSegments || state.saveInFlight || saved || viewingHistory;
     saveBtn.textContent = state.saveInFlight ? "保存中..." : "保存";
-    saveBtn.title = isGuest ? "ゲストでは保存できません" : authenticated ? "" : "ログインが必要です";
+    saveBtn.title = recordingLocked
+      ? "録音中は保存できません"
+      : isGuest
+        ? "ゲストでは保存できません"
+        : authenticated
+          ? ""
+          : "ログインが必要です";
   }
   if (saveTitleInputEl) {
-    saveTitleInputEl.disabled = viewingHistory || state.saveInFlight;
+    saveTitleInputEl.disabled = viewingHistory || state.saveInFlight || recordingLocked;
   }
-  setSaveBadge(saved ? "保存済み" : isGuest ? "ゲストでは保存不可" : authenticated ? "未保存" : "ログインが必要", saved);
+  setSaveBadge(
+    saved ? "保存済み" : recordingLocked ? "録音中は保存不可" : isGuest ? "ゲストでは保存不可" : authenticated ? "未保存" : "ログインが必要",
+    saved
+  );
 }
 
 function formatHistoryMeta(item) {
@@ -1786,6 +1798,11 @@ function normalizeAudioSource(value) {
   return "mic";
 }
 
+function resetRuntimeSessionState() {
+  state.runtimeSessionId = "";
+  state.runtimeSessionToken = "";
+}
+
 function audioSourceHintText(source) {
   if (source === "display") {
     return "画面共有音声はブラウザ制約で取得できない場合があります。Chrome/Edge のタブ共有が最も安定します。";
@@ -2173,9 +2190,15 @@ async function prepareInputStream(sourceMode) {
   const displayStream = await requestDisplayStream();
   const diagnostics = logDisplayCaptureDiagnostics(displayStream, mode);
   if (!hasAudioTrack(displayStream)) {
-    const error = new Error("display_audio_not_found");
-    error.diagnostics = diagnostics;
-    throw error;
+    showToast("画面共有音声が取れないため、マイクのみで開始します", "default", 5000);
+    state.vadRmsThreshold = vadThresholdForSource("mic");
+    state.recordingAudioSource = "mic";
+    state.displayStream = displayStream;
+    setupDisplayCaptureVideo(displayStream);
+    bindDisplayEndEvents(displayStream);
+    const micStream = await requestMicStream("mic");
+    state.micStream = micStream;
+    return buildMixedAudioStream([micStream]);
   }
   bindDisplayEndEvents(displayStream);
 
@@ -2742,6 +2765,7 @@ async function startRecording() {
   const selectedChunkSeconds = applyChunkSeconds(chunkSecondsEl.value || CHUNK_DEFAULT_SECONDS);
   state.chunkMs = selectedChunkSeconds * 1000;
   const selectedAudioSource = applyAudioSource(audioSourceEl?.value || "mic");
+  state.recordingAudioSource = selectedAudioSource;
   state.seq = 0;
   state.offsetMs = 0;
   state.runtimeSessionId = "";
@@ -2795,9 +2819,10 @@ async function startRecording() {
     await readyPromise;
 
     setUiRecording(true);
-    if (selectedAudioSource === "display") {
+    const effectiveAudioSource = normalizeAudioSource(state.recordingAudioSource || selectedAudioSource);
+    if (effectiveAudioSource === "display") {
       setStatus("recording_display_audio");
-    } else if (selectedAudioSource === "both") {
+    } else if (effectiveAudioSource === "both") {
       setStatus("recording_mic_and_display");
     } else {
       setStatus("recording_mic");
@@ -3648,7 +3673,16 @@ async function loadCapabilities() {
 async function loadAuthState() {
   try {
     const response = await fetch("/api/auth/me");
-    if (!response.ok) return;
+    if (!response.ok) {
+      try {
+        state.auth.isGuest = localStorage.getItem("whistx_guest_mode") === "1";
+      } catch {
+        state.auth.isGuest = false;
+      }
+      setAppLocked(!canUseWorkspace());
+      renderAuthState();
+      return;
+    }
     const payload = await response.json();
     state.auth.authenticated = !!payload.authenticated;
     state.auth.isGuest = false;
@@ -3690,6 +3724,13 @@ async function loadAuthState() {
     }
   } catch {
     // ignore auth bootstrap errors
+    try {
+      state.auth.isGuest = localStorage.getItem("whistx_guest_mode") === "1";
+      setAppLocked(!canUseWorkspace());
+      renderAuthState();
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -3792,10 +3833,17 @@ async function registerAccount() {
 
 async function logout() {
   await fetch("/api/auth/logout", { method: "POST" }).catch(() => null);
+  if (state.recording || state.finalizingStop) {
+    stopRecording();
+    for (let i = 0; i < 60 && (state.recording || state.finalizingStop); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
   state.auth.authenticated = false;
   state.auth.isGuest = false;
   state.auth.user = null;
   state.auth.pendingApprovalCount = 0;
+  state.history.total = 0;
   state.history.items = [];
   state.history.selectedId = null;
   state.viewingHistoryId = null;
@@ -3805,6 +3853,7 @@ async function logout() {
   renderEmptyTranscriptState();
   setSummary("", "未生成");
   setProofread("", "未生成");
+  resetRuntimeSessionState();
   persistGuestMode(false);
   setAppLocked(true);
   renderAuthState();
@@ -3819,13 +3868,16 @@ function loginAsGuest() {
   state.auth.isGuest = true;
   state.auth.user = null;
   state.auth.pendingApprovalCount = 0;
+  state.history.total = 0;
   state.history.items = [];
   state.history.selectedId = null;
   state.viewingHistoryId = null;
+  resetRuntimeSessionState();
   persistGuestMode(true);
   setAppLocked(false);
   renderAuthState();
   renderHistoryList();
+  updateDownloadLinks();
   showToast("ゲストモードで開始しました", "success");
 }
 
@@ -3957,6 +4009,10 @@ async function saveCurrentHistory() {
     loginEmailEl?.focus();
     return;
   }
+  if (state.recording || state.finalizingStop) {
+    showToast("録音中は保存できません", "error");
+    return;
+  }
   if (!state.runtimeSessionId || state.segments.length === 0) {
     showToast("保存できる文字起こしがありません", "error");
     return;
@@ -3983,7 +4039,13 @@ async function saveCurrentHistory() {
     return;
   }
   if (response.status === 409) {
-    showToast("このセッションは既に保存済みです", "error");
+    const payload = await response.json().catch(() => ({}));
+    showToast(
+      payload.error === "runtime_session_not_finalized"
+        ? "録音停止後に保存してください"
+        : "このセッションは既に保存済みです",
+      "error"
+    );
     return;
   }
   if (!response.ok) {

@@ -5,7 +5,7 @@ import re
 import shutil
 import uuid
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -61,6 +61,14 @@ class TranscriptStore:
         if isinstance(parsed, dict):
             return parsed
         return {}
+
+    def is_finalized(self) -> bool:
+        return is_runtime_transcript_finalized(
+            self.read_metadata(),
+            txt_path=self.txt_path,
+            jsonl_path=self.jsonl_path,
+            metadata_path=self.metadata_path,
+        )
 
     def append_final(self, record: TranscriptRecord) -> None:
         payload = asdict(record)
@@ -174,6 +182,47 @@ def read_jsonl_records(path: Path) -> list[dict]:
     return out
 
 
+def is_runtime_transcript_finalized(
+    metadata: dict,
+    *,
+    txt_path: Path,
+    jsonl_path: Path,
+    metadata_path: Path | None = None,
+) -> bool:
+    explicit = _read_finalized_flag(metadata)
+    if explicit is not None:
+        return explicit
+
+    if not txt_path.exists() or not jsonl_path.exists():
+        return False
+
+    try:
+        txt_stat_before = txt_path.stat()
+        jsonl_stat_before = jsonl_path.stat()
+        metadata_stat_before = metadata_path.stat() if metadata_path and metadata_path.exists() else None
+        txt_path.read_text(encoding="utf-8")
+        jsonl_path.read_text(encoding="utf-8")
+        txt_stat_after = txt_path.stat()
+        jsonl_stat_after = jsonl_path.stat()
+    except OSError:
+        return False
+
+    if (
+        txt_stat_before.st_size != txt_stat_after.st_size
+        or jsonl_stat_before.st_size != jsonl_stat_after.st_size
+        or txt_stat_before.st_mtime != txt_stat_after.st_mtime
+        or jsonl_stat_before.st_mtime != jsonl_stat_after.st_mtime
+    ):
+        return False
+
+    newest_mtime = max(txt_stat_after.st_mtime, jsonl_stat_after.st_mtime)
+    if metadata_stat_before is not None:
+        newest_mtime = max(newest_mtime, metadata_stat_before.st_mtime)
+
+    age_seconds = max(0.0, datetime.now(timezone.utc).timestamp() - newest_mtime)
+    return age_seconds >= 2.0
+
+
 def _render_txt_line(rec: dict) -> str:
     text = str(rec.get("text", "")).strip()
     if not text:
@@ -182,6 +231,32 @@ def _render_txt_line(rec: dict) -> str:
     if not speaker:
         return text
     return f"[{speaker}] {text}"
+
+
+def _read_finalized_flag(metadata: dict) -> bool | None:
+    if not isinstance(metadata, dict):
+        return None
+
+    for key in ("finalized", "isFinalized", "finalizedAt", "finishedAt", "stoppedAt", "endedAt", "closedAt"):
+        value = metadata.get(key)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            if value.strip():
+                return True
+            continue
+        if value is not None:
+            return True
+
+    status = metadata.get("status")
+    if isinstance(status, str):
+        lowered = status.strip().lower()
+        if lowered in {"finalized", "finished", "complete", "completed", "stopped", "closed", "done"}:
+            return True
+        if lowered in {"active", "running", "recording", "pending", "in_progress", "in-progress", "open"}:
+            return False
+
+    return None
 
 
 def _ext_from_mime(mime_type: str) -> str:

@@ -328,6 +328,7 @@ async def auth_bootstrap_admin(
             is_active=True,
         )
         user.approved_by_user_id = user.id
+        user.last_login_at = datetime.utcnow()
         session = create_user_session(
             db,
             user=user,
@@ -403,6 +404,7 @@ async def auth_keycloak_callback(
         )
         userinfo = await asyncio.to_thread(_fetch_keycloak_userinfo, discovery, str(token_payload.get("access_token") or ""))
         user = _upsert_keycloak_user(db, userinfo)
+        user.last_login_at = datetime.utcnow()
         session = create_user_session(
             db,
             user=user,
@@ -958,6 +960,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
 
         if session is not None:
             await _run_diarization_for_session(ws, session)
+            _mark_session_finalized(session)
 
         ACTIVE_SOCKETS.discard(ws)
         await _broadcast_conn_count()
@@ -1175,6 +1178,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
             "diarizationNumSpeakers": diarization_num_speakers,
             "diarizationMinSpeakers": diarization_min_speakers,
             "diarizationMaxSpeakers": diarization_max_speakers,
+            "finalized": False,
             "createdAt": datetime.now(timezone.utc).isoformat(),
         }
     )
@@ -1329,8 +1333,8 @@ def _trim_context_terms_to_budget(
     return kept
 
 
-REPEAT_COLLAPSE_RE = re.compile(r"(.{2,16}?)\1{3,}")
-REPEAT_DETECT_RE = re.compile(r"(.{2,16}?)\1{5,}")
+REPEAT_COLLAPSE_RE = re.compile(r"(.{2,24}?)\1{2,}")
+REPEAT_DETECT_RE = re.compile(r"(.{2,24}?)\1{4,}")
 PHRASE_TOKEN_RE = re.compile(r"[^。！？!?]+[。！？!?]?")
 JP_CHAR_CLASS = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
 JP_SPACE_BEFORE_RE = re.compile(rf"(?<=[{JP_CHAR_CLASS}])\s+(?=[{JP_CHAR_CLASS}])")
@@ -1349,11 +1353,12 @@ def _sanitize_transcript_text(text: str, *, language: str | None = None) -> str:
 
     # 連続反復を縮約し、意味の薄い暴走出力を抑える。
     for _ in range(3):
-        collapsed = REPEAT_COLLAPSE_RE.sub(lambda m: m.group(1) * 2, value)
+        collapsed = REPEAT_COLLAPSE_RE.sub(lambda m: m.group(1), value)
         if collapsed == value:
             break
         value = collapsed
 
+    value = _collapse_long_repeated_char_loops(value)
     value = _collapse_repeated_phrase_loops(value)
 
     if _is_repetition_noise(value):
@@ -1458,7 +1463,6 @@ def _collapse_repeated_phrase_loops(text: str) -> str:
 
             if repeats >= 3:
                 out.extend(unit[: unit_size])
-                out.extend(unit[: unit_size])
                 i = cursor
                 collapsed = True
                 break
@@ -1469,6 +1473,42 @@ def _collapse_repeated_phrase_loops(text: str) -> str:
 
     collapsed_text = " ".join(out).strip()
     return collapsed_text or text
+
+
+def _collapse_long_repeated_char_loops(text: str) -> str:
+    value = (text or "").strip()
+    if len(value) < 48:
+        return value
+
+    out: list[str] = []
+    i = 0
+    text_len = len(value)
+    while i < text_len:
+        collapsed = False
+        max_unit = min(64, (text_len - i) // 3)
+        for unit_size in range(max_unit, 8, -1):
+            unit = value[i : i + unit_size]
+            if len(unit) < unit_size or unit.strip() != unit:
+                continue
+
+            repeats = 1
+            cursor = i + unit_size
+            while cursor + unit_size <= text_len and value[cursor : cursor + unit_size] == unit:
+                repeats += 1
+                cursor += unit_size
+
+            if repeats >= 3:
+                out.append(unit)
+                i = cursor
+                collapsed = True
+                break
+
+        if not collapsed:
+            out.append(value[i])
+            i += 1
+
+    collapsed_text = "".join(out).strip()
+    return collapsed_text or value
 
 
 def _is_near_duplicate(current: str, previous: str) -> bool:
@@ -1974,6 +2014,7 @@ def _fetch_keycloak_userinfo(discovery: dict[str, Any], access_token: str) -> di
 def _upsert_keycloak_user(db: Session, userinfo: dict[str, Any]) -> User:
     subject = str(userinfo.get("sub") or "").strip()
     email = str(userinfo.get("email") or "").strip().lower()
+    email_verified = userinfo.get("email_verified")
     display_name = (
         str(userinfo.get("name") or "").strip()
         or str(userinfo.get("preferred_username") or "").strip()
@@ -1981,6 +2022,8 @@ def _upsert_keycloak_user(db: Session, userinfo: dict[str, Any]) -> User:
     )
     if not subject or not email:
         raise RuntimeError("keycloak_userinfo_missing_identity")
+    if email_verified is False or email_verified is None:
+        raise RuntimeError("keycloak_email_not_verified")
 
     user = get_user_by_identity(db, provider=KEYCLOAK_PROVIDER, subject=subject)
     if user is None:
@@ -1988,13 +2031,7 @@ def _upsert_keycloak_user(db: Session, userinfo: dict[str, Any]) -> User:
         if user is not None:
             if user.auth_provider and user.auth_subject and (user.auth_provider != KEYCLOAK_PROVIDER or user.auth_subject != subject):
                 raise RuntimeError("keycloak_identity_conflict")
-            user.auth_provider = KEYCLOAK_PROVIDER
-            user.auth_subject = subject
-            user.display_name = user.display_name or display_name
-            if not user.is_active:
-                user.is_active = True
-            if user.approved_at is None:
-                user.approved_at = datetime.utcnow()
+            raise RuntimeError("keycloak_account_link_required")
         else:
             user = create_user(
                 db,
@@ -2014,6 +2051,13 @@ def _upsert_keycloak_user(db: Session, userinfo: dict[str, Any]) -> User:
         if display_name and not user.display_name:
             user.display_name = display_name
     return user
+
+
+def _mark_session_finalized(session: LiveSession) -> None:
+    metadata = session.store.read_metadata()
+    metadata["finalized"] = True
+    metadata["finalizedAt"] = datetime.now(timezone.utc).isoformat()
+    session.store.write_metadata(metadata)
 
 
 def _serialize_user(user: User | None) -> dict[str, Any] | None:
