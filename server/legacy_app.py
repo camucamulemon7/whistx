@@ -122,6 +122,7 @@ class LiveSession:
     transcript_history: list[str]
     context_terms: list[str]
     last_emitted_text: str
+    last_emitted_ts_end: int
     collect_audio_for_diarization: bool
     diarization_num_speakers: int
     diarization_min_speakers: int
@@ -1155,8 +1156,11 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
             else:
                 ts_end = item.offset_ms + max(item.duration_ms, 600)
 
-            if ts_end < ts_start:
-                ts_end = ts_start
+            ts_start, ts_end = _coerce_monotonic_bounds(
+                ts_start=ts_start,
+                ts_end=ts_end,
+                previous_end_ms=session.last_emitted_ts_end,
+            )
 
             record = TranscriptRecord(
                 type="final",
@@ -1173,6 +1177,7 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
             )
             session.store.append_final(record)
             session.last_emitted_text = text
+            session.last_emitted_ts_end = ts_end
             session.transcript_history.append(text)
             _append_context(session, text)
             emitted_segments += 1
@@ -1247,6 +1252,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         transcript_history=[],
         context_terms=[],
         last_emitted_text="",
+        last_emitted_ts_end=0,
         collect_audio_for_diarization=DIARIZER is not None and diarization_requested,
         diarization_num_speakers=diarization_num_speakers,
         diarization_min_speakers=diarization_min_speakers,
@@ -1437,6 +1443,7 @@ JP_PUNCT_SPACE_RE = re.compile(rf"\s+([、。，．・：；！？）］】」�
 OVERLAP_COMPARE_DROP_RE = re.compile(r"[\s、。，．・：；！？!?,.:;()\[\]{}<>\"'「」『』]+")
 MIN_OVERLAP_MATCH_CHARS = 12
 MAX_OVERLAP_MATCH_CHARS = 96
+MIN_OVERLAP_MATCH_RATIO = 0.5
 
 
 def _sanitize_transcript_text(text: str, *, language: str | None = None) -> str:
@@ -1473,11 +1480,15 @@ def _trim_overlap_prefix(current: str, previous: str) -> str:
         return current
 
     max_overlap = min(len(previous_normalized), len(current_normalized), MAX_OVERLAP_MATCH_CHARS)
-    if max_overlap < MIN_OVERLAP_MATCH_CHARS:
+    min_required_overlap = max(
+        MIN_OVERLAP_MATCH_CHARS,
+        int(min(len(previous_normalized), len(current_normalized)) * MIN_OVERLAP_MATCH_RATIO),
+    )
+    if max_overlap < min_required_overlap:
         return current
 
     best_overlap = 0
-    for overlap_len in range(max_overlap, MIN_OVERLAP_MATCH_CHARS - 1, -1):
+    for overlap_len in range(max_overlap, min_required_overlap - 1, -1):
         if previous_normalized[-overlap_len:] == current_normalized[:overlap_len]:
             best_overlap = overlap_len
             break
@@ -1487,8 +1498,19 @@ def _trim_overlap_prefix(current: str, previous: str) -> str:
 
     cut_index = current_index_map[best_overlap - 1]
     trimmed = current[cut_index:].lstrip()
+    trimmed = trimmed.lstrip("、。，．・：；！？!?,.:;）］】」』")
     return trimmed or current
 
+
+def _coerce_monotonic_bounds(*, ts_start: int, ts_end: int, previous_end_ms: int) -> tuple[int, int]:
+    start = max(0, int(ts_start))
+    end = max(start, int(ts_end))
+    previous_end = max(0, int(previous_end_ms))
+    if start < previous_end:
+        start = previous_end
+    if end < start:
+        end = start
+    return start, end
 
 def _normalize_transcript_spacing(text: str, *, language: str | None) -> str:
     lowered = (language or "").strip().lower()
@@ -1617,10 +1639,10 @@ def _is_near_duplicate(current: str, previous: str) -> bool:
 
     shorter = min(len(a), len(b))
     longer = max(len(a), len(b))
-    if shorter >= 24 and shorter / longer >= 0.8 and (a in b or b in a):
+    if shorter >= 24 and shorter / longer >= 0.92 and (a in b or b in a):
         return True
 
-    return shorter >= 24 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.93
+    return shorter >= 24 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.97
 
 
 async def _run_diarization_for_session(ws: WebSocket, session: LiveSession) -> None:

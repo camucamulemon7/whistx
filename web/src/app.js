@@ -1,6 +1,6 @@
 import { fetchCapabilities } from "./capabilities/api.js";
 import { fetchAuthState, loginRequest, bootstrapAdminRequest, registerRequest, logoutRequest, fetchPendingUsers as fetchPendingUsersRequest, approvePendingUserRequest } from "./auth/api.js";
-import { canUseWorkspace, persistGuestMode, readGuestMode, serializeUserLabel } from "./auth/session.js";
+import { canUseWorkspace as canUseWorkspaceForAuth, persistGuestMode, readGuestMode, serializeUserLabel } from "./auth/session.js";
 import { fetchHistoryList as fetchHistoryListRequest, fetchHistoryDetail, saveHistoryRequest } from "./history/api.js";
 import { applyHistoryDetailPayload, applyHistoryListPayload, clearHistoryState } from "./history/state.js";
 import { readStoredJson, readStoredValue, writeStoredValue } from "./state/storage.js";
@@ -48,6 +48,9 @@ const panelResizerEls = Array.from(document.querySelectorAll("[data-resizer]"));
 const panelToggleEls = Array.from(document.querySelectorAll("[data-panel-toggle]"));
 const chunkHintEl = $("#chunkHint");
 const presetButtons = Array.from(document.querySelectorAll("[data-chunk-preset]"));
+const settingsAdvancedToggleEl = $("#settingsAdvancedToggle");
+const inputAdvancedSettingsEl = $("#inputAdvancedSettings");
+const aiTabEls = Array.from(document.querySelectorAll("[data-ai-tab]"));
 
 const startBtn = $("#startBtn");
 const summaryBtn = $("#summaryBtn");
@@ -63,12 +66,13 @@ const saveTitleInputEl = $("#saveTitleInput");
 const saveStateBadgeEl = $("#saveStateBadge");
 const loginBtn = $("#loginBtn");
 const logoutBtn = $("#logoutBtn");
-const historyBtn = $("#historyBtn");
-const authUserLabelEl = $("#authUserLabel");
+const historyDrawerCloseEl = document.querySelector("#historyDrawerClose");
+const authUserLabelEl = document.querySelector("#authUserLabel");
 const authGuestViewEl = $("#authGuestView");
 const authUserViewEl = $("#authUserView");
 const authPanelUserTextEl = $("#authPanelUserText");
 const adminQueueBtn = $("#adminQueueBtn");
+const adminQueueBadgeEl = $("#adminQueueBadge");
 const loginEmailEl = $("#loginEmail");
 const loginPasswordEl = $("#loginPassword");
 const loginSubmitBtn = $("#loginSubmitBtn");
@@ -86,7 +90,7 @@ const registerEmailEl = $("#registerEmail");
 const registerPasswordEl = $("#registerPassword");
 const registerBtn = $("#registerBtn");
 const registerHintEl = $("#registerHint");
-const logoutPanelBtn = $("#logoutPanelBtn");
+const sidePanelPendingSummaryEl = $("#sidePanelPendingSummary");
 const historySearchInputEl = $("#historySearchInput");
 const historyListEl = $("#historyList");
 const historyEmptyEl = $("#historyEmpty");
@@ -195,6 +199,9 @@ const state = {
   proofreadAvailable: true,
   proofreadInFlight: false,
   proofreadMode: "proofread",
+  activeAiPanel: "proofread",
+  advancedSettingsOpen: false,
+  latestStatus: "idle",
   sidebarOpen: false,
   activeResizer: null,
   panelLeftRatio: 1.35,
@@ -271,6 +278,10 @@ const state = {
   adminPendingUsers: [],
 };
 
+function canUseWorkspace() {
+  return canUseWorkspaceForAuth(state.auth);
+}
+
 function selectedLanguage() {
   const value = String(languageEl?.value || "").trim().toLowerCase();
   if (!value || value === "auto") {
@@ -279,9 +290,27 @@ function selectedLanguage() {
   return value;
 }
 
+function formatStatusText(text) {
+  const raw = String(text || "").trim();
+  const normalized = raw.toLowerCase();
+  if (!raw || normalized === "idle") return "待機中";
+  if (normalized.startsWith("recording")) return "録音中";
+  if (normalized === "stopping") return "停止処理中";
+  if (normalized.startsWith("start_failed")) return "開始失敗";
+  if (normalized.includes("proofread")) return normalized.includes("error") ? "校正失敗" : "校正処理";
+  if (normalized.includes("summary")) return normalized.includes("error") ? "要約失敗" : "要約処理";
+  if (normalized === "copied") return "コピー済み";
+  if (normalized === "copy_failed") return "コピー失敗";
+  if (normalized.includes("unavailable")) return "利用不可";
+  if (normalized.includes("error")) return "エラー";
+  return raw;
+}
+
 function setStatus(text) {
-  statusTextEl.textContent = text;
-  statusTextEl.dataset.state = String(text || "").toLowerCase();
+  const raw = String(text || "").trim();
+  state.latestStatus = raw || "idle";
+  statusTextEl.textContent = formatStatusText(raw);
+  statusTextEl.dataset.state = String(raw || "idle").toLowerCase();
 }
 
 function applyBranding(title, tagline) {
@@ -302,7 +331,7 @@ function setProofreadButtonBusy(busy) {
   if (!proofreadBtn) return;
   proofreadBtn.disabled = busy;
   if (proofreadBtnLabelEl) {
-    proofreadBtnLabelEl.textContent = busy ? "実行中..." : "実行";
+    proofreadBtnLabelEl.textContent = busy ? "生成中..." : "生成";
   }
   proofreadBtn.setAttribute("aria-busy", busy ? "true" : "false");
 }
@@ -326,7 +355,7 @@ function applyProofreadMode(value) {
   }
   if (proofreadBtn && !state.proofreadInFlight) {
     if (proofreadBtnLabelEl) {
-      proofreadBtnLabelEl.textContent = "実行";
+      proofreadBtnLabelEl.textContent = "生成";
     }
     proofreadBtn.setAttribute("aria-label", `${proofreadActionLabel()}を開始`);
     proofreadBtn.title = proofreadActionLabel();
@@ -344,9 +373,59 @@ function applySidebarOpen(value) {
     sidebarBackdropEl.classList.toggle("is-open", state.sidebarOpen);
   }
   if (sidebarToggleBtn) {
-    sidebarToggleBtn.setAttribute("aria-label", state.sidebarOpen ? "サイドパネルを閉じる" : "サイドパネルを開く");
-    sidebarToggleBtn.title = state.sidebarOpen ? "サイドパネルを閉じる" : "サイドパネル";
+    sidebarToggleBtn.setAttribute("aria-label", state.sidebarOpen ? "詳細設定を閉じる" : "詳細設定を開く");
+    sidebarToggleBtn.title = state.sidebarOpen ? "詳細設定を閉じる" : "詳細設定";
   }
+}
+
+function applyHistoryDrawerOpen(open) {
+  if (!historyRailEl) return;
+  const isMobile = window.innerWidth <= 1100;
+  const isOpen = !!open && isMobile;
+  historyRailEl.classList.toggle("is-open", isOpen);
+  historyRailEl.setAttribute("aria-hidden", isMobile ? (isOpen ? "false" : "true") : "false");
+  document.body.classList.toggle("is-history-drawer-open", isOpen);
+}
+
+function applyAdvancedSettingsOpen(open) {
+  state.advancedSettingsOpen = !!open;
+  if (inputAdvancedSettingsEl) {
+    inputAdvancedSettingsEl.hidden = !state.advancedSettingsOpen;
+    inputAdvancedSettingsEl.classList.toggle("is-open", state.advancedSettingsOpen);
+  }
+  if (settingsAdvancedToggleEl) {
+    settingsAdvancedToggleEl.setAttribute("aria-expanded", state.advancedSettingsOpen ? "true" : "false");
+    settingsAdvancedToggleEl.textContent = state.advancedSettingsOpen ? "話者設定を閉じる" : "話者設定";
+  }
+}
+
+function syncAiResponsiveState() {
+  if (window.innerWidth <= 1439) {
+    ["proofread", "summary"].forEach((key) => {
+      document.querySelector(`.${key}-panel`)?.classList.remove("is-collapsed");
+      document.querySelector(`[data-panel-toggle="${key}"]`)?.classList.remove("is-collapsed");
+    });
+    return;
+  }
+  applyPanelCollapseState("proofread", !!state.panelCollapsed.proofread, { persist: false });
+  applyPanelCollapseState("summary", !!state.panelCollapsed.summary, { persist: false });
+}
+
+function applyActiveAiPanel(panel) {
+  const nextPanel = panel === "summary" ? "summary" : "proofread";
+  state.activeAiPanel = nextPanel;
+  if (proofreadPanelEl) {
+    proofreadPanelEl.classList.toggle("is-ai-active", nextPanel === "proofread");
+  }
+  if (summaryPanelEl) {
+    summaryPanelEl.classList.toggle("is-ai-active", nextPanel === "summary");
+  }
+  aiTabEls.forEach((button) => {
+    const active = button.dataset.aiTab === nextPanel;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  syncAiResponsiveState();
 }
 
 function applyWorkspaceRatios(left, center, right, options = {}) {
@@ -382,6 +461,12 @@ function updateWorkspaceGridTemplate() {
   if (!workspacePanelsEl) return;
   if (window.innerWidth <= 1100) {
     workspacePanelsEl.style.gridTemplateColumns = "1fr";
+    return;
+  }
+  if (window.innerWidth <= 1439) {
+    const left = state.panelCollapsed.transcript ? "92px" : `minmax(320px, ${state.panelLeftRatio + 0.2}fr)`;
+    const right = `minmax(280px, ${state.panelCenterRatio + state.panelRightRatio}fr)`;
+    workspacePanelsEl.style.gridTemplateColumns = `${left} ${right}`;
     return;
   }
 
@@ -816,7 +901,6 @@ function buildRuntimeUi() {
   });
 
   if (loginBtn) loginBtn.hidden = true;
-  if (historyBtn) historyBtn.hidden = true;
   if (authUserLabelEl) authUserLabelEl.textContent = "";
 
   if (runtimeUi.summaryCopyBtnEl && !runtimeUi.summaryCopyBtnEl.dataset.bound) {
@@ -943,7 +1027,7 @@ function setupWorkspaceResizers() {
   };
 
   const onPointerMove = (event) => {
-    if (!state.activeResizer || window.innerWidth <= 1100) return;
+    if (!state.activeResizer || window.innerWidth <= 1439) return;
     const rect = workspacePanelsEl.getBoundingClientRect();
     const totalWidth = rect.width;
     if (totalWidth <= 0) return;
@@ -970,7 +1054,7 @@ function setupWorkspaceResizers() {
 
   panelResizerEls.forEach((handle) => {
     handle.addEventListener("pointerdown", (event) => {
-      if (window.innerWidth <= 1100) return;
+      if (window.innerWidth <= 1439) return;
       state.activeResizer = String(handle.dataset.resizer || "");
       document.body.classList.add("is-resizing-panels");
       handle.setPointerCapture?.(event.pointerId);
@@ -1080,6 +1164,13 @@ function updateDiarizationSpeakerUi() {
   const autoMode = mode === "auto";
   const fixedMode = mode === "fixed";
   const rangeMode = mode === "range";
+
+  if (settingsAdvancedToggleEl) {
+    settingsAdvancedToggleEl.hidden = !visible;
+  }
+  if (!visible && state.advancedSettingsOpen) {
+    applyAdvancedSettingsOpen(false);
+  }
 
   if (diarizationConfigRowEl) {
     diarizationConfigRowEl.classList.toggle("is-hidden", !visible);
@@ -1372,8 +1463,9 @@ function updateHistoryEmptyState(message = "") {
 function renderHistoryList() {
   if (!historyListEl) return;
   historyListEl.innerHTML = "";
+  const historyCount = state.history.total || state.history.items.length || 0;
   if (historyCountBadgeEl) {
-    historyCountBadgeEl.textContent = `${state.history.total || state.history.items.length || 0}件`;
+    historyCountBadgeEl.textContent = historyCount + "件";
   }
   state.history.items.forEach((item) => {
     const button = document.createElement("button");
@@ -1393,7 +1485,7 @@ function renderHistoryList() {
     const language = formatLanguageLabel(item.language || "auto");
     button.innerHTML = `
       <div class="history-item-header">
-        <div class="history-item-title">${escapeHtml(item.title || "Untitled")}</div>
+        <div class="history-item-title">${escapeHtml(item.title || "無題")}</div>
         <div class="history-item-date">${escapeHtml(savedAt)}</div>
       </div>
       <div class="history-item-meta-row">
@@ -1454,24 +1546,22 @@ function renderAuthState() {
   const workspaceEnabled = authenticated || isGuest;
   const bootstrapRequired = !!state.auth.bootstrapAdminRequired;
   const isAdmin = !!state.auth.user?.isAdmin;
+  const userLabel = authenticated ? serializeUserLabel(state.auth.user) : isGuest ? "ゲスト利用中" : "未ログイン";
   if (authUserLabelEl) {
-    authUserLabelEl.textContent = isGuest ? "" : serializeUserLabel(state.auth.user);
+    authUserLabelEl.textContent = userLabel;
   }
   if (authPanelUserTextEl) {
-    authPanelUserTextEl.textContent = isGuest ? "" : serializeUserLabel(state.auth.user);
+    authPanelUserTextEl.textContent = userLabel;
   }
   const historyUserLabelEl = $("#historyUserLabel");
   if (historyUserLabelEl) {
-    historyUserLabelEl.textContent = authenticated ? serializeUserLabel(state.auth.user) : "";
+    historyUserLabelEl.textContent = authenticated ? serializeUserLabel(state.auth.user) : isGuest ? "ゲスト利用中" : "";
   }
   if (loginBtn) {
     loginBtn.hidden = workspaceEnabled;
   }
   if (logoutBtn) {
     logoutBtn.hidden = !workspaceEnabled;
-  }
-  if (historyBtn) {
-    historyBtn.disabled = !authenticated;
   }
   if (authGuestViewEl) {
     authGuestViewEl.hidden = workspaceEnabled;
@@ -1494,9 +1584,18 @@ function renderAuthState() {
   }
   if (adminQueueBtn) {
     adminQueueBtn.hidden = !authenticated || !isAdmin;
-    adminQueueBtn.textContent = state.auth.pendingApprovalCount > 0
-      ? `管理者 ${state.auth.pendingApprovalCount}`
-      : "管理者";
+  }
+  if (adminQueueBadgeEl) {
+    adminQueueBadgeEl.textContent = String(state.auth.pendingApprovalCount || 0);
+  }
+  if (sidePanelPendingSummaryEl) {
+    if (!authenticated || !isAdmin) {
+      sidePanelPendingSummaryEl.textContent = "管理者アカウントでログインすると承認待ちを確認できます。";
+    } else if (state.auth.pendingApprovalCount > 0) {
+      sidePanelPendingSummaryEl.textContent = `承認待ち ${state.auth.pendingApprovalCount} 件があります。`;
+    } else {
+      sidePanelPendingSummaryEl.textContent = "承認待ちはありません。";
+    }
   }
   if (registerBtn) {
     registerBtn.disabled = !state.selfSignupEnabled;
@@ -1527,11 +1626,13 @@ function resetCurrentSaveState() {
 
 function updateSegmentCount() {
   const count = state.segments.length;
-  segmentCountEl.textContent = `${count} segments`;
+  segmentCountEl.textContent = `${count}件`;
+  if (connCountEl) {
+    connCountEl.textContent = String(count);
+  }
 
-  // Trigger animation
   segmentCountEl.classList.remove("updated");
-  void segmentCountEl.offsetWidth; // Force reflow
+  void segmentCountEl.offsetWidth;
   segmentCountEl.classList.add("updated");
 }
 
@@ -1815,7 +1916,6 @@ function applyChunkSeconds(value) {
 function setUiRecording(active) {
   state.recording = active;
 
-  // Audio level indicator
   if (audioLevelIndicatorEl) {
     audioLevelIndicatorEl.hidden = !active;
   }
@@ -1823,7 +1923,6 @@ function setUiRecording(active) {
     renderAudioLevel(0);
   }
 
-  // Update record button state
   if (active) {
     startBtn.classList.add("is-recording");
     startBtn.querySelector(".record-label").textContent = "停止";
@@ -1835,14 +1934,13 @@ function setUiRecording(active) {
     startBtn.setAttribute("aria-pressed", "false");
     startBtn.setAttribute("aria-label", "録音を開始");
 
-    // Brief completion feedback
     if (state.log.length > 0) {
       startBtn.classList.add("is-complete");
       setTimeout(() => startBtn.classList.remove("is-complete"), 800);
     }
   }
 
-  startBtn.disabled = false; // Always enabled to allow stop
+  startBtn.disabled = false;
 }
 
 function normalizeAudioSource(value) {
@@ -2285,7 +2383,6 @@ async function ensureSocket() {
     }
 
     if (data.type === "conn") {
-      connCountEl.textContent = String(data.count ?? 0);
       return;
     }
 
@@ -2324,7 +2421,6 @@ async function ensureSocket() {
 
   ws.addEventListener("close", () => {
     state.ws = null;
-    connCountEl.textContent = "0";
     if (!state.recording) {
       setStatus("disconnected");
     }
@@ -3163,7 +3259,7 @@ async function summarizeAll() {
 
   summaryBtn.disabled = true;
   if (summaryBtnLabelEl) {
-    summaryBtnLabelEl.textContent = "実行中...";
+    summaryBtnLabelEl.textContent = "生成中...";
   }
   setStatus("summarizing");
   showToast("要約を生成中...", "default", 5000);
@@ -3216,7 +3312,7 @@ async function summarizeAll() {
   } finally {
     summaryBtn.disabled = false;
     if (summaryBtnLabelEl) {
-      summaryBtnLabelEl.textContent = "実行";
+      summaryBtnLabelEl.textContent = "生成";
     }
   }
 }
@@ -3379,9 +3475,9 @@ if (adminQueueBtn) {
   });
 }
 
-if (historyBtn) {
-  historyBtn.addEventListener("click", () => {
-    applySidebarOpen(true);
+if (historyDrawerCloseEl) {
+  historyDrawerCloseEl.addEventListener("click", () => {
+    applyHistoryDrawerOpen(false);
   });
 }
 
@@ -3423,11 +3519,17 @@ if (registerBtn) {
   });
 }
 
-if (logoutPanelBtn) {
-  logoutPanelBtn.addEventListener("click", () => {
-    logout();
+if (settingsAdvancedToggleEl) {
+  settingsAdvancedToggleEl.addEventListener("click", () => {
+    applyAdvancedSettingsOpen(!state.advancedSettingsOpen);
   });
 }
+
+aiTabEls.forEach((button) => {
+  button.addEventListener("click", () => {
+    applyActiveAiPanel(button.dataset.aiTab);
+  });
+});
 
 if (historySearchInputEl) {
   historySearchInputEl.addEventListener("input", () => {
@@ -3458,6 +3560,7 @@ document.addEventListener("keydown", (event) => {
     applySidebarOpen(false);
   }
   if (event.key === "Escape") {
+    applyHistoryDrawerOpen(false);
     hideScreenshotModal();
     closeAdminQueueModal();
   }
@@ -3479,6 +3582,10 @@ if (adminQueueModalEl) {
 
 window.addEventListener("resize", () => {
   updateWorkspaceGridTemplate();
+  if (window.innerWidth > 1100) {
+    applyHistoryDrawerOpen(false);
+  }
+  applyActiveAiPanel(state.activeAiPanel);
 });
 
 setupWorkspaceResizers();
@@ -3649,9 +3756,6 @@ handleAuthErrorFromLocation();
 async function loadCapabilities() {
   try {
     const health = await fetchCapabilities();
-    if (connCountEl) {
-      connCountEl.textContent = String(health.activeConnections ?? 0);
-    }
     renderBanners(health.banners);
     applyBranding(health.uiBrandTitle, health.uiBrandTagline);
     if (Array.isArray(health.uiPromptTemplates) && health.uiPromptTemplates.length > 0) {
@@ -3736,10 +3840,18 @@ async function loadAuthState() {
   try {
     const payload = await fetchAuthState();
     if (!payload?.authenticated) {
+      state.auth.bootstrapAdminRequired = !!payload?.bootstrapAdminRequired;
+      state.selfSignupEnabled = !!payload?.selfSignupEnabled;
+      state.auth.keycloakEnabled = !!payload?.keycloakEnabled;
+      state.auth.keycloakButtonLabel = String(payload?.keycloakButtonLabel || "Keycloakでログイン");
       try {
         state.auth.isGuest = readGuestMode();
       } catch {
         state.auth.isGuest = false;
+      }
+      if (!state.auth.isGuest && !state.auth.bootstrapAdminRequired) {
+        state.auth.isGuest = true;
+        persistGuestMode(true);
       }
       setAppLocked(!canUseWorkspace());
       renderAuthState();
@@ -3787,6 +3899,10 @@ async function loadAuthState() {
     // ignore auth bootstrap errors
     try {
       state.auth.isGuest = readGuestMode();
+      if (!state.auth.isGuest && !state.auth.bootstrapAdminRequired) {
+        state.auth.isGuest = true;
+        persistGuestMode(true);
+      }
       setAppLocked(!canUseWorkspace());
       renderAuthState();
     } catch {
@@ -4017,6 +4133,9 @@ async function openHistoryDetail(historyId) {
   try {
     const payload = await fetchHistoryDetail(historyId);
     renderHistoryDetail(payload);
+    if (window.innerWidth <= 1100) {
+      applyHistoryDrawerOpen(false);
+    }
   } catch {
     showToast("履歴の取得に失敗しました", "error");
   }
@@ -4098,8 +4217,10 @@ setProofread("", "未生成");
 renderAuthState();
 applyProofreadMode(proofreadModeEl?.value || "proofread");
 if (summaryBtnLabelEl) {
-  summaryBtnLabelEl.textContent = "実行";
+  summaryBtnLabelEl.textContent = "生成";
 }
+applyAdvancedSettingsOpen(false);
+applyActiveAiPanel(state.activeAiPanel);
 applySidebarOpen(false);
 setStatus("idle");
 

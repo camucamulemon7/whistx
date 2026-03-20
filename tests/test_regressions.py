@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 import tempfile
 import types
@@ -36,6 +37,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from server import app as app_module
+from server import legacy_app
 from server.app import LoginRequest
 from server.models import TranscriptHistory, TranscriptSegment, User
 from server.services import auth_service, history_service
@@ -288,6 +290,20 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(payload['authenticated'])
         self.assertEqual(payload['pendingApprovalCount'], 3)
 
+    def test_trim_overlap_prefix_requires_substantial_match(self) -> None:
+        previous = '本日の会議では新製品の価格改定について説明します'
+        current = '価格改定について説明します。次に販売計画を確認します'
+        self.assertEqual(legacy_app._trim_overlap_prefix(current, previous), '次に販売計画を確認します')
+
+    def test_near_duplicate_detection_does_not_drop_extended_text(self) -> None:
+        previous = '本日の会議では新製品の価格改定について説明します'
+        current = '本日の会議では新製品の価格改定について詳細を説明します'
+        self.assertFalse(legacy_app._is_near_duplicate(current, previous))
+
+    def test_monotonic_bounds_prevent_timestamp_overlap(self) -> None:
+        self.assertEqual(legacy_app._coerce_monotonic_bounds(ts_start=8100, ts_end=8900, previous_end_ms=9000), (9000, 9000))
+        self.assertEqual(legacy_app._coerce_monotonic_bounds(ts_start=9100, ts_end=9500, previous_end_ms=9000), (9100, 9500))
+
     def test_register_user_rejects_when_self_signup_disabled(self) -> None:
         payload = app_module.RegisterRequest(email='user@example.com', password='password123', display_name='User')
         db = SimpleNamespace()
@@ -297,6 +313,12 @@ class RegressionTests(unittest.TestCase):
                     auth_service.register_user(payload, db)
         self.assertEqual(ctx.exception.code, 'self_signup_disabled')
         self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_frontend_workspace_guard_uses_live_auth_state(self) -> None:
+        source = (ROOT / 'web' / 'src' / 'app.js').read_text(encoding='utf-8')
+        self.assertIn('import { canUseWorkspace as canUseWorkspaceForAuth, persistGuestMode, readGuestMode, serializeUserLabel } from "./auth/session.js";', source)
+        self.assertIn('return canUseWorkspaceForAuth(state.auth);', source)
+        self.assertIsNone(re.search(r'canUseWorkspaceForAuth\(\s*\)', source))
 
 
 if __name__ == '__main__':
