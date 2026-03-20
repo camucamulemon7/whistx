@@ -165,7 +165,7 @@ def resolve_screenshot_path(root_dir: Path, session_id: str, filename: str) -> P
 
 
 
-def read_jsonl_records(path: Path) -> list[dict]:
+def read_jsonl_records(path: Path, *, strict: bool = False) -> list[dict]:
     out: list[dict] = []
     if not path.exists():
         return out
@@ -175,7 +175,9 @@ def read_jsonl_records(path: Path) -> list[dict]:
             continue
         try:
             row = json.loads(line)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            if strict:
+                raise ValueError(f"invalid_jsonl_line:{exc.lineno}") from exc
             continue
         if isinstance(row, dict):
             out.append(row)

@@ -5,6 +5,7 @@ import base64
 import difflib
 import json
 import logging
+import time
 import re
 import secrets
 import zipfile
@@ -148,13 +149,24 @@ LANGFUSE_OBSERVER = None
 OIDC_STATE_COOKIE_NAME = "whistx_oidc_state"
 KEYCLOAK_PROVIDER = "keycloak"
 KEYCLOAK_DISCOVERY_CACHE: dict[str, Any] | None = None
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300
+LOGIN_RATE_LIMIT_ATTEMPTS = 5
+LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 
 
 @app.on_event("startup")
 async def on_startup() -> None:
     global TRANSCRIBER_FACTORY, AUDIO_PREPROCESSOR, SUMMARIZER, PROOFREADER, DIARIZER, LANGFUSE_OBSERVER
 
+    _validate_runtime_configuration()
     init_db()
+    logger.info(
+        "startup config: history_dir=%s keycloak=%s self_signup=%s require_verified_email=%s",
+        settings.history_dir,
+        _keycloak_login_enabled(),
+        settings.enable_self_signup,
+        settings.keycloak_require_email_verified,
+    )
     LANGFUSE_OBSERVER = make_langfuse_observer(
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,
@@ -259,6 +271,74 @@ async def health() -> JSONResponse:
     )
 
 
+def _validate_runtime_configuration() -> None:
+    if settings.app_session_secret.strip() == "change-me":
+        logger.warning("APP_SESSION_SECRET is using the default placeholder; set a strong secret before running in shared environments")
+    if settings.keycloak_enabled and not _keycloak_login_enabled():
+        logger.warning("KEYCLOAK_ENABLED is set but issuer/client_id is incomplete; keycloak login will be disabled")
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if forwarded:
+        return forwarded
+    real_ip = (request.headers.get("x-real-ip") or "").strip()
+    if real_ip:
+        return real_ip
+    return request.client.host if request.client and request.client.host else "unknown"
+
+
+def _login_rate_limit_keys(request: Request, email: str) -> tuple[str, str]:
+    normalized = email.strip().lower()
+    return f"{_client_ip(request)}::{normalized}", f"email::{normalized}"
+
+
+def _prune_login_attempts(key: str, now: float | None = None) -> list[float]:
+    current = time.monotonic() if now is None else now
+    attempts = [stamp for stamp in LOGIN_ATTEMPTS.get(key, []) if current - stamp < LOGIN_RATE_LIMIT_WINDOW_SECONDS]
+    if attempts:
+        LOGIN_ATTEMPTS[key] = attempts
+    else:
+        LOGIN_ATTEMPTS.pop(key, None)
+    return attempts
+
+
+def _record_failed_login(key: str) -> None:
+    attempts = _prune_login_attempts(key)
+    attempts.append(time.monotonic())
+    LOGIN_ATTEMPTS[key] = attempts
+
+
+def _clear_failed_login(key: str) -> None:
+    LOGIN_ATTEMPTS.pop(key, None)
+
+
+def _login_retry_after_seconds(key: str) -> int | None:
+    attempts = _prune_login_attempts(key)
+    if len(attempts) < LOGIN_RATE_LIMIT_ATTEMPTS:
+        return None
+    oldest = min(attempts)
+    retry_after = LOGIN_RATE_LIMIT_WINDOW_SECONDS - (time.monotonic() - oldest)
+    return max(1, int(retry_after))
+
+
+def _login_retry_after_seconds_for_keys(keys: tuple[str, str]) -> int | None:
+    retry_after_values = [value for value in (_login_retry_after_seconds(key) for key in keys) if value is not None]
+    if not retry_after_values:
+        return None
+    return max(retry_after_values)
+
+
+def _map_keycloak_auth_error(exc: Exception) -> str:
+    code = str(exc)
+    mapping = {
+        "keycloak_email_not_verified": "keycloak_email_not_verified",
+        "keycloak_account_link_required": "keycloak_account_link_required",
+        "keycloak_identity_conflict": "keycloak_identity_conflict",
+    }
+    return mapping.get(code, "keycloak_failed")
+
+
 @app.get("/api/auth/me")
 async def auth_me(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     user = _get_optional_user(request, db)
@@ -282,13 +362,22 @@ async def auth_login(
     request: Request,
     db: Session = Depends(get_db),
 ) -> JSONResponse:
+    rate_limit_keys = _login_rate_limit_keys(request, payload.email)
+    retry_after = _login_retry_after_seconds_for_keys(rate_limit_keys)
+    if retry_after is not None:
+        return JSONResponse(status_code=429, content={"error": "too_many_login_attempts", "retryAfterSec": retry_after})
+
     user = get_user_by_email(db, payload.email)
     if user is None or not verify_password(user.password_hash, payload.password):
+        for key in rate_limit_keys:
+            _record_failed_login(key)
         db.rollback()
         return JSONResponse(status_code=401, content={"error": "invalid_credentials"})
     if not user.is_active:
         db.rollback()
         return JSONResponse(status_code=403, content={"error": "approval_required"})
+    for key in rate_limit_keys:
+        _clear_failed_login(key)
     user.last_login_at = datetime.utcnow()
 
     session = create_user_session(
@@ -419,7 +508,7 @@ async def auth_keycloak_callback(
     except Exception as exc:  # noqa: BLE001
         db.rollback()
         logger.warning("keycloak login failed: %s", exc)
-        _response.headers["Location"] = "/?authError=keycloak_failed"
+        _response.headers["Location"] = f"/?authError={_map_keycloak_auth_error(exc)}"
         return _response
 
     _set_session_cookie(_response, request, session.id)
@@ -2022,7 +2111,7 @@ def _upsert_keycloak_user(db: Session, userinfo: dict[str, Any]) -> User:
     )
     if not subject or not email:
         raise RuntimeError("keycloak_userinfo_missing_identity")
-    if email_verified is False or email_verified is None:
+    if email_verified is False or (email_verified is None and settings.keycloak_require_email_verified):
         raise RuntimeError("keycloak_email_not_verified")
 
     user = get_user_by_identity(db, provider=KEYCLOAK_PROVIDER, subject=subject)

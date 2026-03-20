@@ -1,0 +1,236 @@
+from __future__ import annotations
+
+import asyncio
+import sys
+import tempfile
+import types
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+if 'argon2' not in sys.modules:
+    argon2_mod = types.ModuleType('argon2')
+    argon2_exc = types.ModuleType('argon2.exceptions')
+
+    class VerifyMismatchError(Exception):
+        pass
+
+    class PasswordHasher:
+        def hash(self, password: str) -> str:
+            return f'hashed:{password}'
+
+        def verify(self, password_hash: str, password: str) -> bool:
+            return password_hash == f'hashed:{password}'
+
+    argon2_mod.PasswordHasher = PasswordHasher
+    argon2_exc.VerifyMismatchError = VerifyMismatchError
+    sys.modules['argon2'] = argon2_mod
+    sys.modules['argon2.exceptions'] = argon2_exc
+
+from fastapi import Request
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from server import app as app_module
+from server.app import LoginRequest
+from server.models import TranscriptHistory, TranscriptSegment, User
+from server.services import history_service
+from server.transcript_store import read_jsonl_records
+
+
+class DummyDB:
+    def rollback(self) -> None:
+        pass
+
+
+def make_request(client_host: str = "127.0.0.1") -> Request:
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/auth/login",
+        "headers": [(b"host", b"testserver"), (b"user-agent", b"pytest")],
+        "client": (client_host, 12345),
+        "query_string": b"",
+    }
+    return Request(scope)
+
+
+class RegressionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        app_module.LOGIN_ATTEMPTS.clear()
+
+    def test_login_route_rate_limits_after_repeated_failures(self) -> None:
+        payload = LoginRequest(email="user@example.com", password="wrongpass")
+        request = make_request()
+        db = DummyDB()
+
+        with patch.object(app_module, "get_user_by_email", return_value=None):
+            for _ in range(5):
+                response = asyncio.run(app_module.auth_login(payload, request, db))
+                self.assertEqual(response.status_code, 401)
+
+            response = asyncio.run(app_module.auth_login(payload, request, db))
+            self.assertEqual(response.status_code, 429)
+            self.assertIn("too_many_login_attempts", response.body.decode("utf-8"))
+
+    def test_keycloak_upsert_rejects_unverified_email_when_required(self) -> None:
+        db = DummyDB()
+        userinfo = {"sub": "sub-1", "email": "user@example.com", "email_verified": None}
+
+        with patch.object(app_module, "settings", SimpleNamespace(keycloak_require_email_verified=True)):
+            with self.assertRaises(RuntimeError) as ctx:
+                app_module._upsert_keycloak_user(db, userinfo)
+
+        self.assertEqual(str(ctx.exception), "keycloak_email_not_verified")
+
+    def test_history_save_rejects_unfinalized_runtime_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            transcripts_dir = root / "transcripts"
+            history_dir = root / "history"
+            transcripts_dir.mkdir()
+            history_dir.mkdir()
+
+            session_id = "sess-1"
+            (transcripts_dir / f"{session_id}.txt").write_text("hello\n", encoding="utf-8")
+            (transcripts_dir / f"{session_id}.jsonl").write_text(
+                '{"type":"final","seq":0,"text":"hello","tsStart":0,"tsEnd":100}\n',
+                encoding="utf-8",
+            )
+            (transcripts_dir / f"{session_id}.meta.json").write_text(
+                '{"finalized":false,"accessToken":"token"}',
+                encoding="utf-8",
+            )
+
+            user = User(
+                id=1,
+                email="user@example.com",
+                password_hash="hash",
+                is_active=True,
+                is_admin=False,
+            )
+
+            with patch.object(
+                history_service,
+                "settings",
+                SimpleNamespace(transcripts_dir=transcripts_dir, history_dir=history_dir),
+            ):
+                with patch.object(history_service, "is_runtime_transcript_finalized", return_value=False):
+                    with self.assertRaises(history_service.HistoryError) as ctx:
+                        history_service.save_history(
+                            db=SimpleNamespace(scalar=lambda *_: None, add=lambda *_: None, flush=lambda: None),
+                            user=user,
+                            runtime_session_id=session_id,
+                            runtime_session_token="token",
+                            title=None,
+                            summary_text=None,
+                            proofread_text=None,
+                        )
+
+            self.assertEqual(ctx.exception.code, "runtime_session_not_finalized")
+            self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_runtime_snapshot_parse_error_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            transcripts_dir = root / "transcripts"
+            transcripts_dir.mkdir()
+
+            session_id = "sess-parse"
+            (transcripts_dir / f"{session_id}.txt").write_text("hello\n", encoding="utf-8")
+            (transcripts_dir / f"{session_id}.jsonl").write_text('{"type":"final"}\n{broken}\n', encoding="utf-8")
+
+            with patch.object(
+                history_service,
+                "settings",
+                SimpleNamespace(transcripts_dir=transcripts_dir),
+            ):
+                with self.assertRaises(history_service.HistoryError) as ctx:
+                    history_service.load_runtime_snapshot(session_id)
+
+            self.assertEqual(ctx.exception.code, "transcript_parse_failed")
+            self.assertEqual(ctx.exception.status_code, 500)
+
+    def test_history_detail_payload_falls_back_to_runtime_screenshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            history_dir = root / "history"
+            screenshots_dir = history_dir / "1" / "hist-1" / "screenshots"
+            screenshots_dir.mkdir(parents=True)
+            (screenshots_dir / "000001.png").write_bytes(b"png")
+            (screenshots_dir / "000001.webp").write_bytes(b"webp")
+
+            saved_at = datetime.now(timezone.utc)
+            history = TranscriptHistory(
+                id="hist-1",
+                user_id=1,
+                runtime_session_id="sess-1",
+                title="sample",
+                language="ja",
+                audio_source="mic",
+                segment_count=1,
+                plain_text="hello",
+                summary_text=None,
+                proofread_text=None,
+                has_diarization=False,
+                artifact_dir="1/hist-1",
+                txt_path="1/hist-1/transcript.txt",
+                jsonl_path="1/hist-1/transcript.jsonl",
+                zip_path="1/hist-1/transcript.zip",
+                created_at=saved_at,
+                updated_at=saved_at,
+                saved_at=saved_at,
+            )
+            history.segments = [
+                TranscriptSegment(
+                    seq=1,
+                    segment_id=None,
+                    text="hello",
+                    ts_start=0,
+                    ts_end=100,
+                    chunk_offset_ms=None,
+                    chunk_duration_ms=None,
+                    language="ja",
+                    speaker=None,
+                    screenshot_path=None,
+                    created_at=saved_at,
+                )
+            ]
+
+            with patch.object(
+                history_service,
+                "settings",
+                SimpleNamespace(history_dir=history_dir),
+            ):
+                payload = history_service.build_history_detail_payload(history)
+
+            screenshot_url = payload["segments"][0]["screenshotUrl"]
+            self.assertIsNotNone(screenshot_url)
+            self.assertTrue(screenshot_url.endswith("/000001.webp"))
+
+    def test_jsonl_strict_reader_raises_on_invalid_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "broken.jsonl"
+            path.write_text('{"type":"final"}\n{broken}\n', encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                read_jsonl_records(path, strict=True)
+
+    def test_keycloak_error_mapping_is_specific(self) -> None:
+        self.assertEqual(
+            app_module._map_keycloak_auth_error(RuntimeError("keycloak_email_not_verified")),
+            "keycloak_email_not_verified",
+        )
+        self.assertEqual(
+            app_module._map_keycloak_auth_error(RuntimeError("keycloak_account_link_required")),
+            "keycloak_account_link_required",
+        )
+        self.assertEqual(app_module._map_keycloak_auth_error(RuntimeError("something_else")), "keycloak_failed")
+
+
+if __name__ == "__main__":
+    unittest.main()

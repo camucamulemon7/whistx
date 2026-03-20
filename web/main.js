@@ -83,6 +83,7 @@ const historySearchInputEl = $("#historySearchInput");
 const historyListEl = $("#historyList");
 const historyEmptyEl = $("#historyEmpty");
 const historyCountBadgeEl = $("#historyCountBadge");
+const recordTelemetryEl = $("#recordTelemetry");
 const copySummaryBtnEl = $("#copySummaryBtn");
 const screenshotModalEl = $("#screenshotModal");
 const screenshotModalCloseEl = $("#screenshotModalClose");
@@ -137,6 +138,8 @@ const SCREENSHOT_DIFF_HEIGHT = 36;
 const SCREENSHOT_DIFF_PIXEL_THRESHOLD = 12;
 const SCREENSHOT_DIFF_MEAN_THRESHOLD = 4;
 const SCREENSHOT_DIFF_CHANGED_RATIO_THRESHOLD = 0.015;
+const CLIENT_VAD_DROP_ENABLED = false;
+const HISTORY_SEARCH_DEBOUNCE_MS = 180;
 const DEFAULT_SOC_PROMPT_TEMPLATE = `SoC, ASIC, chiplet, CPU, GPU, NPU, DSP, ISP, VPU, DPU, MCU, PMU, NoC, interconnect, AXI, AXI4, AXI-Lite, AHB, APB, ACE, CHI, UCIe, PCIe, CXL, DDR, DDR4, DDR5, LPDDR4, LPDDR5, HBM, SRAM, ROM, eMMC, UFS, PHY, SerDes, PLL, DLL, RC oscillator, clock, clock tree, clock gating, reset, async reset, sync reset, power domain, voltage island, retention, isolation, level shifter, DVFS, AVS, UPF, CPF, RTL, SystemVerilog, Verilog, VHDL, UVM, testbench, assertion, SVA, lint, SpyGlass, CDC, RDC, STA, MCMM, OCV, AOCV, POCV, derate, setup, hold, recovery, removal, skew, jitter, uncertainty, timing closure, timing path, false path, multicycle path, path group, endpoint, startpoint, slack, WNS, TNS, violating path, critical path, synthesis, logic synthesis, Design Compiler, Genus, netlist, mapped netlist, unmapped netlist, compile, incremental compile, retiming, boundary optimization, datapath optimization, resource sharing, register balancing, ECO, formal, equivalence check, LEC, Conformal, Formality, gate-level simulation, GLS, SDF, back annotation, place and route, place-and-route, PnR, floorplan, floorplanning, macro placement, standard cell, utilization, density, congestion, global placement, detailed placement, legalization, CTS, clock tree synthesis, useful skew, hold fixing, setup fixing, routing, global route, detailed route, track assignment, antenna, filler cell, decap, tap cell, endcap, spare cell, spare gate, metal fill, density fill, ECO route, route guide, signoff, sign-off, DRC, LVS, ERC, extraction, parasitic extraction, RC extraction, SPEF, DEF, LEF, Liberty, .lib, TLU+, QRC, StarRC, Quantus, IR drop, dynamic IR drop, static IR drop, EM, electromigration, voltage drop, power integrity, signal integrity, SI, crosstalk, noise, glitch, overshoot, undershoot, hotspot, thermal, leakage, dynamic power, switching power, internal power, leakage power, power analysis, PrimeTime PX, PrimePower, Voltus, RedHawk, vectorless, VCD, FSDB, SAIF, toggle rate, activity factor, inrush current, rush current, decoupling capacitor, decap cell, package model, bump, substrate, interposer, TSV, process node, 28nm, 16nm, 12nm, 7nm, 5nm, 4nm, 3nm, FinFET, GAA, foundry, TSMC, Samsung, Intel, PDK, DFM, manufacturability, yield, wafer, lot, mask, reticle, tape-out, respin, metal fix, MPW, shuttle, bring-up, validation, characterization, errata, workaround, DFT, scan, scan chain, scan compression, EDT, ATPG, stuck-at, transition fault, path delay fault, bridging fault, JTAG, boundary scan, MBIST, LBIST, BISR, repair, fuse, eFuse, OTP, secure boot, TrustZone, TEE, firmware, bootloader, NAND, NAND flash, Toggle NAND, ONFI, raw NAND, managed NAND, SLC, MLC, TLC, QLC, PLC, 3D NAND, V-NAND, charge trap, floating gate, page, block, plane, die, LUN, bad block, bad block management, BBT, ECC, BCH, LDPC, RAID, read disturb, program disturb, erase disturb, wear leveling, garbage collection, overprovisioning, endurance, retention, BER, bit error rate, read retry, soft decoding, threshold voltage, ISPP, incremental step pulse programming, erase verify, program verify, copyback, cache read, cache program, multi-plane, interleaving, channel, CE, RE, WE, ALE, CLE, R/B, spare area, OOB, metadata, FTL, flash translation layer, NVMe, SATA, controller, queue depth, throughput, latency, bandwidth, QoS, arbiter, scheduler, mux, demux, crossbar, SRAM compiler, memory compiler, register file, dual port RAM, single port RAM, SRAM macro, macro, hard macro, soft macro, black box, hierarchy, partition, block-level, top-level, full-chip, chip top, top module, hierarchy flattening, dont_touch, set_false_path, set_multicycle_path, create_clock, generated clock, propagated clock, ideal clock, set_input_delay, set_output_delay, set_clock_uncertainty, set_clock_groups, operating condition, corner, slow corner, fast corner, typical corner, SS, FF, TT, RCmax, RCmin, setup view, hold view.`;
 
 const runtimeUi = {
@@ -148,6 +151,7 @@ const runtimeUi = {
   screenshotModalImageEl: null,
   summaryCopyBtnEl: null,
   appLocked: true,
+  bodyScrollLocks: 0,
 };
 
 const state = {
@@ -162,6 +166,10 @@ const state = {
   finalizingStop: false,
   recording: false,
   recordingAudioSource: "mic",
+  recordingRequestedAudioSource: "mic",
+  recordingFallbackReason: "",
+  recordingStartedAt: 0,
+  recordedChunkCount: 0,
   runtimeSessionId: "",
   runtimeSessionToken: "",
   savedHistoryId: null,
@@ -844,13 +852,70 @@ function setAppLocked(locked) {
   }
 }
 
+function lockBodyScroll() {
+  runtimeUi.bodyScrollLocks = Math.max(0, Number(runtimeUi.bodyScrollLocks || 0)) + 1;
+  document.body.style.overflow = "hidden";
+  document.body.classList.add("is-modal-open");
+}
+
+function unlockBodyScroll() {
+  runtimeUi.bodyScrollLocks = Math.max(0, Number(runtimeUi.bodyScrollLocks || 0) - 1);
+  if (runtimeUi.bodyScrollLocks === 0) {
+    document.body.style.overflow = "";
+    document.body.classList.remove("is-modal-open");
+  }
+}
+
+function setHistorySearchQuery(value) {
+  state.history.query = String(value || "").trim();
+  state.history.offset = 0;
+  if (state.historySearchTimer) {
+    clearTimeout(state.historySearchTimer);
+    state.historySearchTimer = null;
+  }
+  state.historySearchTimer = setTimeout(() => {
+    state.historySearchTimer = null;
+    loadHistoryList();
+  }, HISTORY_SEARCH_DEBOUNCE_MS);
+}
+
+function formatModeLabel(mode) {
+  if (mode === "both") return "両方";
+  if (mode === "display") return "画面共有";
+  return "マイク";
+}
+
+function updateRecordingTelemetry() {
+  if (!recordTelemetryEl) return;
+  if (!state.recording) {
+    recordTelemetryEl.hidden = true;
+    recordTelemetryEl.textContent = "";
+    return;
+  }
+
+  const requested = formatModeLabel(state.recordingRequestedAudioSource || state.recordingAudioSource || "mic");
+  const effective = formatModeLabel(state.recordingAudioSource || "mic");
+  const sourceText = requested === effective ? `入力: ${effective}` : `入力: ${requested} → ${effective}`;
+  const vadFrames = Math.max(0, state.vadFrameCount);
+  const speechRatio = vadFrames > 0 ? state.vadSpeechFrameCount / vadFrames : 0;
+  const vadText = state.vadAnalyser ? `VAD ${(speechRatio * 100).toFixed(0)}%` : "VAD n/a";
+  const gainText = state.captureGainNode ? `GAIN ${state.captureAutoGainLevel.toFixed(1)}x` : "GAIN 1.0x";
+  const chunkText = state.recordedChunkCount > 0 ? `CHUNK ${state.recordedChunkCount}` : "CHUNK 0";
+  const elapsedMs = state.recordingStartedAt ? Math.max(0, performance.now() - state.recordingStartedAt) : 0;
+  const elapsedText = `TIME ${(elapsedMs / 1000).toFixed(1)}s`;
+  const fallbackText = state.recordingFallbackReason ? `FALLBACK ${state.recordingFallbackReason}` : "";
+
+  recordTelemetryEl.hidden = false;
+  recordTelemetryEl.textContent = [sourceText, vadText, gainText, chunkText, elapsedText, fallbackText].filter(Boolean).join(" / ");
+}
+
 function showScreenshotModal(src, alt = "スクリーンショット") {
   if (!runtimeUi.screenshotModalEl || !runtimeUi.screenshotModalImageEl) return;
   runtimeUi.screenshotModalImageEl.src = src;
   runtimeUi.screenshotModalImageEl.alt = alt;
   runtimeUi.screenshotModalEl.hidden = false;
   runtimeUi.screenshotModalEl.classList.add("is-open");
-  document.body.style.overflow = "hidden";
+  lockBodyScroll();
 }
 
 function hideScreenshotModal() {
@@ -858,7 +923,7 @@ function hideScreenshotModal() {
   runtimeUi.screenshotModalEl.classList.remove("is-open");
   runtimeUi.screenshotModalEl.hidden = true;
   runtimeUi.screenshotModalImageEl.src = "";
-  document.body.style.overflow = "";
+  unlockBodyScroll();
 }
 
 function setupWorkspaceResizers() {
@@ -1361,7 +1426,7 @@ function renderHistoryList() {
 function closeAdminQueueModal() {
   if (!adminQueueModalEl) return;
   adminQueueModalEl.hidden = true;
-  document.body.style.overflow = "";
+  unlockBodyScroll();
 }
 
 function renderAdminPendingUsers() {
@@ -1955,12 +2020,12 @@ function shouldSkipScreenshotByDiff(signature) {
 }
 
 async function requestMicStream(sourceMode = "mic") {
-  const mixed = sourceMode === "both";
+  void sourceMode;
   return navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
-      noiseSuppression: !mixed,
-      autoGainControl: !mixed,
+      noiseSuppression: true,
+      autoGainControl: false,
     },
   });
 }
@@ -2191,8 +2256,10 @@ async function prepareInputStream(sourceMode) {
   const diagnostics = logDisplayCaptureDiagnostics(displayStream, mode);
   if (!hasAudioTrack(displayStream)) {
     showToast("画面共有音声が取れないため、マイクのみで開始します", "default", 5000);
+    setStatus("recording_mic_fallback");
     state.vadRmsThreshold = vadThresholdForSource("mic");
     state.recordingAudioSource = "mic";
+    state.recordingFallbackReason = "display_audio_not_found";
     state.displayStream = displayStream;
     setupDisplayCaptureVideo(displayStream);
     bindDisplayEndEvents(displayStream);
@@ -2453,6 +2520,7 @@ function sampleVad() {
     state.vadSpeechFrameCount += 1;
     state.vadLastSpeechAt = performance.now();
   }
+  updateRecordingTelemetry();
 }
 
 async function setupVad(stream) {
@@ -2485,6 +2553,7 @@ async function setupVad(stream) {
   state.vadSpeechFrameCount = 0;
   state.vadLastSpeechAt = performance.now();
   state.vadTimer = setInterval(sampleVad, VAD_SAMPLE_MS);
+  updateRecordingTelemetry();
 }
 
 function stopVad() {
@@ -2524,6 +2593,7 @@ function stopVad() {
   state.vadLastSpeechAt = 0;
   state.audioLevel = 0;
   renderAudioLevel(0);
+  updateRecordingTelemetry();
 }
 
 function cleanupCaptureGraph() {
@@ -2587,6 +2657,9 @@ function buildVadDecision(snapshot) {
 }
 
 function shouldSkipChunkByVad(durationMs, vadDecision) {
+  if (!CLIENT_VAD_DROP_ENABLED) {
+    return false;
+  }
   if (!vadDecision?.enabled || !vadDecision.skip) {
     return false;
   }
@@ -2618,6 +2691,7 @@ async function sendChunk(blob, mimeType, durationMsOverride, vadDecision) {
   }
 
   const seq = state.seq++;
+  state.recordedChunkCount += 1;
   const buffer = await blob.arrayBuffer();
   const audio = arrayBufferToBase64(buffer);
   const screenshot = await captureDisplayScreenshot();
@@ -2749,6 +2823,11 @@ async function finalizeStop() {
     cleanupMedia();
     setUiRecording(false);
     state.segmentStartedAt = 0;
+    state.recordingStartedAt = 0;
+    state.recordingRequestedAudioSource = "mic";
+    state.recordingFallbackReason = "";
+    state.recordedChunkCount = 0;
+    updateRecordingTelemetry();
     state.finalizingStop = false;
   }
 }
@@ -2766,6 +2845,10 @@ async function startRecording() {
   state.chunkMs = selectedChunkSeconds * 1000;
   const selectedAudioSource = applyAudioSource(audioSourceEl?.value || "mic");
   state.recordingAudioSource = selectedAudioSource;
+  state.recordingRequestedAudioSource = selectedAudioSource;
+  state.recordingFallbackReason = "";
+  state.recordingStartedAt = performance.now();
+  state.recordedChunkCount = 0;
   state.seq = 0;
   state.offsetMs = 0;
   state.runtimeSessionId = "";
@@ -2820,6 +2903,7 @@ async function startRecording() {
 
     setUiRecording(true);
     const effectiveAudioSource = normalizeAudioSource(state.recordingAudioSource || selectedAudioSource);
+    updateRecordingTelemetry();
     if (effectiveAudioSource === "display") {
       setStatus("recording_display_audio");
     } else if (effectiveAudioSource === "both") {
@@ -2852,6 +2936,7 @@ async function startRecording() {
     }
     cleanupMedia();
     setUiRecording(false);
+    updateRecordingTelemetry();
   }
 }
 
@@ -3358,9 +3443,8 @@ if (logoutPanelBtn) {
 }
 
 if (historySearchInputEl) {
-  historySearchInputEl.addEventListener("change", () => {
-    state.history.query = String(historySearchInputEl.value || "").trim();
-    loadHistoryList();
+  historySearchInputEl.addEventListener("input", () => {
+    setHistorySearchQuery(historySearchInputEl.value);
   });
 }
 
@@ -3532,6 +3616,12 @@ function handleAuthErrorFromLocation() {
     showToast("Keycloak ログイン後も管理者承認が必要です", "error");
   } else if (authError === "keycloak_state") {
     showToast("Keycloak ログインの状態確認に失敗しました", "error");
+  } else if (authError === "keycloak_email_not_verified") {
+    showToast("Keycloak 側でメールアドレス確認が完了していません", "error");
+  } else if (authError === "keycloak_account_link_required") {
+    showToast("同じメールアドレスの既存アカウントがあります。管理者に Keycloak 連携を依頼してください", "error", 7000);
+  } else if (authError === "keycloak_identity_conflict") {
+    showToast("Keycloak アカウントの紐付けに競合があります", "error", 7000);
   } else if (authError === "keycloak_failed") {
     showToast("Keycloak ログインに失敗しました", "error");
   }
@@ -3750,7 +3840,13 @@ async function login() {
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    showToast(payload.error === "approval_required" ? "管理者の承認後にログインできます" : "ログインに失敗しました", "error");
+    if (payload.error === "approval_required") {
+      showToast("管理者の承認後にログインできます", "error");
+    } else if (payload.error === "too_many_login_attempts") {
+      showToast(`ログイン試行が多すぎます。${Number(payload.retryAfterSec || 0)}秒後に再試行してください`, "error", 5000);
+    } else {
+      showToast("ログインに失敗しました", "error");
+    }
     return;
   }
 
@@ -3900,7 +3996,7 @@ async function openAdminQueueModal() {
   await loadPendingUsers();
   if (!adminQueueModalEl) return;
   adminQueueModalEl.hidden = false;
-  document.body.style.overflow = "hidden";
+  lockBodyScroll();
 }
 
 async function approvePendingUser(userId) {
