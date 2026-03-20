@@ -1,3 +1,11 @@
+import { fetchCapabilities } from "./capabilities/api.js";
+import { fetchAuthState, loginRequest, bootstrapAdminRequest, registerRequest, logoutRequest, fetchPendingUsers as fetchPendingUsersRequest, approvePendingUserRequest } from "./auth/api.js";
+import { canUseWorkspace, persistGuestMode, readGuestMode, serializeUserLabel } from "./auth/session.js";
+import { fetchHistoryList as fetchHistoryListRequest, fetchHistoryDetail, saveHistoryRequest } from "./history/api.js";
+import { applyHistoryDetailPayload, applyHistoryListPayload, clearHistoryState } from "./history/state.js";
+import { readStoredJson, readStoredValue, writeStoredValue } from "./state/storage.js";
+import { normalizeTheme, resolveInitialTheme, themeMetaColor } from "./ui/theme.js";
+
 const $ = (selector) => document.querySelector(selector);
 
 const statusTextEl = $("#statusText");
@@ -1286,27 +1294,6 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
-}
-
-function serializeUserLabel(user) {
-  if (!user) return "ゲスト";
-  return String(user.displayName || user.email || "ログイン済み");
-}
-
-function canUseWorkspace() {
-  return !!state.auth.authenticated || !!state.auth.isGuest;
-}
-
-function persistGuestMode(enabled) {
-  try {
-    if (enabled) {
-      localStorage.setItem("whistx_guest_mode", "1");
-    } else {
-      localStorage.removeItem("whistx_guest_mode");
-    }
-  } catch {
-    // ignore
-  }
 }
 
 function setSaveBadge(label, saved = false) {
@@ -3498,9 +3485,8 @@ setupWorkspaceResizers();
 setupPanelToggles();
 
 try {
-  const savedRatiosRaw = localStorage.getItem("whistx_workspace_ratios");
-  if (savedRatiosRaw) {
-    const savedRatios = JSON.parse(savedRatiosRaw);
+  const savedRatios = readStoredJson("whistx_workspace_ratios", null);
+  if (savedRatios) {
     applyWorkspaceRatios(savedRatios.left, savedRatios.center, savedRatios.right, { persist: false });
   } else {
     applyWorkspaceRatios(state.panelLeftRatio, state.panelCenterRatio, state.panelRightRatio, { persist: false });
@@ -3510,9 +3496,8 @@ try {
 }
 
 try {
-  const savedCollapsedRaw = localStorage.getItem("whistx_panel_collapsed");
-  if (savedCollapsedRaw) {
-    const savedCollapsed = JSON.parse(savedCollapsedRaw);
+  const savedCollapsed = readStoredJson("whistx_panel_collapsed", null);
+  if (savedCollapsed) {
     applyPanelCollapseState("transcript", !!savedCollapsed.transcript, { persist: false });
     applyPanelCollapseState("proofread", !!savedCollapsed.proofread, { persist: false });
     applyPanelCollapseState("summary", !!savedCollapsed.summary, { persist: false });
@@ -3522,14 +3507,14 @@ try {
 }
 
 try {
-  const savedCaptureScreenshots = localStorage.getItem("whistx_capture_screenshots_enabled");
+  const savedCaptureScreenshots = readStoredValue("whistx_capture_screenshots_enabled", null);
   applyCaptureScreenshotsEnabled(savedCaptureScreenshots !== "0", { persist: false });
 } catch {
   applyCaptureScreenshotsEnabled(true, { persist: false });
 }
 
 try {
-  const savedScreenshotDiffSkip = localStorage.getItem("whistx_screenshot_diff_skip_enabled");
+  const savedScreenshotDiffSkip = readStoredValue("whistx_screenshot_diff_skip_enabled", null);
   applyScreenshotDiffSkipEnabled(savedScreenshotDiffSkip !== "0", { persist: false });
 } catch {
   applyScreenshotDiffSkipEnabled(true, { persist: false });
@@ -3589,17 +3574,13 @@ function renderPromptTemplateButtons(rawTemplates) {
 /* --------------------------------------------------------------------------
    Theme Toggle - Light/Dark Mode
    -------------------------------------------------------------------------- */
-function normalizeTheme(value) {
-  return value === "dark" ? "dark" : "light";
-}
-
 function applyTheme(theme, options = {}) {
   const persist = options.persist !== false;
   const normalized = normalizeTheme(theme);
   document.documentElement.setAttribute("data-theme", normalized);
   if (persist) {
     try {
-      localStorage.setItem("whistx_theme", normalized);
+      writeStoredValue("whistx_theme", normalized);
     } catch {
       // ignore
     }
@@ -3632,22 +3613,15 @@ function handleAuthErrorFromLocation() {
 function initTheme() {
   let savedTheme = "";
   try {
-    savedTheme = localStorage.getItem("whistx_theme") || "";
+    savedTheme = readStoredValue("whistx_theme", "") || "";
   } catch {
     savedTheme = "";
   }
-
-  if (savedTheme === "light" || savedTheme === "dark") {
-    applyTheme(savedTheme, { persist: false });
-    return;
-  }
-
-  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  applyTheme(prefersDark ? "dark" : "light", { persist: false });
+  applyTheme(resolveInitialTheme(savedTheme, window.matchMedia("(prefers-color-scheme: dark)").matches), { persist: false });
 }
 
 function updateThemeColorMeta(theme) {
-  const color = theme === "dark" ? "#0a0a0a" : "#f5f5f7";
+  const color = themeMetaColor(theme);
   const metaThemeColors = document.querySelectorAll('meta[name="theme-color"]');
   metaThemeColors.forEach((meta) => {
     meta.setAttribute("content", color);
@@ -3674,9 +3648,7 @@ handleAuthErrorFromLocation();
 
 async function loadCapabilities() {
   try {
-    const response = await fetch("/api/health");
-    if (!response.ok) return null;
-    const health = await response.json();
+    const health = await fetchCapabilities();
     if (connCountEl) {
       connCountEl.textContent = String(health.activeConnections ?? 0);
     }
@@ -3762,10 +3734,10 @@ async function loadCapabilities() {
 
 async function loadAuthState() {
   try {
-    const response = await fetch("/api/auth/me");
-    if (!response.ok) {
+    const payload = await fetchAuthState();
+    if (!payload?.authenticated) {
       try {
-        state.auth.isGuest = localStorage.getItem("whistx_guest_mode") === "1";
+        state.auth.isGuest = readGuestMode();
       } catch {
         state.auth.isGuest = false;
       }
@@ -3773,7 +3745,6 @@ async function loadAuthState() {
       renderAuthState();
       return;
     }
-    const payload = await response.json();
     state.auth.authenticated = !!payload.authenticated;
     state.auth.isGuest = false;
     state.auth.user = payload.user || null;
@@ -3786,7 +3757,7 @@ async function loadAuthState() {
       persistGuestMode(false);
     } else {
       try {
-        state.auth.isGuest = localStorage.getItem("whistx_guest_mode") === "1";
+        state.auth.isGuest = readGuestMode();
       } catch {
         state.auth.isGuest = false;
       }
@@ -3815,7 +3786,7 @@ async function loadAuthState() {
   } catch {
     // ignore auth bootstrap errors
     try {
-      state.auth.isGuest = localStorage.getItem("whistx_guest_mode") === "1";
+      state.auth.isGuest = readGuestMode();
       setAppLocked(!canUseWorkspace());
       renderAuthState();
     } catch {
@@ -3832,14 +3803,23 @@ async function login() {
     return;
   }
 
-  const response = await fetch("/api/auth/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
+  try {
+    const payload = await loginRequest({ email, password });
+    state.auth.authenticated = true;
+    state.auth.isGuest = false;
+    state.auth.user = payload.user || null;
+    state.auth.bootstrapAdminRequired = false;
+    state.auth.pendingApprovalCount = Number(payload.pendingApprovalCount || 0);
+    persistGuestMode(false);
+    setAppLocked(false);
+    renderAuthState();
+    await loadHistoryList();
+    if (state.auth.user?.isAdmin) {
+      await loadPendingUsers();
+    }
+    showToast("ログインしました", "success");
+  } catch (error) {
+    const payload = error?.payload || {};
     if (payload.error === "approval_required") {
       showToast("管理者の承認後にログインできます", "error");
     } else if (payload.error === "too_many_login_attempts") {
@@ -3847,23 +3827,7 @@ async function login() {
     } else {
       showToast("ログインに失敗しました", "error");
     }
-    return;
   }
-
-  const payload = await response.json();
-  state.auth.authenticated = true;
-  state.auth.isGuest = false;
-  state.auth.user = payload.user || null;
-  state.auth.bootstrapAdminRequired = false;
-  state.auth.pendingApprovalCount = Number(payload.pendingApprovalCount || 0);
-  persistGuestMode(false);
-  setAppLocked(false);
-  renderAuthState();
-  await loadHistoryList();
-  if (state.auth.user?.isAdmin) {
-    await loadPendingUsers();
-  }
-  showToast("ログインしました", "success");
 }
 
 async function bootstrapAdmin() {
@@ -3874,28 +3838,24 @@ async function bootstrapAdmin() {
     showToast("メールアドレスと8文字以上のパスワードを入力してください", "error");
     return;
   }
-  const response = await fetch("/api/auth/bootstrap-admin", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, display_name: displayName || null }),
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
+
+  try {
+    const payload = await bootstrapAdminRequest({ email, password, displayName });
+    state.auth.authenticated = true;
+    state.auth.isGuest = false;
+    state.auth.user = payload.user || null;
+    state.auth.bootstrapAdminRequired = false;
+    state.auth.pendingApprovalCount = 0;
+    persistGuestMode(false);
+    setAppLocked(false);
+    renderAuthState();
+    await loadHistoryList();
+    await loadPendingUsers();
+    showToast("管理者アカウントを作成しました", "success");
+  } catch (error) {
+    const payload = error?.payload || {};
     showToast(payload.error === "email_already_exists" ? "既に存在するメールアドレスです" : "管理者作成に失敗しました", "error");
-    return;
   }
-  const payload = await response.json();
-  state.auth.authenticated = true;
-  state.auth.isGuest = false;
-  state.auth.user = payload.user || null;
-  state.auth.bootstrapAdminRequired = false;
-  state.auth.pendingApprovalCount = 0;
-  persistGuestMode(false);
-  setAppLocked(false);
-  renderAuthState();
-  await loadHistoryList();
-  await loadPendingUsers();
-  showToast("管理者アカウントを作成しました", "success");
 }
 
 async function registerAccount() {
@@ -3911,24 +3871,18 @@ async function registerAccount() {
     return;
   }
 
-  const response = await fetch("/api/auth/register", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, display_name: displayName || null }),
-  });
-
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
+  try {
+    await registerRequest({ email, password, displayName });
+    showToast("登録申請を受け付けました。管理者の承認後にログインできます", "success");
+    if (registerPasswordEl) registerPasswordEl.value = "";
+  } catch (error) {
+    const payload = error?.payload || {};
     showToast(payload.error === "email_already_exists" ? "既に存在するメールアドレスです" : "新規登録に失敗しました", "error");
-    return;
   }
-
-  showToast("登録申請を受け付けました。管理者の承認後にログインできます", "success");
-  if (registerPasswordEl) registerPasswordEl.value = "";
 }
 
 async function logout() {
-  await fetch("/api/auth/logout", { method: "POST" }).catch(() => null);
+  await logoutRequest().catch(() => null);
   if (state.recording || state.finalizingStop) {
     stopRecording();
     for (let i = 0; i < 60 && (state.recording || state.finalizingStop); i += 1) {
@@ -3939,11 +3893,7 @@ async function logout() {
   state.auth.isGuest = false;
   state.auth.user = null;
   state.auth.pendingApprovalCount = 0;
-  state.history.total = 0;
-  state.history.items = [];
-  state.history.selectedId = null;
-  state.viewingHistoryId = null;
-  state.savedHistoryId = null;
+  clearHistoryState(state);
   state.log = [];
   state.segments = [];
   renderEmptyTranscriptState();
@@ -3964,10 +3914,7 @@ function loginAsGuest() {
   state.auth.isGuest = true;
   state.auth.user = null;
   state.auth.pendingApprovalCount = 0;
-  state.history.total = 0;
-  state.history.items = [];
-  state.history.selectedId = null;
-  state.viewingHistoryId = null;
+  clearHistoryState(state);
   resetRuntimeSessionState();
   persistGuestMode(true);
   setAppLocked(false);
@@ -3979,16 +3926,15 @@ function loginAsGuest() {
 
 async function loadPendingUsers() {
   if (!state.auth.authenticated || !state.auth.user?.isAdmin) return;
-  const response = await fetch("/api/admin/pending-users");
-  if (!response.ok) {
+  try {
+    const payload = await fetchPendingUsersRequest();
+    state.adminPendingUsers = Array.isArray(payload.items) ? payload.items : [];
+    state.auth.pendingApprovalCount = state.adminPendingUsers.length;
+    renderAuthState();
+    renderAdminPendingUsers();
+  } catch {
     showToast("承認待ち一覧の取得に失敗しました", "error");
-    return;
   }
-  const payload = await response.json();
-  state.adminPendingUsers = Array.isArray(payload.items) ? payload.items : [];
-  state.auth.pendingApprovalCount = state.adminPendingUsers.length;
-  renderAuthState();
-  renderAdminPendingUsers();
 }
 
 async function openAdminQueueModal() {
@@ -4000,8 +3946,9 @@ async function openAdminQueueModal() {
 }
 
 async function approvePendingUser(userId) {
-  const response = await fetch(`/api/admin/pending-users/${userId}/approve`, { method: "POST" });
-  if (!response.ok) {
+  try {
+    await approvePendingUserRequest(userId);
+  } catch {
     showToast("ユーザー承認に失敗しました", "error");
     return;
   }
@@ -4011,36 +3958,26 @@ async function approvePendingUser(userId) {
 
 async function loadHistoryList() {
   if (!state.auth.authenticated) {
-    state.history.items = [];
-    state.history.total = 0;
+    clearHistoryState(state);
     renderHistoryList();
     return;
   }
-  const params = new URLSearchParams({
-    limit: String(state.history.limit),
-    offset: String(state.history.offset),
-  });
-  if (state.history.query) {
-    params.set("q", state.history.query);
-  }
 
-  const response = await fetch(`/api/history?${params.toString()}`);
-  if (!response.ok) {
+  try {
+    const payload = await fetchHistoryListRequest({
+      limit: state.history.limit,
+      offset: state.history.offset,
+      query: state.history.query,
+    });
+    applyHistoryListPayload(state, payload);
+    renderHistoryList();
+  } catch {
     updateHistoryEmptyState("履歴の取得に失敗しました");
-    return;
   }
-  const payload = await response.json();
-  state.history.items = Array.isArray(payload.items) ? payload.items : [];
-  state.history.total = Number(payload.total || 0);
-  renderHistoryList();
 }
 
 function renderHistoryDetail(payload) {
-  state.history.selectedId = payload.id;
-  state.viewingHistoryId = payload.id;
-  state.savedHistoryId = payload.id;
-  state.log = [];
-  state.segments = [];
+  applyHistoryDetailPayload(state, payload);
   renderEmptyTranscriptState();
   logEl.innerHTML = "";
   (payload.segments || []).forEach((segment) => {
@@ -4077,13 +4014,12 @@ async function openHistoryDetail(historyId) {
     showToast("録音中は履歴を開けません", "error");
     return;
   }
-  const response = await fetch(`/api/history/${historyId}`);
-  if (!response.ok) {
+  try {
+    const payload = await fetchHistoryDetail(historyId);
+    renderHistoryDetail(payload);
+  } catch {
     showToast("履歴の取得に失敗しました", "error");
-    return;
   }
-  const payload = await response.json();
-  renderHistoryDetail(payload);
 }
 
 function buildAutoSaveTitle() {
@@ -4116,40 +4052,31 @@ async function saveCurrentHistory() {
 
   state.saveInFlight = true;
   updateSaveControls();
-  const response = await fetch("/api/history", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  let payload;
+  try {
+    payload = await saveHistoryRequest({
       runtimeSessionId: state.runtimeSessionId,
       runtimeSessionToken: state.runtimeSessionToken,
       title: buildAutoSaveTitle(),
       summaryText: state.summary || null,
       proofreadText: state.proofread || null,
-    }),
-  }).catch(() => null);
-  state.saveInFlight = false;
-  updateSaveControls();
-
-  if (!response) {
-    showToast("保存に失敗しました", "error");
-    return;
-  }
-  if (response.status === 409) {
-    const payload = await response.json().catch(() => ({}));
+    });
+  } catch (error) {
+    state.saveInFlight = false;
+    updateSaveControls();
+    const responsePayload = error?.payload || {};
     showToast(
-      payload.error === "runtime_session_not_finalized"
+      responsePayload.error === "runtime_session_not_finalized"
         ? "録音停止後に保存してください"
-        : "このセッションは既に保存済みです",
+        : responsePayload.error === "history_already_saved"
+          ? "このセッションは既に保存済みです"
+          : "保存に失敗しました",
       "error"
     );
     return;
   }
-  if (!response.ok) {
-    showToast("保存に失敗しました", "error");
-    return;
-  }
-
-  const payload = await response.json();
+  state.saveInFlight = false;
+  updateSaveControls();
   state.savedHistoryId = payload.history?.id || null;
   state.viewingHistoryId = state.savedHistoryId;
   state.history.selectedId = state.savedHistoryId;
@@ -4184,7 +4111,7 @@ if (logEl && !logEl.querySelector(".log-row")) {
 (() => {
   let initial = CHUNK_DEFAULT_SECONDS;
   try {
-    const saved = localStorage.getItem("whistx_chunk_seconds");
+    const saved = readStoredValue("whistx_chunk_seconds", null);
     if (saved) initial = normalizeChunkSeconds(saved);
   } catch {
     // ignore
@@ -4195,7 +4122,7 @@ if (logEl && !logEl.querySelector(".log-row")) {
 (() => {
   let initial = "mic";
   try {
-    const saved = localStorage.getItem("whistx_audio_source");
+    const saved = readStoredValue("whistx_audio_source", null);
     if (saved) initial = normalizeAudioSource(saved);
   } catch {
     // ignore
@@ -4206,7 +4133,7 @@ if (logEl && !logEl.querySelector(".log-row")) {
 (() => {
   let initial = true;
   try {
-    initial = localStorage.getItem("whistx_auto_gain_enabled") !== "0";
+    initial = readStoredValue("whistx_auto_gain_enabled", "1") !== "0";
   } catch {
     // ignore
   }
@@ -4216,7 +4143,7 @@ if (logEl && !logEl.querySelector(".log-row")) {
 (() => {
   let initial = true;
   try {
-    const saved = localStorage.getItem("whistx_diarization_enabled");
+    const saved = readStoredValue("whistx_diarization_enabled", null);
     if (saved !== null) {
       initial = saved === "1" || saved.toLowerCase() === "true";
     }
@@ -4234,10 +4161,10 @@ if (logEl && !logEl.querySelector(".log-row")) {
   let max = state.diarizationMaxSpeakers;
 
   try {
-    const savedMode = localStorage.getItem("whistx_diarization_speaker_mode");
-    const savedCount = localStorage.getItem("whistx_diarization_speaker_count");
-    const savedMin = localStorage.getItem("whistx_diarization_min_speakers");
-    const savedMax = localStorage.getItem("whistx_diarization_max_speakers");
+    const savedMode = readStoredValue("whistx_diarization_speaker_mode", null);
+    const savedCount = readStoredValue("whistx_diarization_speaker_count", null);
+    const savedMin = readStoredValue("whistx_diarization_min_speakers", null);
+    const savedMax = readStoredValue("whistx_diarization_max_speakers", null);
 
     if (savedMode !== null || savedCount !== null || savedMin !== null || savedMax !== null) {
       hasSaved = true;

@@ -52,6 +52,7 @@ from .langfuse_observer import make_langfuse_observer
 from .models import TranscriptHistory, User
 from .openai_whisper import OpenAIWhisperTranscriber
 from .schemas import BootstrapAdminRequest, HistorySaveRequest, LoginRequest, RegisterRequest
+from .services.auth_service import get_optional_user_from_request as auth_service_get_optional_user_from_request, map_keycloak_auth_error as auth_service_map_keycloak_auth_error, upsert_keycloak_user as auth_service_upsert_keycloak_user
 from .services.history_service import (
     HistoryError,
     build_history_detail_payload,
@@ -70,6 +71,17 @@ from .transcript_store import (
     read_jsonl_records,
     resolve_screenshot_path,
     resolve_transcript_path,
+)
+from .core.security import (
+    clear_oidc_state_cookie as security_clear_oidc_state_cookie,
+    clear_session_cookie as security_clear_session_cookie,
+    read_oidc_state_cookie as security_read_oidc_state_cookie,
+    runtime_access_allowed as security_runtime_access_allowed,
+    serialize_user as security_serialize_user,
+    set_oidc_state_cookie as security_set_oidc_state_cookie,
+    set_session_cookie as security_set_session_cookie,
+    signed_payload as security_signed_payload,
+    unsigned_payload as security_unsigned_payload,
 )
 
 
@@ -330,13 +342,7 @@ def _login_retry_after_seconds_for_keys(keys: tuple[str, str]) -> int | None:
 
 
 def _map_keycloak_auth_error(exc: Exception) -> str:
-    code = str(exc)
-    mapping = {
-        "keycloak_email_not_verified": "keycloak_email_not_verified",
-        "keycloak_account_link_required": "keycloak_account_link_required",
-        "keycloak_identity_conflict": "keycloak_identity_conflict",
-    }
-    return mapping.get(code, "keycloak_failed")
+    return auth_service_map_keycloak_auth_error(exc)
 
 
 @app.get("/api/auth/me")
@@ -1959,21 +1965,7 @@ def _format_sse(payload: dict[str, Any]) -> str:
 
 
 def _runtime_access_allowed(session_id: str, token: str | None) -> bool:
-    base_path = resolve_transcript_path(settings.transcripts_dir, session_id, "txt")
-    if base_path is None:
-        return False
-    metadata_path = base_path.with_suffix(".meta.json")
-    if not metadata_path.exists():
-        return True
-    try:
-        loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    metadata = loaded if isinstance(loaded, dict) else {}
-    required = str(metadata.get("accessToken") or "").strip()
-    if not required:
-        return True
-    return secrets.compare_digest(required, str(token or ""))
+    return security_runtime_access_allowed(transcripts_dir=settings.transcripts_dir, session_id=session_id, token=token)
 
 
 def _keycloak_login_enabled() -> bool:
@@ -1986,51 +1978,23 @@ def _pkce_code_challenge(verifier: str) -> str:
 
 
 def _signed_payload(value: dict[str, Any]) -> str:
-    raw = json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
-    body = base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
-    signature = hmac.new(settings.app_session_secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).digest()
-    token = base64.urlsafe_b64encode(signature).decode("utf-8").rstrip("=")
-    return f"{body}.{token}"
+    return security_signed_payload(value)
 
 
 def _unsigned_payload(value: str | None) -> dict[str, Any] | None:
-    if not value or "." not in value:
-        return None
-    body, token = value.split(".", 1)
-    expected = hmac.new(settings.app_session_secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).digest()
-    if not secrets.compare_digest(base64.urlsafe_b64encode(expected).decode("utf-8").rstrip("="), token):
-        return None
-    padded = body + "=" * (-len(body) % 4)
-    try:
-        return json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")))
-    except Exception:
-        return None
+    return security_unsigned_payload(value)
 
 
 def _set_oidc_state_cookie(response: Response, request: Request, payload: dict[str, Any]) -> None:
-    response.set_cookie(
-        key=OIDC_STATE_COOKIE_NAME,
-        value=_signed_payload(payload),
-        httponly=True,
-        samesite="lax",
-        secure=request.url.scheme == "https",
-        max_age=10 * 60,
-        path="/",
-    )
+    security_set_oidc_state_cookie(response=response, request=request, cookie_name=OIDC_STATE_COOKIE_NAME, payload=payload)
 
 
 def _read_oidc_state_cookie(request: Request) -> dict[str, Any] | None:
-    return _unsigned_payload(request.cookies.get(OIDC_STATE_COOKIE_NAME))
+    return security_read_oidc_state_cookie(request=request, cookie_name=OIDC_STATE_COOKIE_NAME)
 
 
 def _clear_oidc_state_cookie(response: Response, request: Request) -> None:
-    response.delete_cookie(
-        key=OIDC_STATE_COOKIE_NAME,
-        path="/",
-        secure=request.url.scheme == "https",
-        httponly=True,
-        samesite="lax",
-    )
+    security_clear_oidc_state_cookie(response=response, request=request, cookie_name=OIDC_STATE_COOKIE_NAME)
 
 
 def _fetch_json(url: str, *, method: str = "GET", data: bytes | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -2099,47 +2063,8 @@ def _fetch_keycloak_userinfo(discovery: dict[str, Any], access_token: str) -> di
         headers={"Authorization": f"Bearer {access_token}"},
     )
 
-
 def _upsert_keycloak_user(db: Session, userinfo: dict[str, Any]) -> User:
-    subject = str(userinfo.get("sub") or "").strip()
-    email = str(userinfo.get("email") or "").strip().lower()
-    email_verified = userinfo.get("email_verified")
-    display_name = (
-        str(userinfo.get("name") or "").strip()
-        or str(userinfo.get("preferred_username") or "").strip()
-        or email
-    )
-    if not subject or not email:
-        raise RuntimeError("keycloak_userinfo_missing_identity")
-    if email_verified is False or (email_verified is None and settings.keycloak_require_email_verified):
-        raise RuntimeError("keycloak_email_not_verified")
-
-    user = get_user_by_identity(db, provider=KEYCLOAK_PROVIDER, subject=subject)
-    if user is None:
-        user = get_user_by_email(db, email)
-        if user is not None:
-            if user.auth_provider and user.auth_subject and (user.auth_provider != KEYCLOAK_PROVIDER or user.auth_subject != subject):
-                raise RuntimeError("keycloak_identity_conflict")
-            raise RuntimeError("keycloak_account_link_required")
-        else:
-            user = create_user(
-                db,
-                email=email,
-                password=secrets.token_urlsafe(32),
-                display_name=display_name,
-                is_admin=False,
-                is_active=True,
-                auth_provider=KEYCLOAK_PROVIDER,
-                auth_subject=subject,
-            )
-    else:
-        if not user.is_active:
-            user.is_active = True
-        if user.approved_at is None:
-            user.approved_at = datetime.utcnow()
-        if display_name and not user.display_name:
-            user.display_name = display_name
-    return user
+    return auth_service_upsert_keycloak_user(db, userinfo)
 
 
 def _mark_session_finalized(session: LiveSession) -> None:
@@ -2150,45 +2075,18 @@ def _mark_session_finalized(session: LiveSession) -> None:
 
 
 def _serialize_user(user: User | None) -> dict[str, Any] | None:
-    if user is None:
-        return None
-    return {
-        "id": user.id,
-        "email": user.email,
-        "displayName": user.display_name,
-        "isAdmin": bool(user.is_admin),
-        "isActive": bool(user.is_active),
-        "approvedAt": user.approved_at.isoformat() if user.approved_at else None,
-    }
-
+    return security_serialize_user(user)
 
 def _get_optional_user(request: Request, db: Session) -> User | None:
-    from .auth import get_user_by_session_id
-
-    session_id = request.cookies.get(SESSION_COOKIE_NAME)
-    return get_user_by_session_id(db, session_id)
+    return auth_service_get_optional_user_from_request(request, db)
 
 
 def _set_session_cookie(response: Response, request: Request, session_id: str) -> None:
-    response.set_cookie(
-        key=SESSION_COOKIE_NAME,
-        value=session_id,
-        httponly=True,
-        samesite="lax",
-        secure=request.url.scheme == "https",
-        max_age=settings.app_session_days * 24 * 60 * 60,
-        path="/",
-    )
+    security_set_session_cookie(response=response, request=request, cookie_name=SESSION_COOKIE_NAME, session_id=session_id)
 
 
 def _clear_session_cookie(response: Response, request: Request) -> None:
-    response.delete_cookie(
-        key=SESSION_COOKIE_NAME,
-        path="/",
-        secure=request.url.scheme == "https",
-        httponly=True,
-        samesite="lax",
-    )
+    security_clear_session_cookie(response=response, request=request, cookie_name=SESSION_COOKIE_NAME)
 
 
 @app.get("/api/transcript/{session_id}.txt", response_model=None)

@@ -11,11 +11,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Select, func, select
-from sqlalchemy.orm import Session, selectinload
+from fastapi.responses import FileResponse
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..models import TranscriptHistory, TranscriptSegment, User
+from ..repositories import history_repository
 from ..transcript_store import (
     is_runtime_transcript_finalized,
     read_jsonl_records,
@@ -111,11 +113,10 @@ def save_history(
     summary_text: str | None,
     proofread_text: str | None,
 ) -> TranscriptHistory:
-    existing = db.scalar(
-        select(TranscriptHistory).where(
-            TranscriptHistory.user_id == user.id,
-            TranscriptHistory.runtime_session_id == runtime_session_id,
-        )
+    existing = history_repository.get_history_by_runtime_session(
+        db,
+        user_id=user.id,
+        runtime_session_id=runtime_session_id,
     )
     if existing is not None:
         raise HistoryError("history_already_saved", 409)
@@ -292,24 +293,9 @@ def copy_runtime_screenshot(runtime_session_id: str, row: dict[str, Any], target
     return filename
 
 
-def history_query_for_user(user: User, query: str | None = None) -> Select[tuple[TranscriptHistory]]:
-    stmt = (
-        select(TranscriptHistory)
-        .where(TranscriptHistory.user_id == user.id)
-        .order_by(TranscriptHistory.saved_at.desc())
-    )
-    clean_query = (query or "").strip()
-    if clean_query:
-        like = f"%{clean_query}%"
-        stmt = stmt.where(
-            TranscriptHistory.title.ilike(like) | TranscriptHistory.plain_text.ilike(like)
-        )
-    return stmt
-
 
 def count_histories(db: Session, *, user: User, query: str | None = None) -> int:
-    stmt = select(func.count()).select_from(history_query_for_user(user, query).subquery())
-    return int(db.scalar(stmt) or 0)
+    return history_repository.count_histories_for_user(db, user_id=user.id, query=query)
 
 
 def list_histories(
@@ -320,17 +306,17 @@ def list_histories(
     offset: int,
     query: str | None = None,
 ) -> list[TranscriptHistory]:
-    stmt = history_query_for_user(user, query).limit(limit).offset(offset)
-    return list(db.scalars(stmt).all())
+    return history_repository.list_histories_for_user(
+        db,
+        user_id=user.id,
+        limit=limit,
+        offset=offset,
+        query=query,
+    )
 
 
 def get_history_for_user(db: Session, *, user: User, history_id: str) -> TranscriptHistory | None:
-    stmt = (
-        select(TranscriptHistory)
-        .options(selectinload(TranscriptHistory.segments))
-        .where(TranscriptHistory.id == history_id, TranscriptHistory.user_id == user.id)
-    )
-    return db.scalar(stmt)
+    return history_repository.get_history_for_user(db, user_id=user.id, history_id=history_id, with_segments=True)
 
 
 def get_history_file_path(history: TranscriptHistory, relative_path: str | None) -> Path | None:
@@ -458,3 +444,102 @@ def _nullable_datetime(value: Any) -> datetime | None:
         return datetime.fromisoformat(str(value))
     except ValueError:
         return None
+
+
+
+def create_history_from_payload(db: Session, *, user: User, payload: Any) -> TranscriptHistory:
+    try:
+        history = save_history(
+            db,
+            user=user,
+            runtime_session_id=str(payload.runtimeSessionId).strip(),
+            runtime_session_token=str(payload.runtimeSessionToken),
+            title=payload.title,
+            summary_text=payload.summaryText,
+            proofread_text=payload.proofreadText,
+        )
+        db.commit()
+        return history
+    except HistoryError:
+        db.rollback()
+        raise
+    except IntegrityError as exc:
+        db.rollback()
+        raise HistoryError('history_already_saved', 409) from exc
+
+
+def build_history_create_payload(history: TranscriptHistory) -> dict[str, Any]:
+    return {
+        'ok': True,
+        'history': {
+            'id': history.id,
+            'title': history.title,
+            'savedAt': history.saved_at.isoformat(),
+            'segmentCount': history.segment_count,
+        },
+    }
+
+
+def build_history_list_payload(
+    db: Session,
+    *,
+    user: User,
+    limit: int,
+    offset: int,
+    query: str | None = None,
+) -> dict[str, Any]:
+    items = list_histories(db, user=user, limit=limit, offset=offset, query=query)
+    total = count_histories(db, user=user, query=query)
+    return {
+        'items': [build_history_list_item(item) for item in items],
+        'total': total,
+        'limit': limit,
+        'offset': offset,
+    }
+
+
+def build_history_detail_payload_for_user(db: Session, *, user: User, history_id: str) -> dict[str, Any]:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    if history is None:
+        raise HistoryError('history_not_found', 404)
+    return build_history_detail_payload(history)
+
+
+def get_history_download_response(
+    db: Session,
+    *,
+    user: User,
+    history_id: str,
+    kind: str,
+) -> FileResponse | None:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    if history is None:
+        return None
+    path_map = {
+        'txt': (history.txt_path, 'text/plain', f'{history.id}.txt'),
+        'jsonl': (history.jsonl_path, 'application/x-ndjson', f'{history.id}.jsonl'),
+        'zip': (history.zip_path, 'application/zip', f'{history.id}.zip'),
+    }
+    relative_path, media_type, filename = path_map[kind]
+    path = get_history_file_path(history, relative_path)
+    if path is None or not path.exists():
+        return None
+    return FileResponse(str(path), media_type=media_type, filename=filename)
+
+
+def get_history_screenshot_response(db: Session, *, user: User, history_id: str, filename: str) -> FileResponse | None:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    if history is None:
+        return None
+    path = resolve_history_screenshot_path(history, filename)
+    if path is None or not path.exists():
+        return None
+    suffix = path.suffix.lower()
+    media_type = 'application/octet-stream'
+    if suffix == '.webp':
+        media_type = 'image/webp'
+    elif suffix in {'.jpg', '.jpeg'}:
+        media_type = 'image/jpeg'
+    elif suffix == '.png':
+        media_type = 'image/png'
+    return FileResponse(str(path), media_type=media_type)

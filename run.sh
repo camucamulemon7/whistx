@@ -2,28 +2,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/.env}"
 
 # shellcheck disable=SC1091
-source "${SCRIPT_DIR}/scripts/load_env.sh"
+source "${SCRIPT_DIR}/scripts/runtime_common.sh"
 
-if [[ -f "${ENV_FILE}" ]]; then
-  load_env_file "${ENV_FILE}"
-fi
+load_project_env "${SCRIPT_DIR}"
+resolve_app_runtime_env "${SCRIPT_DIR}"
+require_asr_api_key "run.sh"
 
 VENV_DIR="${DEV_VENV_DIR:-${VENV_DIR:-${SCRIPT_DIR}/.venv}}"
-HOST="${APP_HOST:-${HOST:-0.0.0.0}}"
-PORT="${APP_PORT:-${PORT:-8005}}"
-APP="${APP_ENTRYPOINT:-${APP:-server.app:app}}"
-
-if [[ "${VENV_DIR}" != /* ]]; then
-  VENV_DIR="${SCRIPT_DIR}/${VENV_DIR#./}"
-fi
-
-if [[ -z "${ASR_API_KEY:-${OPENAI_API_KEY:-}}" ]]; then
-  echo "[run.sh] ASR_API_KEY（または OPENAI_API_KEY）を設定してください" >&2
-  exit 1
-fi
+VENV_DIR="$(resolve_path_from_root "${SCRIPT_DIR}" "${VENV_DIR}")"
 
 if [[ ! -f "${VENV_DIR}/bin/activate" ]]; then
   echo "[run.sh] Python仮想環境を作成します: ${VENV_DIR}" >&2
@@ -44,18 +32,7 @@ if [[ "${DEV_SKIP_PIP_INSTALL:-${SKIP_PIP_INSTALL:-0}}" != "1" ]]; then
   fi
 fi
 
-APP_DATA_DIR="${APP_DATA_DIR:-${DATA_DIR:-${SCRIPT_DIR}/data}}"
-APP_TRANSCRIPTS_DIR="${APP_TRANSCRIPTS_DIR:-${APP_DATA_DIR}/transcripts}"
-
-if [[ "${APP_DATA_DIR}" != /* ]]; then
-  APP_DATA_DIR="${SCRIPT_DIR}/${APP_DATA_DIR#./}"
-fi
-
-if [[ "${APP_TRANSCRIPTS_DIR}" != /* ]]; then
-  APP_TRANSCRIPTS_DIR="${SCRIPT_DIR}/${APP_TRANSCRIPTS_DIR#./}"
-fi
-
 mkdir -p "${APP_TRANSCRIPTS_DIR}"
-export APP_DATA_DIR APP_TRANSCRIPTS_DIR
+export APP_DATA_DIR APP_TRANSCRIPTS_DIR APP_HOST APP_PORT APP_ENTRYPOINT APP_WS_PATH
 
-exec uvicorn "${APP}" --host "${HOST}" --port "${PORT}"
+exec uvicorn "${APP_ENTRYPOINT}" --host "${APP_HOST}" --port "${APP_PORT}"

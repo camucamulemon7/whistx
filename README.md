@@ -45,6 +45,18 @@ Files: [`web/`](./web)
 
 Files: [`server/`](./server)
 
+
+Current backend layout after the refactor:
+
+- `server/app.py`: thin entrypoint
+- `server/core/application.py`: app wiring and router registration
+- `server/api/routes/*.py`: HTTP entrypoints
+- `server/api/ws/transcribe.py`: WebSocket entrypoint
+- `server/services/*.py`: auth/admin/history business logic
+- `server/repositories/*.py`: SQLAlchemy access boundaries
+- `server/core/config/*.py`: split configuration modules
+- `server/legacy_app.py`: remaining transitional implementation for ws/asr/keycloak helpers
+
 - FastAPI application
 - `ws://.../ws/transcribe` receives audio chunks and returns finalized transcript segments
 - Applies audio preprocessing with `ffmpeg`
@@ -64,7 +76,7 @@ Files: [`server/`](./server)
 5. Finalized text is normalized and stored
 6. UI updates immediately with final segments
 
-Realtime ASR models are not supported in the current build. Use a Whisper-compatible `ASR_MODEL`.
+Realtime ASR models are not supported in the current build. The old `server/voxtral_realtime.py` path has been removed because `_build_transcriber_factory()` rejects realtime models before runtime. Use a Whisper-compatible `ASR_MODEL`.
 
 ## Requirements
 
@@ -108,7 +120,7 @@ cp .env.example .env
 ./start.sh
 ```
 
-The container image installs Python dependencies with `uv`.
+The container image installs Python dependencies with `uv`. Dependency source of truth is `requirements.txt`; diarization-only additions live in `requirements-diarization.txt`; `pyproject.toml` remains tool metadata.
 
 ### Podman (rootless)
 

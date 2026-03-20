@@ -5,13 +5,13 @@ from datetime import datetime, timedelta
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .models import User, UserSession
+from .repositories import session_repository, user_repository
 
-SESSION_COOKIE_NAME = "whistx_session"
+SESSION_COOKIE_NAME = 'whistx_session'
 _password_hasher = PasswordHasher()
 
 
@@ -45,13 +45,13 @@ def create_user(
     auth_subject: str | None = None,
 ) -> User:
     if len(password) < 8:
-        raise ValueError("password_too_short")
+        raise ValueError('password_too_short')
     user = User(
         email=email.strip().lower(),
         password_hash=hash_password(password),
-        display_name=(display_name or "").strip() or None,
-        auth_provider=(auth_provider or "").strip() or None,
-        auth_subject=(auth_subject or "").strip() or None,
+        display_name=(display_name or '').strip() or None,
+        auth_provider=(auth_provider or '').strip() or None,
+        auth_subject=(auth_subject or '').strip() or None,
         is_active=is_active,
         is_admin=is_admin,
         approved_at=utcnow() if is_active else None,
@@ -63,12 +63,11 @@ def create_user(
 
 
 def get_user_by_email(db: Session, email: str) -> User | None:
-    return db.scalar(select(User).where(User.email == email.strip().lower()))
+    return user_repository.get_user_by_email(db, email)
 
 
 def get_user_by_identity(db: Session, *, provider: str, subject: str) -> User | None:
-    stmt = select(User).where(User.auth_provider == provider.strip(), User.auth_subject == subject.strip())
-    return db.scalar(stmt)
+    return user_repository.get_user_by_identity(db, provider=provider, subject=subject)
 
 
 def authenticate_user(db: Session, *, email: str, password: str) -> User | None:
@@ -82,30 +81,23 @@ def authenticate_user(db: Session, *, email: str, password: str) -> User | None:
 
 
 def has_admin_account(db: Session) -> bool:
-    return db.scalar(select(User.id).where(User.is_admin.is_(True)).limit(1)) is not None
+    return user_repository.has_admin_account(db)
 
 
 def count_admin_users(db: Session) -> int:
-    return len(db.scalars(select(User.id).where(User.is_admin.is_(True))).all())
+    return user_repository.count_admin_users(db)
 
 
 def count_pending_users(db: Session) -> int:
-    return len(list_pending_users(db))
+    return user_repository.count_pending_users(db)
 
 
 def list_pending_users(db: Session) -> list[User]:
-    stmt = (
-        select(User)
-        .where(User.is_active.is_(False))
-        .where(User.approved_at.is_(None))
-        .order_by(User.created_at.asc(), User.id.asc())
-    )
-    return list(db.scalars(stmt).all())
+    return user_repository.list_pending_users(db)
 
 
 def list_all_users(db: Session) -> list[User]:
-    stmt = select(User).order_by(User.created_at.desc(), User.id.desc())
-    return list(db.scalars(stmt).all())
+    return user_repository.list_all_users(db)
 
 
 def approve_user(db: Session, *, user: User, admin: User) -> User:
@@ -122,14 +114,14 @@ def create_user_session(
     user_agent: str | None,
     ip_address: str | None,
 ) -> UserSession:
-    prune_expired_sessions(db)
+    session_repository.prune_expired_sessions(db, now=utcnow())
     session = UserSession(
         id=secrets.token_urlsafe(32),
         user_id=user.id,
         created_at=utcnow(),
         expires_at=utcnow() + timedelta(days=settings.app_session_days),
-        user_agent=(user_agent or "").strip()[:512] or None,
-        ip_address=(ip_address or "").strip()[:128] or None,
+        user_agent=(user_agent or '').strip()[:512] or None,
+        ip_address=(ip_address or '').strip()[:128] or None,
     )
     db.add(session)
     db.flush()
@@ -137,25 +129,12 @@ def create_user_session(
 
 
 def prune_expired_sessions(db: Session) -> None:
-    db.execute(delete(UserSession).where(UserSession.expires_at < utcnow()))
+    session_repository.prune_expired_sessions(db, now=utcnow())
 
 
 def get_user_by_session_id(db: Session, session_id: str | None) -> User | None:
-    if not session_id:
-        return None
-    prune_expired_sessions(db)
-    stmt = select(UserSession).where(UserSession.id == session_id)
-    session = db.scalar(stmt)
-    if session is None:
-        return None
-    if session.expires_at < utcnow():
-        return None
-    return session.user
+    return session_repository.get_user_by_session_id(db, session_id, now=utcnow())
 
 
 def delete_user_session(db: Session, session_id: str | None) -> None:
-    if not session_id:
-        return
-    session = db.get(UserSession, session_id)
-    if session is not None:
-        db.delete(session)
+    session_repository.delete_session(db, session_id)

@@ -4,6 +4,11 @@ version = "0.1.0"
 description = "whistx application settings for uv"
 requires-python = ">=3.12"
 
+# Dependency source of truth policy:
+# - runtime/base deps: requirements.txt
+# - diarization extras: requirements-diarization.txt
+# - this pyproject keeps uv/tool metadata only
+
 [tool.uv]
 allow-insecure-host = [
   "localhost",

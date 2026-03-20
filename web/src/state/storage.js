@@ -18,3 +18,23 @@ export function writeStoredValue(key, value) {
     // ignore
   }
 }
+
+export function readStoredJson(key, fallback = null) {
+  const raw = readStoredValue(key, null);
+  if (!raw) {
+    return fallback;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeStoredJson(key, value) {
+  if (value == null) {
+    writeStoredValue(key, null);
+    return;
+  }
+  writeStoredValue(key, JSON.stringify(value));
+}
