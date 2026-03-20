@@ -25,6 +25,7 @@ class Settings:
     keycloak_client_secret: str
     keycloak_scope: str
     keycloak_button_label: str
+    keycloak_require_email_verified: bool
     history_dir: Path
     openai_api_key: str
     openai_base_url: str | None
@@ -494,6 +495,7 @@ def load_settings() -> Settings:
         keycloak_client_secret=_env_first_non_empty("KEYCLOAK_CLIENT_SECRET") or "",
         keycloak_scope=_env_first_non_empty("KEYCLOAK_SCOPE") or "openid profile email",
         keycloak_button_label=_decode_env_text(_env_first_non_empty("KEYCLOAK_BUTTON_LABEL") or "Keycloakでログイン"),
+        keycloak_require_email_verified=_to_bool("KEYCLOAK_REQUIRE_EMAIL_VERIFIED", True),
         history_dir=history_dir,
         openai_api_key=asr_api_key,
         openai_base_url=base_url,

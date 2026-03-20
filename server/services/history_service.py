@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import tempfile
 import uuid
 import zipfile
 from dataclasses import dataclass
@@ -62,7 +63,10 @@ def load_runtime_snapshot(runtime_session_id: str) -> RuntimeTranscriptSnapshot:
         except (OSError, json.JSONDecodeError):
             metadata = {}
 
-    records = read_jsonl_records(jsonl_path)
+    try:
+        records = read_jsonl_records(jsonl_path, strict=True)
+    except ValueError as exc:
+        raise HistoryError("transcript_parse_failed", 500) from exc
     segments = [row for row in records if isinstance(row, dict) and row.get("type") == "final"]
     if not segments:
         raise HistoryError("empty_transcript", 400)
@@ -127,9 +131,11 @@ def save_history(
     if required_token and required_token != runtime_session_token.strip():
         raise HistoryError("runtime_session_not_found", 404)
     history_id = generate_history_id()
-    artifact_dir = settings.history_dir / str(user.id) / history_id
-    screenshots_dir = artifact_dir / "screenshots"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    user_history_dir = settings.history_dir / str(user.id)
+    user_history_dir.mkdir(parents=True, exist_ok=True)
+    artifact_dir = user_history_dir / history_id
+    temp_artifact_dir = Path(tempfile.mkdtemp(prefix=f".{history_id}.", dir=str(user_history_dir)))
+    screenshots_dir = temp_artifact_dir / "screenshots"
     screenshots_dir.mkdir(parents=True, exist_ok=True)
 
     summary_value = (summary_text or "").strip() or None
@@ -180,10 +186,10 @@ def save_history(
             )
         )
 
-    txt_path = artifact_dir / "transcript.txt"
-    jsonl_path = artifact_dir / "transcript.jsonl"
-    metadata_path = artifact_dir / "metadata.json"
-    zip_path = artifact_dir / "transcript.zip"
+    txt_path = temp_artifact_dir / "transcript.txt"
+    jsonl_path = temp_artifact_dir / "transcript.jsonl"
+    metadata_path = temp_artifact_dir / "metadata.json"
+    zip_path = temp_artifact_dir / "transcript.zip"
 
     try:
         txt_path.write_text(plain_text + ("\n" if plain_text else ""), encoding="utf-8")
@@ -206,13 +212,13 @@ def save_history(
         metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
 
         if summary_value:
-            (artifact_dir / "summary.txt").write_text(summary_value + "\n", encoding="utf-8")
+            (temp_artifact_dir / "summary.txt").write_text(summary_value + "\n", encoding="utf-8")
         if proofread_value:
-            (artifact_dir / "proofread.txt").write_text(proofread_value + "\n", encoding="utf-8")
+            (temp_artifact_dir / "proofread.txt").write_text(proofread_value + "\n", encoding="utf-8")
 
         build_history_zip(
             zip_path=zip_path,
-            artifact_dir=artifact_dir,
+            artifact_dir=temp_artifact_dir,
             include_summary=bool(summary_value),
             include_proofread=bool(proofread_value),
         )
@@ -230,9 +236,9 @@ def save_history(
             proofread_text=proofread_value,
             has_diarization=has_diarization,
             artifact_dir=str(artifact_dir.relative_to(settings.history_dir)),
-            txt_path=str(txt_path.relative_to(settings.history_dir)),
-            jsonl_path=str(jsonl_path.relative_to(settings.history_dir)),
-            zip_path=str(zip_path.relative_to(settings.history_dir)),
+            txt_path=str((artifact_dir / "transcript.txt").relative_to(settings.history_dir)),
+            jsonl_path=str((artifact_dir / "transcript.jsonl").relative_to(settings.history_dir)),
+            zip_path=str((artifact_dir / "transcript.zip").relative_to(settings.history_dir)),
             created_at=saved_at,
             updated_at=saved_at,
             saved_at=saved_at,
@@ -240,8 +246,12 @@ def save_history(
         )
         db.add(history)
         db.flush()
+        if artifact_dir.exists():
+            raise HistoryError("history_artifact_conflict", 409)
+        temp_artifact_dir.rename(artifact_dir)
         return history
     except Exception:
+        shutil.rmtree(temp_artifact_dir, ignore_errors=True)
         shutil.rmtree(artifact_dir, ignore_errors=True)
         raise
 
@@ -270,7 +280,7 @@ def copy_runtime_screenshot(runtime_session_id: str, row: dict[str, Any], target
     if not src or not src.exists():
         seq = _as_int(row.get("seq"), -1)
         if seq >= 0:
-            matches = sorted(screenshots_root.glob(f"{seq:06d}.*"))
+            matches = sorted(screenshots_root.glob(f"{seq:06d}.*"), key=_screenshot_match_sort_key)
             if matches:
                 src = matches[0]
                 filename = src.name
@@ -337,6 +347,21 @@ def get_history_file_path(history: TranscriptHistory, relative_path: str | None)
     return resolved_path
 
 
+def _history_segment_screenshot_filename(history: TranscriptHistory, seq: int) -> str | None:
+    if seq < 0 or not history.artifact_dir:
+        return None
+    screenshots_dir = settings.history_dir / history.artifact_dir / "screenshots"
+    matches = sorted(screenshots_dir.glob(f"{seq:06d}.*"), key=_screenshot_match_sort_key)
+    if not matches:
+        return None
+    return matches[0].name
+
+
+def _screenshot_match_sort_key(path: Path) -> tuple[int, str]:
+    suffix_order = {".webp": 0, ".png": 1, ".jpg": 2, ".jpeg": 3}
+    return (suffix_order.get(path.suffix.lower(), 9), path.name)
+
+
 def resolve_history_screenshot_path(history: TranscriptHistory, filename: str) -> Path | None:
     if not history.artifact_dir:
         return None
@@ -379,8 +404,8 @@ def build_history_detail_payload(history: TranscriptHistory) -> dict[str, Any]:
                 "language": segment.language,
                 "speaker": segment.speaker,
                 "screenshotUrl": (
-                    f"/api/history/{history.id}/screenshots/{segment.screenshot_path}"
-                    if segment.screenshot_path
+                    f"/api/history/{history.id}/screenshots/{(segment.screenshot_path or _history_segment_screenshot_filename(history, segment.seq))}"
+                    if (segment.screenshot_path or _history_segment_screenshot_filename(history, segment.seq))
                     else None
                 ),
             }

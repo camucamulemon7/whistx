@@ -134,6 +134,7 @@ At minimum, set these in `.env`:
 
 ```env
 ASR_API_KEY=your_api_key
+APP_SESSION_SECRET=replace-with-a-long-random-secret
 ```
 
 If you use an OpenAI-compatible local or self-hosted backend, also set:
@@ -239,6 +240,16 @@ type|title|message|dismissible
 - `LANGFUSE_HOST`
 - `LANGFUSE_ENVIRONMENT`
 - `LANGFUSE_RELEASE`
+
+### Keycloak
+
+- `KEYCLOAK_ENABLED`
+- `KEYCLOAK_ISSUER`
+- `KEYCLOAK_CLIENT_ID`
+- `KEYCLOAK_CLIENT_SECRET`
+- `KEYCLOAK_SCOPE`
+- `KEYCLOAK_BUTTON_LABEL`
+- `KEYCLOAK_REQUIRE_EMAIL_VERIFIED`
 
 For rootless Podman, if Langfuse runs on the host machine, use:
 
