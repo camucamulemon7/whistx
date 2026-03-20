@@ -361,3 +361,11 @@ Current accuracy-oriented measures include:
 ## License
 
 MIT. See [LICENSE](./LICENSE).
+
+## Refactor Notes
+
+- `server/app.py` is now the thin FastAPI entrypoint. Transitional implementation lives in `server/legacy_app.py`.
+- Backend route registration lives in `server/core/application.py` and `server/api/routes/`.
+- Runtime configuration is split under `server/core/config/`. Add new env-backed settings there first.
+- `web/main.js` is now a thin module entrypoint that loads `web/src/app.js`.
+- Dependency source of truth remains `requirements.txt` and `requirements-diarization.txt`. `pyproject.toml` is metadata-only for now.
