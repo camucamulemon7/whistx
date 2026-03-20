@@ -14,18 +14,19 @@ build_common_container_env
 PODMAN_USERNS="${PODMAN_USERNS:-keep-id}"
 PODMAN_VOLUME_OPTS="${PODMAN_VOLUME_OPTS:-Z}"
 PODMAN_NETWORK="${PODMAN_NETWORK:-slirp4netns:allow_host_loopback=true}"
+PODMAN_BUILD_FORMAT="${PODMAN_BUILD_FORMAT:-docker}"
 
 case "${CONTAINER_BUILD_POLICY}" in
   always)
     echo "[podman-run.sh] イメージを毎回ビルドします: ${CONTAINER_IMAGE_NAME}" >&2
-    podman build --build-arg INSTALL_DIARIZATION="${CONTAINER_INSTALL_DIARIZATION}" -t "${CONTAINER_IMAGE_NAME}" "${SCRIPT_DIR}"
+    podman build --format "${PODMAN_BUILD_FORMAT}" --build-arg INSTALL_DIARIZATION="${CONTAINER_INSTALL_DIARIZATION}" -t "${CONTAINER_IMAGE_NAME}" "${SCRIPT_DIR}"
     ;;
   missing)
     if podman image exists "${CONTAINER_IMAGE_NAME}"; then
       echo "[podman-run.sh] 既存イメージを再利用します: ${CONTAINER_IMAGE_NAME}" >&2
     else
       echo "[podman-run.sh] イメージがないためビルドします: ${CONTAINER_IMAGE_NAME}" >&2
-      podman build --build-arg INSTALL_DIARIZATION="${CONTAINER_INSTALL_DIARIZATION}" -t "${CONTAINER_IMAGE_NAME}" "${SCRIPT_DIR}"
+      podman build --format "${PODMAN_BUILD_FORMAT}" --build-arg INSTALL_DIARIZATION="${CONTAINER_INSTALL_DIARIZATION}" -t "${CONTAINER_IMAGE_NAME}" "${SCRIPT_DIR}"
     fi
     ;;
   never)

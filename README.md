@@ -129,6 +129,8 @@ cp .env.example .env
 ./podman-run.sh
 ```
 
+`podman-run.sh` builds with `--format docker` by default so the image `HEALTHCHECK` is preserved. Override with `PODMAN_BUILD_FORMAT=oci` only if you intentionally want OCI output and accept that Podman will ignore the healthcheck.
+
 Container build behavior:
 
 - `CONTAINER_BUILD_POLICY=missing` (default): build only when the image does not exist

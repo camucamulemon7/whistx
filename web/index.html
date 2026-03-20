@@ -9,12 +9,11 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>whistx</title>
-    <link rel="stylesheet" href="/style.css?v=20260317b" />
-    <script type="module" src="/main.js?v=20260317b"></script>
+    <link rel="stylesheet" href="/style.css?v=20260321c" />
+    <script type="module" src="/main.js?v=20260321c"></script>
   </head>
   <body>
     <div class="app">
-      <!-- Header -->
       <header class="header glass-panel">
         <div class="header-content">
           <div class="brand">
@@ -31,30 +30,35 @@
               <p id="brandTagline" class="brand-tagline">高精度リアルタイム文字起こし</p>
             </div>
           </div>
-          <div class="status-group" role="status" aria-live="polite">
+
+          <div class="header-status-group" role="status" aria-live="polite">
             <div class="status-item">
-              <span class="status-label">STATUS</span>
-              <span id="statusText" class="status-value" data-state="idle">idle</span>
+              <span class="status-label">状態</span>
+              <span id="statusText" class="status-value" data-state="idle">待機中</span>
             </div>
-            <div class="status-item">
-              <span class="status-label">SEGMENTS</span>
-              <span id="connCount" class="status-value">0</span>
-            </div>
+          </div>
+
+          <div class="header-actions-group">
+            <a href="/help.html" class="header-action-btn header-link-btn" aria-label="説明ページを開く">説明</a>
+            <button id="sidebarToggle" type="button" class="header-action-btn header-settings-btn" aria-label="詳細設定を開く" title="詳細設定">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <line x1="4" y1="6" x2="20" y2="6"/>
+                <line x1="10" y1="12" x2="20" y2="12"/>
+                <line x1="6" y1="18" x2="20" y2="18"/>
+                <circle cx="7" cy="12" r="2"/>
+              </svg>
+              <span>詳細設定</span>
+            </button>
+            <button id="adminQueueBtn" type="button" class="header-action-btn" hidden>
+              承認待ち
+              <span id="adminQueueBadge" class="header-action-badge">0</span>
+            </button>
             <div id="authUserView" class="header-user-chip" hidden>
+              <span class="header-user-kicker">アカウント</span>
               <span id="authUserLabel" class="header-user-label">-</span>
-              <button id="adminQueueBtn" type="button" class="header-user-logout" hidden>承認待ち</button>
-              <button id="logoutBtn" type="button" class="header-user-logout">ログアウト</button>
             </div>
-            <!-- Theme Toggle -->
+            <button id="logoutBtn" type="button" class="header-action-btn" hidden>ログアウト</button>
             <div class="theme-toggle-wrapper">
-              <button id="sidebarToggle" type="button" class="theme-toggle-btn" aria-label="サイドパネルを開く" title="サイドパネル">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="4" y1="6" x2="20" y2="6"/>
-                  <line x1="10" y1="12" x2="20" y2="12"/>
-                  <line x1="6" y1="18" x2="20" y2="18"/>
-                  <circle cx="7" cy="12" r="2"/>
-                </svg>
-              </button>
               <button id="themeToggle" type="button" class="theme-toggle-btn" aria-label="テーマを切り替え" title="テーマ切り替え">
                 <svg class="theme-icon sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="12" cy="12" r="5"/>
@@ -76,19 +80,23 @@
         </div>
       </header>
 
-      <!-- Main Content -->
       <main class="main-content">
         <section id="bannersContainer" class="banners-container reveal" aria-label="お知らせ" hidden></section>
 
         <section class="workspace-shell">
-          <aside class="history-rail glass-panel reveal delay-2" aria-label="履歴一覧">
+          <aside class="history-rail glass-panel reveal delay-2" aria-label="履歴一覧" aria-hidden="false">
             <div class="history-rail-header">
               <div class="history-rail-copy">
                 <h2 class="history-rail-title">履歴</h2>
-                <p class="history-rail-description">保存済みのセッションをチャットのように見返せます</p>
-              </div>
+                              </div>
               <div class="history-rail-actions">
                 <span id="historyCountBadge" class="history-count-badge">0件</span>
+                <button id="historyDrawerClose" type="button" class="icon-btn history-drawer-close" aria-label="履歴を閉じる">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"/>
+                    <line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
               </div>
             </div>
             <label class="history-search">
@@ -103,13 +111,12 @@
           </aside>
 
           <div class="workspace-main">
-            <!-- Quick Settings Panel -->
-            <section class="settings-panel glass-panel reveal" aria-label="設定">
+            <section class="settings-panel glass-panel reveal" aria-label="入力設定">
               <div class="settings-layout">
                 <div class="record-hero record-hero-inline">
                   <div id="audioLevelIndicator" class="audio-level-indicator" hidden>
                     <div class="audio-level-shell">
-                      <span class="audio-level-label">INPUT</span>
+                      <span class="audio-level-label">入力</span>
                       <div id="audioLevelMatrix" class="audio-level-matrix" aria-hidden="true"></div>
                     </div>
                   </div>
@@ -136,13 +143,16 @@
                 </div>
 
                 <div class="settings-main">
+                  <div class="settings-basic-header">
+                    <button id="settingsAdvancedToggle" type="button" class="btn-secondary settings-inline-detail-btn" aria-controls="inputAdvancedSettings" aria-expanded="false">話者設定</button>
+                  </div>
                   <div class="settings-row">
                     <div class="setting-group">
                       <label for="language" class="setting-label">言語</label>
                       <div class="select-wrapper">
                         <select id="language">
                           <option value="ja" selected>日本語</option>
-                          <option value="en">English</option>
+                          <option value="en">英語</option>
                           <option value="">自動検出</option>
                         </select>
                       </div>
@@ -176,253 +186,270 @@
                   </div>
                 </div>
               </div>
-              <div id="diarizationConfigRow" class="diarization-config-row">
-                <div class="setting-group">
-                  <label for="diarizationSpeakerMode" class="setting-label">話者数推定</label>
-                  <div class="select-wrapper">
-                    <select id="diarizationSpeakerMode">
-                      <option value="auto" selected>自動</option>
-                      <option value="fixed">固定人数</option>
-                      <option value="range">範囲指定</option>
-                    </select>
+
+              <div id="inputAdvancedSettings" class="settings-advanced-panel" hidden>
+                <div id="diarizationConfigRow" class="diarization-config-row">
+                  <div class="setting-group">
+                    <label for="diarizationSpeakerMode" class="setting-label">話者数推定</label>
+                    <div class="select-wrapper">
+                      <select id="diarizationSpeakerMode">
+                        <option value="auto" selected>自動</option>
+                        <option value="fixed">固定人数</option>
+                        <option value="range">範囲指定</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="setting-group">
+                    <label for="diarizationSpeakerCount" class="setting-label">固定人数</label>
+                    <input
+                      id="diarizationSpeakerCount"
+                      type="number"
+                      min="1"
+                      max="12"
+                      step="1"
+                      value="2"
+                      class="setting-number-input"
+                      aria-label="固定話者数"
+                    />
+                  </div>
+                  <div class="setting-group">
+                    <label for="diarizationMinSpeakers" class="setting-label">最小人数</label>
+                    <input
+                      id="diarizationMinSpeakers"
+                      type="number"
+                      min="1"
+                      max="12"
+                      step="1"
+                      value="2"
+                      class="setting-number-input"
+                      aria-label="最小話者数"
+                    />
+                  </div>
+                  <div class="setting-group">
+                    <label for="diarizationMaxSpeakers" class="setting-label">最大人数</label>
+                    <input
+                      id="diarizationMaxSpeakers"
+                      type="number"
+                      min="1"
+                      max="12"
+                      step="1"
+                      value="4"
+                      class="setting-number-input"
+                      aria-label="最大話者数"
+                    />
                   </div>
                 </div>
-                <div class="setting-group">
-                  <label for="diarizationSpeakerCount" class="setting-label">固定人数</label>
-                  <input
-                    id="diarizationSpeakerCount"
-                    type="number"
-                    min="1"
-                    max="12"
-                    step="1"
-                    value="2"
-                    class="setting-number-input"
-                    aria-label="固定話者数"
-                  />
-                </div>
-                <div class="setting-group">
-                  <label for="diarizationMinSpeakers" class="setting-label">最小人数</label>
-                  <input
-                    id="diarizationMinSpeakers"
-                    type="number"
-                    min="1"
-                    max="12"
-                    step="1"
-                    value="2"
-                    class="setting-number-input"
-                    aria-label="最小話者数"
-                  />
-                </div>
-                <div class="setting-group">
-                  <label for="diarizationMaxSpeakers" class="setting-label">最大人数</label>
-                  <input
-                    id="diarizationMaxSpeakers"
-                    type="number"
-                    min="1"
-                    max="12"
-                    step="1"
-                    value="4"
-                    class="setting-number-input"
-                    aria-label="最大話者数"
-                  />
-                </div>
+                <p id="diarizationSpeakerHint" class="setting-hint"></p>
+                <p id="audioSourceHint" class="setting-hint">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 16v-4"/>
+                    <path d="M12 8h.01"/>
+                  </svg>
+                  <span id="audioSourceHintText">画面共有音声はブラウザ制約で取得できない場合があります。タブ共有が最も安定します</span>
+                </p>
+                <p class="setting-hint">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 16v-4"/>
+                    <path d="M12 8h.01"/>
+                  </svg>
+                  <span>入力音量が数秒以上小さいときだけ、録音ゲインをゆっくり持ち上げます</span>
+                </p>
               </div>
-              <p id="diarizationSpeakerHint" class="setting-hint"></p>
-              <p id="audioSourceHint" class="setting-hint">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M12 16v-4"/>
-                  <path d="M12 8h.01"/>
-                </svg>
-                <span id="audioSourceHintText">画面共有音声はブラウザ制約で取得できない場合があります。タブ共有が最も安定します</span>
-              </p>
-              <p class="setting-hint">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M12 16v-4"/>
-                  <path d="M12 8h.01"/>
-                </svg>
-                <span>入力音量が数秒以上小さいときだけ、録音ゲインをゆっくり持ち上げます</span>
-              </p>
+
               <p id="recordTelemetry" class="setting-hint setting-hint-telemetry" aria-live="polite" hidden></p>
             </section>
 
-            <!-- Workspace Panels -->
             <section
               id="workspacePanels"
               class="workspace-panels reveal delay-2"
-              aria-label="文字起こしと校正結果"
+              aria-label="文字起こしとAI結果"
               style="--panel-left: 1.35fr; --panel-center: 0.95fr; --panel-right: 0.9fr;"
             >
-          <!-- Transcript Panel -->
-          <section class="transcript-panel glass-panel" aria-label="文字起こし結果">
-            <header class="panel-header">
-              <div class="panel-title-group">
-                <div class="panel-icon transcript-icon">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14,2 14,8 20,8"/>
-                    <line x1="16" y1="13" x2="8" y2="13"/>
-                    <line x1="16" y1="17" x2="8" y2="17"/>
-                  </svg>
+              <section class="transcript-panel glass-panel" aria-label="文字起こし結果">
+                <header class="panel-header">
+                  <div class="panel-title-group">
+                    <div class="panel-icon transcript-icon">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14,2 14,8 20,8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                      </svg>
+                    </div>
+                    <h2 class="panel-title">文字起こし</h2>
+                    <span id="segmentCount" class="panel-badge">0</span>
+                  </div>
+                  <div class="panel-actions">
+                    <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="transcript" aria-label="文字起こしをたたむ" title="たたむ">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 18 9 12 15 6"/>
+                      </svg>
+                    </button>
+                    <button id="copyBtn" type="button" class="icon-btn" aria-label="コピー" title="コピー">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                      </svg>
+                    </button>
+                    <button id="clearBtn" type="button" class="icon-btn" aria-label="クリア" title="クリア">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 6h18"/>
+                        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                      </svg>
+                    </button>
+                  </div>
+                </header>
+
+                <div id="log" class="log-container" role="log" aria-live="polite" aria-relevant="additions">
+                  <div class="empty-state">
+                    <div class="empty-icon">
+                      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                        <line x1="12" x2="12" y1="19" y2="22"/>
+                      </svg>
+                    </div>
+                    <p class="empty-title">文字起こしがありません</p>
+                    <p class="empty-description">録音を開始するとここに表示されます</p>
+                  </div>
                 </div>
-                <h2 class="panel-title">文字起こし</h2>
-                <span id="segmentCount" class="panel-badge">0</span>
-              </div>
-            <div class="panel-actions">
-              <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="transcript" aria-label="文字起こしをたたむ" title="たたむ">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="15 18 9 12 15 6"/>
-                </svg>
-                </button>
-                <button id="copyBtn" type="button" class="icon-btn" aria-label="コピー" title="コピー">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                  </svg>
-                </button>
-                <button id="clearBtn" type="button" class="icon-btn" aria-label="クリア" title="クリア">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M3 6h18"/>
-                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
-                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-                  </svg>
-                </button>
-              </div>
-            </header>
 
-            <div id="log" class="log-container" role="log" aria-live="polite" aria-relevant="additions">
-              <div class="empty-state">
-                <div class="empty-icon">
-                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                    <line x1="12" x2="12" y1="19" y2="22"/>
-                  </svg>
+                <div class="downloads-bar">
+                  <div class="save-export-group save-group">
+                    <span class="downloads-label">保存</span>
+                    <div class="save-controls">
+                      <input
+                        id="saveTitleInput"
+                        type="text"
+                        class="save-title-input"
+                        placeholder="保存タイトル（未入力なら自動生成）"
+                        maxlength="255"
+                      />
+                      <span id="saveStateBadge" class="save-state-badge">未保存</span>
+                      <button id="saveBtn" type="button" class="btn-action btn-primary" disabled>保存</button>
+                    </div>
+                  </div>
+                  <div class="save-export-group export-group">
+                    <span class="downloads-label">書き出し</span>
+                    <details class="export-menu">
+                      <summary class="btn-secondary export-menu-trigger">書き出し</summary>
+                      <div class="export-menu-list">
+                        <a id="dlTxt" href="#" download class="download-link">TXT</a>
+                        <a id="dlJsonl" href="#" download class="download-link">JSONL</a>
+                        <a id="dlZip" href="#" download class="download-link">ZIP</a>
+                      </div>
+                    </details>
+                  </div>
                 </div>
-                <p class="empty-title">文字起こしがありません</p>
-                <p class="empty-description">録音を開始するとここに表示されます</p>
-              </div>
-            </div>
+              </section>
 
-            <div class="downloads-bar">
-              <div class="save-controls">
-                <input
-                  id="saveTitleInput"
-                  type="text"
-                  class="save-title-input"
-                  placeholder="保存タイトル（未入力なら自動生成）"
-                  maxlength="255"
-                />
-                <button id="saveBtn" type="button" class="btn-action" disabled>保存</button>
-                <span id="saveStateBadge" class="save-state-badge">未保存</span>
-              </div>
-              <span class="downloads-label">Export</span>
-              <a id="dlTxt" href="#" download class="download-link">TXT</a>
-              <a id="dlJsonl" href="#" download class="download-link">JSONL</a>
-              <a id="dlZip" href="#" download class="download-link">ZIP</a>
-            </div>
-          </section>
+              <div class="panel-resizer" data-resizer="left" aria-hidden="true"></div>
 
-          <div class="panel-resizer" data-resizer="left" aria-hidden="true"></div>
-
-          <!-- Proofread Panel -->
-          <section class="proofread-panel glass-panel" aria-label="校正結果">
-            <header class="panel-header">
-              <div class="panel-title-group">
-                <div class="panel-icon proofread-icon">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 20h9"/>
-                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-                  </svg>
+              <section class="proofread-panel glass-panel" aria-label="AI結果: 校正">
+                <header class="panel-header">
+                  <div class="panel-title-group">
+                    <div class="panel-icon proofread-icon">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 20h9"/>
+                        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                      </svg>
+                    </div>
+                    <h2 class="panel-title">校正</h2>
+                    <span id="proofreadMeta" class="panel-badge">未生成</span>
+                  </div>
+                  <div class="ai-result-tabs" aria-label="AI結果の切り替え">
+                    <button type="button" class="ai-result-tab is-active" data-ai-tab="proofread" aria-pressed="true">校正</button>
+                    <button type="button" class="ai-result-tab" data-ai-tab="summary" aria-pressed="false">要約</button>
+                  </div>
+                  <div class="panel-actions">
+                    <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="proofread" aria-label="校正をたたむ" title="たたむ">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 18 9 12 15 6"/>
+                      </svg>
+                    </button>
+                    <div class="select-wrapper compact-select">
+                      <select id="proofreadMode" aria-label="校正または翻訳モード">
+                        <option value="proofread" selected>校正</option>
+                        <option value="translate_ja">日本語訳</option>
+                        <option value="translate_en">英語訳</option>
+                      </select>
+                    </div>
+                    <button id="proofreadBtn" type="button" class="btn-action" aria-label="校正を開始">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 20h9"/>
+                        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                      </svg>
+                      <span id="proofreadBtnLabel">生成</span>
+                    </button>
+                    <button id="copyProofreadBtn" type="button" class="icon-btn" aria-label="校正結果をコピー" title="校正結果をコピー">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                      </svg>
+                    </button>
+                  </div>
+                </header>
+                <div id="proofreadText" class="proofread-content">
+                  <div class="empty-state small">
+                    <p class="empty-description">「校正」ボタンで校正済みテキストを生成します</p>
+                  </div>
                 </div>
-                <h2 class="panel-title">校正</h2>
-                <span id="proofreadMeta" class="panel-badge">未生成</span>
-              </div>
-              <div class="panel-actions">
-                <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="proofread" aria-label="校正をたたむ" title="たたむ">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6"/>
-                  </svg>
-                </button>
-                <div class="select-wrapper compact-select">
-                  <select id="proofreadMode" aria-label="校正または翻訳モード">
-                    <option value="proofread" selected>校正</option>
-                    <option value="translate_ja">日本語訳</option>
-                    <option value="translate_en">英語訳</option>
-                  </select>
+              </section>
+
+              <div class="panel-resizer" data-resizer="right" aria-hidden="true"></div>
+
+              <section class="summary-panel glass-panel" aria-label="AI結果: 要約">
+                <header class="panel-header">
+                  <div class="panel-title-group">
+                    <div class="panel-icon summary-icon">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14,2 14,8 20,8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <polyline points="10,17 8,17 8,17"/>
+                      </svg>
+                    </div>
+                    <h2 class="panel-title">要約</h2>
+                    <span id="summaryMeta" class="panel-badge">未生成</span>
+                  </div>
+                  <div class="ai-result-tabs" aria-label="AI結果の切り替え">
+                    <button type="button" class="ai-result-tab" data-ai-tab="proofread" aria-pressed="false">校正</button>
+                    <button type="button" class="ai-result-tab is-active" data-ai-tab="summary" aria-pressed="true">要約</button>
+                  </div>
+                  <div class="panel-actions">
+                    <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="summary" aria-label="要約をたたむ" title="たたむ">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 18 9 12 15 6"/>
+                      </svg>
+                    </button>
+                    <button id="summaryBtn" type="button" class="btn-action" aria-label="要約を生成">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="13,2 3,14 12,14 11,22 21,10 12,10 13,2"/>
+                      </svg>
+                      <span id="summaryBtnLabel">生成</span>
+                    </button>
+                    <button id="copySummaryBtn" type="button" class="icon-btn" aria-label="要約をコピー" title="要約をコピー">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                      </svg>
+                    </button>
+                  </div>
+                </header>
+                <div id="summaryText" class="summary-content">
+                  <div class="empty-state small">
+                    <p class="empty-description">「要約」ボタンでAIによる要約を生成します</p>
+                  </div>
                 </div>
-                <button id="proofreadBtn" type="button" class="btn-action" aria-label="校正を開始">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 20h9"/>
-                    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-                  </svg>
-                  <span id="proofreadBtnLabel">実行</span>
-                </button>
-                <button id="copyProofreadBtn" type="button" class="icon-btn" aria-label="校正結果をコピー" title="校正結果をコピー">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                  </svg>
-                </button>
-              </div>
-            </header>
-            <div id="proofreadText" class="proofread-content">
-              <div class="empty-state small">
-                <p class="empty-description">「校正」ボタンで校正済みテキストを生成します</p>
-              </div>
-            </div>
-          </section>
-
-          <div class="panel-resizer" data-resizer="right" aria-hidden="true"></div>
-
-          <!-- Summary Panel -->
-          <section class="summary-panel glass-panel" aria-label="要約">
-          <header class="panel-header">
-            <div class="panel-title-group">
-              <div class="panel-icon summary-icon">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14,2 14,8 20,8"/>
-                  <line x1="16" y1="13" x2="8" y2="13"/>
-                  <polyline points="10,17 8,17 8,17"/>
-                </svg>
-              </div>
-                <h2 class="panel-title">要約</h2>
-              <span id="summaryMeta" class="panel-badge">未生成</span>
-            </div>
-            <div class="panel-actions">
-              <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="summary" aria-label="要約をたたむ" title="たたむ">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="15 18 9 12 15 6"/>
-                </svg>
-              </button>
-              <button id="copySummaryBtn" type="button" class="icon-btn" aria-label="要約をコピー" title="要約をコピー">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                </svg>
-              </button>
-              <button id="summaryBtn" type="button" class="btn-action" aria-label="要約を生成">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polygon points="13,2 3,14 12,14 11,22 21,10 12,10 13,2"/>
-                </svg>
-                <span id="summaryBtnLabel">実行</span>
-              </button>
-            </div>
-          </header>
-            <div id="summaryText" class="summary-content">
-              <div class="empty-state small">
-                <p class="empty-description">「要約」ボタンでAIによる要約を生成します</p>
-              </div>
-            </div>
-          </section>
-        </section>
+              </section>
+            </section>
           </div>
         </section>
       </main>
 
-      <!-- Toast Container -->
       <div id="toastContainer" class="toast-container" role="alert" aria-live="assertive"></div>
     </div>
 
@@ -431,7 +458,7 @@
       <div class="side-panel-header">
         <div>
           <h2 class="side-panel-title">詳細設定</h2>
-          <p class="side-panel-description">文字起こしと要約のプロンプトをここで調整します</p>
+          <p class="side-panel-description">録音調整、画面共有、AIプロンプト、アカウント情報をまとめています。</p>
         </div>
         <button id="sidebarClose" type="button" class="icon-btn" aria-label="サイドパネルを閉じる" title="閉じる">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -442,30 +469,12 @@
       </div>
 
       <div class="side-panel-section">
-        <div class="setting-group setting-group-toggle side-panel-toggle">
-          <span class="setting-label">画面キャプチャ保存</span>
-          <label for="captureScreenshotsEnabled" class="toggle-control">
-            <input id="captureScreenshotsEnabled" type="checkbox" checked />
-            <span class="toggle-track" aria-hidden="true"></span>
-            <span id="captureScreenshotsStateText" class="toggle-text">ON</span>
-          </label>
+        <div class="side-panel-section-header">
+          <div>
+            <h3 class="side-panel-subtitle">録音詳細</h3>
+            <p class="side-panel-description">録音区切りや応答速度の調整です。</p>
+          </div>
         </div>
-        <p class="chunk-description">画面共有時のみ、確定セグメントごとにサムネイルを保存します</p>
-      </div>
-
-      <div class="side-panel-section">
-        <div class="setting-group setting-group-toggle side-panel-toggle">
-          <span class="setting-label">差分スキップ</span>
-          <label for="screenshotDiffSkipEnabled" class="toggle-control">
-            <input id="screenshotDiffSkipEnabled" type="checkbox" checked />
-            <span class="toggle-track" aria-hidden="true"></span>
-            <span id="screenshotDiffSkipStateText" class="toggle-text">ON</span>
-          </label>
-        </div>
-        <p class="chunk-description">前回送信画像とほぼ同じ場合はサムネイル送信を省略します</p>
-      </div>
-
-      <div class="side-panel-section">
         <div class="chunk-header">
           <span class="chunk-label">チャンク秒数</span>
           <span id="chunkHint" class="chunk-hint">精度重視</span>
@@ -492,6 +501,38 @@
       </div>
 
       <div class="side-panel-section">
+        <div class="side-panel-section-header">
+          <div>
+            <h3 class="side-panel-subtitle">画像 / 画面共有</h3>
+            <p class="side-panel-description">画面共有時の補助情報送信を調整します。</p>
+          </div>
+        </div>
+        <div class="setting-group setting-group-toggle side-panel-toggle">
+          <span class="setting-label">画面キャプチャ保存</span>
+          <label for="captureScreenshotsEnabled" class="toggle-control">
+            <input id="captureScreenshotsEnabled" type="checkbox" checked />
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span id="captureScreenshotsStateText" class="toggle-text">ON</span>
+          </label>
+        </div>
+        <p class="chunk-description">画面共有時のみ、確定セグメントごとにサムネイルを保存します</p>
+        <div class="setting-group setting-group-toggle side-panel-toggle">
+          <span class="setting-label">差分スキップ</span>
+          <label for="screenshotDiffSkipEnabled" class="toggle-control">
+            <input id="screenshotDiffSkipEnabled" type="checkbox" checked />
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span id="screenshotDiffSkipStateText" class="toggle-text">ON</span>
+          </label>
+        </div>
+        <p class="chunk-description">前回送信画像とほぼ同じ場合はサムネイル送信を省略します</p>
+      </div>
+
+      <div class="side-panel-section">
+        <div class="side-panel-section-header">
+          <div>
+            <h3 class="side-panel-subtitle">AIプロンプト</h3>
+                      </div>
+        </div>
         <div class="prompt-header">
           <label for="prompt" class="prompt-label">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -507,9 +548,6 @@
           class="side-panel-textarea"
           placeholder="固有名詞や専門用語を入力すると認識精度が向上します"
         ></textarea>
-      </div>
-
-      <div class="side-panel-section">
         <label for="summaryPrompt" class="prompt-label">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -524,9 +562,32 @@
           placeholder="未入力の場合はサーバーの既定要約プロンプトを使用します。{text}, {language} が使えます。"
         ></textarea>
       </div>
+
+      <div class="side-panel-section">
+        <div class="side-panel-section-header">
+          <div>
+            <h3 class="side-panel-subtitle">アカウント / ログイン</h3>
+                      </div>
+        </div>
+        <div class="auth-panel">
+          <div class="auth-user-card">
+            <span class="admin-muted">現在のアカウント</span>
+            <strong id="authPanelUserText">未ログイン</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="side-panel-section">
+        <div class="side-panel-section-header">
+          <div>
+            <h3 class="side-panel-subtitle">承認待ちユーザー</h3>
+                      </div>
+        </div>
+        <div id="sidePanelPendingSummary" class="admin-pending-empty">承認待ちはありません。</div>
+      </div>
     </aside>
 
-      <div id="authGuestView" class="auth-overlay" hidden>
+    <div id="authGuestView" class="auth-overlay" hidden>
       <div class="auth-overlay-backdrop"></div>
       <section class="auth-card glass-panel" aria-label="ログイン">
         <div class="auth-card-header">

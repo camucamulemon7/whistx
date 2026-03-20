@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>whistx 説明</title>
+    <link rel="stylesheet" href="/style.css?v=20260321c" />
+    <style>
+      body {
+        background: var(--bg-secondary, #f5f7fb);
+      }
+      .help-shell {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 24px;
+        display: grid;
+        gap: 16px;
+      }
+      .help-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .help-backlink {
+        text-decoration: none;
+      }
+      .help-card {
+        display: grid;
+        gap: 16px;
+        padding: 24px;
+      }
+      .help-title {
+        font-size: clamp(28px, 4vw, 40px);
+        line-height: 1.1;
+        letter-spacing: -0.03em;
+      }
+      .help-lead {
+        color: var(--text-secondary);
+        max-width: 56ch;
+      }
+      .help-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+      }
+      .help-section {
+        display: grid;
+        gap: 10px;
+        padding: 20px;
+        border: 1px solid var(--border-secondary);
+        border-radius: var(--radius-xl);
+        background: var(--bg-primary);
+      }
+      .help-section h2 {
+        font-size: 16px;
+      }
+      .help-section p,
+      .help-section li {
+        color: var(--text-secondary);
+        line-height: 1.7;
+      }
+      .help-section ul,
+      .help-section ol {
+        margin: 0;
+        padding-left: 20px;
+        display: grid;
+        gap: 6px;
+      }
+      .help-note {
+        font-size: 14px;
+        color: var(--text-tertiary);
+      }
+      @media (max-width: 800px) {
+        .help-shell {
+          padding: 16px;
+        }
+        .help-grid {
+          grid-template-columns: 1fr;
+        }
+        .help-card,
+        .help-section {
+          padding: 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="help-shell">
+      <div class="help-topbar">
+        <a href="/" class="header-action-btn header-link-btn help-backlink">戻る</a>
+      </div>
+
+      <section class="glass-panel help-card">
+        <div>
+          <p class="settings-section-label">Guide</p>
+          <h1 class="help-title">whistx の使い方</h1>
+        </div>
+        <p class="help-lead">録音開始から確認、保存、書き出しまでの基本操作と、主な設定項目だけをまとめています。</p>
+      </section>
+
+      <section class="help-grid">
+        <article class="help-section">
+          <h2>基本の流れ</h2>
+          <ol>
+            <li>言語と音声ソースを選びます。</li>
+            <li>必要なら話者分離や入力自動補正を切り替えます。</li>
+            <li>「録音開始」を押します。</li>
+            <li>文字起こしを確認し、必要なら校正や要約を生成します。</li>
+            <li>タイトルを付けて保存、または書き出しを行います。</li>
+          </ol>
+        </article>
+
+        <article class="help-section">
+          <h2>基本設定</h2>
+          <ul>
+            <li>言語: 音声認識に使う言語です。迷う場合は自動検出でも構いません。</li>
+            <li>音声ソース: マイク、画面共有、両方を切り替えます。</li>
+            <li>話者分離: 発言者ごとに分けたいときに使います。</li>
+            <li>入力自動補正: 入力が小さい環境で音量を補助します。</li>
+          </ul>
+        </article>
+
+        <article class="help-section">
+          <h2>話者設定</h2>
+          <ul>
+            <li>話者分離が ON のときだけ表示されます。</li>
+            <li>自動: 人数を自動推定します。</li>
+            <li>固定人数: 会議人数が分かっているときに向きます。</li>
+            <li>範囲指定: 最小人数と最大人数を絞って推定します。</li>
+          </ul>
+        </article>
+
+        <article class="help-section">
+          <h2>詳細設定</h2>
+          <ul>
+            <li>録音詳細: 区切り時間や反応速度を調整します。</li>
+            <li>画像/画面共有: 共有画面の補助情報送信を調整します。</li>
+            <li>AIプロンプト: 認識補助や要約方針を設定します。</li>
+            <li>アカウント: ログイン状態や承認状況を確認できます。</li>
+          </ul>
+        </article>
+
+        <article class="help-section">
+          <h2>保存と書き出し</h2>
+          <ul>
+            <li>保存: 履歴に残して後から再確認できます。</li>
+            <li>TXT: 読みやすいテキストとして出力します。</li>
+            <li>JSONL: セグメント単位のデータとして出力します。</li>
+            <li>ZIP: 関連データをまとめて取得します。</li>
+          </ul>
+        </article>
+
+        <article class="help-section">
+          <h2>補足</h2>
+          <ul>
+            <li>狭い画面では履歴は後ろに回り、録音と文字起こしが優先表示されます。</li>
+            <li>校正と要約は通常、文字起こしの補助として使います。</li>
+            <li>履歴の保存にはログインが必要です。</li>
+          </ul>
+          <p class="help-note">設定に迷った場合は、まず既定値のまま録音してから必要な箇所だけ調整してください。</p>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

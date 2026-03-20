@@ -26,6 +26,7 @@ COPY alembic.ini /app/alembic.ini
 COPY alembic /app/alembic
 COPY server /app/server
 COPY web /app/web
+COPY scripts /app/scripts
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 RUN mkdir -p /app/data/transcripts
