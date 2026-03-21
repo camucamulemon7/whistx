@@ -64,6 +64,7 @@ const clearBtn = $("#clearBtn");
 const saveBtn = $("#saveBtn");
 const saveTitleInputEl = $("#saveTitleInput");
 const saveStateBadgeEl = $("#saveStateBadge");
+const helpBtn = $("#helpBtn");
 const loginBtn = $("#loginBtn");
 const logoutBtn = $("#logoutBtn");
 const historyDrawerCloseEl = document.querySelector("#historyDrawerClose");
@@ -100,9 +101,17 @@ const copySummaryBtnEl = $("#copySummaryBtn");
 const screenshotModalEl = $("#screenshotModal");
 const screenshotModalCloseEl = $("#screenshotModalClose");
 const screenshotModalImageEl = $("#screenshotModalImage");
+const screenshotModalViewportEl = $("#screenshotModalViewport");
+const screenshotModalStageEl = $("#screenshotModalStage");
+const screenshotZoomOutBtnEl = $("#screenshotZoomOutBtn");
+const screenshotZoomResetBtnEl = $("#screenshotZoomResetBtn");
+const screenshotZoomInBtnEl = $("#screenshotZoomInBtn");
 const adminQueueModalEl = $("#adminQueueModal");
 const adminQueueCloseEl = $("#adminQueueClose");
 const adminPendingListEl = $("#adminPendingList");
+const helpModalEl = $("#helpModal");
+const helpModalCloseEl = $("#helpModalClose");
+const helpModalFrameEl = $("#helpModalFrame");
 
 const dlTxt = $("#dlTxt");
 const dlJsonl = $("#dlJsonl");
@@ -150,6 +159,9 @@ const SCREENSHOT_DIFF_HEIGHT = 36;
 const SCREENSHOT_DIFF_PIXEL_THRESHOLD = 12;
 const SCREENSHOT_DIFF_MEAN_THRESHOLD = 4;
 const SCREENSHOT_DIFF_CHANGED_RATIO_THRESHOLD = 0.015;
+const SCREENSHOT_ZOOM_MIN = 1;
+const SCREENSHOT_ZOOM_MAX = 4;
+const SCREENSHOT_ZOOM_STEP = 0.25;
 const CLIENT_VAD_DROP_ENABLED = false;
 const HISTORY_SEARCH_DEBOUNCE_MS = 180;
 const DEFAULT_SOC_PROMPT_TEMPLATE = `SoC, ASIC, chiplet, CPU, GPU, NPU, DSP, ISP, VPU, DPU, MCU, PMU, NoC, interconnect, AXI, AXI4, AXI-Lite, AHB, APB, ACE, CHI, UCIe, PCIe, CXL, DDR, DDR4, DDR5, LPDDR4, LPDDR5, HBM, SRAM, ROM, eMMC, UFS, PHY, SerDes, PLL, DLL, RC oscillator, clock, clock tree, clock gating, reset, async reset, sync reset, power domain, voltage island, retention, isolation, level shifter, DVFS, AVS, UPF, CPF, RTL, SystemVerilog, Verilog, VHDL, UVM, testbench, assertion, SVA, lint, SpyGlass, CDC, RDC, STA, MCMM, OCV, AOCV, POCV, derate, setup, hold, recovery, removal, skew, jitter, uncertainty, timing closure, timing path, false path, multicycle path, path group, endpoint, startpoint, slack, WNS, TNS, violating path, critical path, synthesis, logic synthesis, Design Compiler, Genus, netlist, mapped netlist, unmapped netlist, compile, incremental compile, retiming, boundary optimization, datapath optimization, resource sharing, register balancing, ECO, formal, equivalence check, LEC, Conformal, Formality, gate-level simulation, GLS, SDF, back annotation, place and route, place-and-route, PnR, floorplan, floorplanning, macro placement, standard cell, utilization, density, congestion, global placement, detailed placement, legalization, CTS, clock tree synthesis, useful skew, hold fixing, setup fixing, routing, global route, detailed route, track assignment, antenna, filler cell, decap, tap cell, endcap, spare cell, spare gate, metal fill, density fill, ECO route, route guide, signoff, sign-off, DRC, LVS, ERC, extraction, parasitic extraction, RC extraction, SPEF, DEF, LEF, Liberty, .lib, TLU+, QRC, StarRC, Quantus, IR drop, dynamic IR drop, static IR drop, EM, electromigration, voltage drop, power integrity, signal integrity, SI, crosstalk, noise, glitch, overshoot, undershoot, hotspot, thermal, leakage, dynamic power, switching power, internal power, leakage power, power analysis, PrimeTime PX, PrimePower, Voltus, RedHawk, vectorless, VCD, FSDB, SAIF, toggle rate, activity factor, inrush current, rush current, decoupling capacitor, decap cell, package model, bump, substrate, interposer, TSV, process node, 28nm, 16nm, 12nm, 7nm, 5nm, 4nm, 3nm, FinFET, GAA, foundry, TSMC, Samsung, Intel, PDK, DFM, manufacturability, yield, wafer, lot, mask, reticle, tape-out, respin, metal fix, MPW, shuttle, bring-up, validation, characterization, errata, workaround, DFT, scan, scan chain, scan compression, EDT, ATPG, stuck-at, transition fault, path delay fault, bridging fault, JTAG, boundary scan, MBIST, LBIST, BISR, repair, fuse, eFuse, OTP, secure boot, TrustZone, TEE, firmware, bootloader, NAND, NAND flash, Toggle NAND, ONFI, raw NAND, managed NAND, SLC, MLC, TLC, QLC, PLC, 3D NAND, V-NAND, charge trap, floating gate, page, block, plane, die, LUN, bad block, bad block management, BBT, ECC, BCH, LDPC, RAID, read disturb, program disturb, erase disturb, wear leveling, garbage collection, overprovisioning, endurance, retention, BER, bit error rate, read retry, soft decoding, threshold voltage, ISPP, incremental step pulse programming, erase verify, program verify, copyback, cache read, cache program, multi-plane, interleaving, channel, CE, RE, WE, ALE, CLE, R/B, spare area, OOB, metadata, FTL, flash translation layer, NVMe, SATA, controller, queue depth, throughput, latency, bandwidth, QoS, arbiter, scheduler, mux, demux, crossbar, SRAM compiler, memory compiler, register file, dual port RAM, single port RAM, SRAM macro, macro, hard macro, soft macro, black box, hierarchy, partition, block-level, top-level, full-chip, chip top, top module, hierarchy flattening, dont_touch, set_false_path, set_multicycle_path, create_clock, generated clock, propagated clock, ideal clock, set_input_delay, set_output_delay, set_clock_uncertainty, set_clock_groups, operating condition, corner, slow corner, fast corner, typical corner, SS, FF, TT, RCmax, RCmin, setup view, hold view.`;
@@ -181,6 +193,10 @@ const state = {
   recordingRequestedAudioSource: "mic",
   recordingFallbackReason: "",
   recordingStartedAt: 0,
+  logAutoScrollEnabled: true,
+  screenshotZoom: 1,
+  screenshotBaseWidth: 0,
+  screenshotBaseHeight: 0,
   recordedChunkCount: 0,
   runtimeSessionId: "",
   runtimeSessionToken: "",
@@ -910,6 +926,13 @@ function buildRuntimeUi() {
     });
   }
 
+  if (logEl && !logEl.dataset.boundScroll) {
+    logEl.dataset.boundScroll = "1";
+    logEl.addEventListener("scroll", () => {
+      state.logAutoScrollEnabled = isLogNearBottom();
+    });
+  }
+
   if (runtimeUi.screenshotModalEl && !runtimeUi.screenshotModalEl.dataset.bound) {
     runtimeUi.screenshotModalEl.dataset.bound = "1";
     runtimeUi.screenshotModalEl.addEventListener("click", (event) => {
@@ -918,6 +941,30 @@ function buildRuntimeUi() {
       }
     });
     screenshotModalCloseEl?.addEventListener("click", hideScreenshotModal);
+    screenshotModalImageEl?.addEventListener("load", () => {
+      recalculateScreenshotBaseSize();
+      resetScreenshotZoom();
+    });
+    screenshotZoomOutBtnEl?.addEventListener("click", () => {
+      zoomScreenshot(-SCREENSHOT_ZOOM_STEP);
+    });
+    screenshotZoomResetBtnEl?.addEventListener("click", () => {
+      resetScreenshotZoom();
+    });
+    screenshotZoomInBtnEl?.addEventListener("click", () => {
+      zoomScreenshot(SCREENSHOT_ZOOM_STEP);
+    });
+    screenshotModalViewportEl?.addEventListener("wheel", (event) => {
+      if (runtimeUi.screenshotModalEl?.hidden) return;
+      event.preventDefault();
+      zoomScreenshot(event.deltaY < 0 ? SCREENSHOT_ZOOM_STEP : -SCREENSHOT_ZOOM_STEP);
+    }, { passive: false });
+    window.addEventListener("resize", () => {
+      if (runtimeUi.screenshotModalEl?.hidden || !screenshotModalImageEl?.src) return;
+      const currentZoom = state.screenshotZoom;
+      recalculateScreenshotBaseSize();
+      setScreenshotZoom(currentZoom, { recenter: currentZoom <= SCREENSHOT_ZOOM_MIN });
+    });
   }
 }
 
@@ -1001,13 +1048,99 @@ function updateRecordingTelemetry() {
   recordTelemetryEl.textContent = [sourceText, vadText, gainText, chunkText, elapsedText, fallbackText].filter(Boolean).join(" / ");
 }
 
+function clampScreenshotZoom(value) {
+  return Math.min(SCREENSHOT_ZOOM_MAX, Math.max(SCREENSHOT_ZOOM_MIN, Number(value) || SCREENSHOT_ZOOM_MIN));
+}
+
+function updateScreenshotZoomUi() {
+  if (!screenshotModalImageEl || !screenshotModalViewportEl || !screenshotModalStageEl) return;
+
+  const zoom = clampScreenshotZoom(state.screenshotZoom);
+  const viewportWidth = Math.max(1, screenshotModalViewportEl.clientWidth || 1);
+  const viewportHeight = Math.max(1, screenshotModalViewportEl.clientHeight || 1);
+  const baseWidth = Math.max(1, state.screenshotBaseWidth || viewportWidth);
+  const baseHeight = Math.max(1, state.screenshotBaseHeight || viewportHeight);
+  const renderedWidth = Math.max(1, Math.round(baseWidth * zoom));
+  const renderedHeight = Math.max(1, Math.round(baseHeight * zoom));
+
+  screenshotModalStageEl.style.width = Math.max(viewportWidth, renderedWidth) + "px";
+  screenshotModalStageEl.style.height = Math.max(viewportHeight, renderedHeight) + "px";
+  screenshotModalImageEl.style.width = renderedWidth + "px";
+  screenshotModalImageEl.style.height = renderedHeight + "px";
+  screenshotModalViewportEl.classList.toggle("is-zoomed", zoom > SCREENSHOT_ZOOM_MIN);
+
+  if (screenshotZoomOutBtnEl) screenshotZoomOutBtnEl.disabled = zoom <= SCREENSHOT_ZOOM_MIN;
+  if (screenshotZoomInBtnEl) screenshotZoomInBtnEl.disabled = zoom >= SCREENSHOT_ZOOM_MAX;
+  if (screenshotZoomResetBtnEl) screenshotZoomResetBtnEl.textContent = Math.round(zoom * 100) + "%";
+}
+
+function recalculateScreenshotBaseSize() {
+  if (!screenshotModalImageEl || !screenshotModalViewportEl) return;
+  if (!screenshotModalImageEl.naturalWidth || !screenshotModalImageEl.naturalHeight) return;
+
+  const viewportWidth = Math.max(1, screenshotModalViewportEl.clientWidth || 1);
+  const viewportHeight = Math.max(1, screenshotModalViewportEl.clientHeight || 1);
+  const fitScale = Math.min(viewportWidth / screenshotModalImageEl.naturalWidth, viewportHeight / screenshotModalImageEl.naturalHeight);
+
+  state.screenshotBaseWidth = Math.max(1, Math.round(screenshotModalImageEl.naturalWidth * fitScale));
+  state.screenshotBaseHeight = Math.max(1, Math.round(screenshotModalImageEl.naturalHeight * fitScale));
+}
+
+function centerScreenshotViewport() {
+  if (!screenshotModalViewportEl) return;
+  const maxScrollLeft = Math.max(0, screenshotModalViewportEl.scrollWidth - screenshotModalViewportEl.clientWidth);
+  const maxScrollTop = Math.max(0, screenshotModalViewportEl.scrollHeight - screenshotModalViewportEl.clientHeight);
+  screenshotModalViewportEl.scrollLeft = maxScrollLeft / 2;
+  screenshotModalViewportEl.scrollTop = maxScrollTop / 2;
+}
+
+function setScreenshotZoom(nextZoom, { recenter = false } = {}) {
+  if (!screenshotModalViewportEl) return;
+
+  const previousScrollableX = Math.max(0, screenshotModalViewportEl.scrollWidth - screenshotModalViewportEl.clientWidth);
+  const previousScrollableY = Math.max(0, screenshotModalViewportEl.scrollHeight - screenshotModalViewportEl.clientHeight);
+  const ratioX = previousScrollableX > 0 ? screenshotModalViewportEl.scrollLeft / previousScrollableX : 0.5;
+  const ratioY = previousScrollableY > 0 ? screenshotModalViewportEl.scrollTop / previousScrollableY : 0.5;
+
+  state.screenshotZoom = clampScreenshotZoom(nextZoom);
+  updateScreenshotZoomUi();
+
+  if (recenter) {
+    centerScreenshotViewport();
+    return;
+  }
+
+  const nextScrollableX = Math.max(0, screenshotModalViewportEl.scrollWidth - screenshotModalViewportEl.clientWidth);
+  const nextScrollableY = Math.max(0, screenshotModalViewportEl.scrollHeight - screenshotModalViewportEl.clientHeight);
+  screenshotModalViewportEl.scrollLeft = nextScrollableX * ratioX;
+  screenshotModalViewportEl.scrollTop = nextScrollableY * ratioY;
+}
+
+function zoomScreenshot(delta) {
+  setScreenshotZoom(state.screenshotZoom + delta);
+}
+
+function resetScreenshotZoom() {
+  setScreenshotZoom(SCREENSHOT_ZOOM_MIN, { recenter: true });
+}
+
 function showScreenshotModal(src, alt = "スクリーンショット") {
   if (!runtimeUi.screenshotModalEl || !runtimeUi.screenshotModalImageEl) return;
+  state.screenshotZoom = SCREENSHOT_ZOOM_MIN;
+  state.screenshotBaseWidth = 0;
+  state.screenshotBaseHeight = 0;
   runtimeUi.screenshotModalImageEl.src = src;
   runtimeUi.screenshotModalImageEl.alt = alt;
   runtimeUi.screenshotModalEl.hidden = false;
   runtimeUi.screenshotModalEl.classList.add("is-open");
   lockBodyScroll();
+
+  if (runtimeUi.screenshotModalImageEl.complete) {
+    recalculateScreenshotBaseSize();
+    resetScreenshotZoom();
+  } else {
+    updateScreenshotZoomUi();
+  }
 }
 
 function hideScreenshotModal() {
@@ -1015,6 +1148,31 @@ function hideScreenshotModal() {
   runtimeUi.screenshotModalEl.classList.remove("is-open");
   runtimeUi.screenshotModalEl.hidden = true;
   runtimeUi.screenshotModalImageEl.src = "";
+  runtimeUi.screenshotModalImageEl.style.width = "";
+  runtimeUi.screenshotModalImageEl.style.height = "";
+  screenshotModalStageEl?.style.removeProperty("width");
+  screenshotModalStageEl?.style.removeProperty("height");
+  state.screenshotZoom = SCREENSHOT_ZOOM_MIN;
+  state.screenshotBaseWidth = 0;
+  state.screenshotBaseHeight = 0;
+  updateScreenshotZoomUi();
+  unlockBodyScroll();
+}
+
+function openHelpModal() {
+  if (!helpModalEl || !helpModalFrameEl) return;
+  if (!helpModalFrameEl.src) {
+    helpModalFrameEl.src = "/help.html";
+  }
+  helpModalEl.hidden = false;
+  helpModalEl.classList.add("is-open");
+  lockBodyScroll();
+}
+
+function closeHelpModal() {
+  if (!helpModalEl) return;
+  helpModalEl.classList.remove("is-open");
+  helpModalEl.hidden = true;
   unlockBodyScroll();
 }
 
@@ -1736,7 +1894,22 @@ function renderTranscriptText(rawText, speaker) {
   return `[${label}] ${clean}`;
 }
 
+function isLogNearBottom() {
+  if (!logEl) return true;
+  const distance = logEl.scrollHeight - logEl.clientHeight - logEl.scrollTop;
+  return distance <= 48;
+}
+
+function scrollLogToBottom() {
+  if (!logEl) return;
+  requestAnimationFrame(() => {
+    logEl.scrollTop = logEl.scrollHeight;
+  });
+}
+
 function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "") {
+  const shouldAutoScroll = state.logAutoScrollEnabled || isLogNearBottom();
+
   // Hide empty state on first log entry
   const emptyState = logEl.querySelector(".empty-state");
   if (emptyState) {
@@ -1794,7 +1967,9 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "") {
 
   row.append(range, body);
   logEl.appendChild(row);
-  logEl.scrollTop = logEl.scrollHeight;
+  if (shouldAutoScroll) {
+    scrollLogToBottom();
+  }
 
   state.log.push(text);
   state.segments.push({
@@ -2941,6 +3116,7 @@ async function startRecording() {
   state.pendingSendChain = Promise.resolve();
   state.log = [];
   state.segments = [];
+  state.logAutoScrollEnabled = true;
   renderEmptyTranscriptState();
   setSummary("", "未生成");
   setProofread("", "未生成");
@@ -2984,6 +3160,7 @@ async function startRecording() {
     );
     await readyPromise;
 
+    state.recordingStartedAt = performance.now();
     setUiRecording(true);
     const effectiveAudioSource = normalizeAudioSource(state.recordingAudioSource || selectedAudioSource);
     updateRecordingTelemetry();
@@ -3326,6 +3503,7 @@ function clearView() {
   }
   state.log = [];
   state.segments = [];
+  state.logAutoScrollEnabled = true;
   state.history.selectedId = null;
   state.viewingHistoryId = null;
   state.savedHistoryId = null;
@@ -3566,6 +3744,18 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+if (helpBtn) {
+  helpBtn.addEventListener("click", () => {
+    openHelpModal();
+  });
+}
+
+if (helpModalCloseEl) {
+  helpModalCloseEl.addEventListener("click", () => {
+    closeHelpModal();
+  });
+}
+
 if (adminQueueCloseEl) {
   adminQueueCloseEl.addEventListener("click", () => {
     closeAdminQueueModal();
@@ -3576,6 +3766,14 @@ if (adminQueueModalEl) {
   adminQueueModalEl.addEventListener("click", (event) => {
     if (event.target === adminQueueModalEl || event.target?.matches?.("[data-admin-modal-close]")) {
       closeAdminQueueModal();
+    }
+  });
+}
+
+if (helpModalEl) {
+  helpModalEl.addEventListener("click", (event) => {
+    if (event.target === helpModalEl || event.target?.matches?.("[data-help-modal-close]")) {
+      closeHelpModal();
     }
   });
 }
@@ -4012,6 +4210,7 @@ async function logout() {
   clearHistoryState(state);
   state.log = [];
   state.segments = [];
+  state.logAutoScrollEnabled = true;
   renderEmptyTranscriptState();
   setSummary("", "未生成");
   setProofread("", "未生成");
@@ -4096,6 +4295,7 @@ function renderHistoryDetail(payload) {
   applyHistoryDetailPayload(state, payload);
   renderEmptyTranscriptState();
   logEl.innerHTML = "";
+  state.logAutoScrollEnabled = true;
   (payload.segments || []).forEach((segment) => {
     addLogLine(
       String(segment.text || ""),

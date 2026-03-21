@@ -39,7 +39,7 @@
           </div>
 
           <div class="header-actions-group">
-            <a href="/help.html" class="header-action-btn header-link-btn" aria-label="説明ページを開く">説明</a>
+            <button id="helpBtn" type="button" class="header-action-btn header-link-btn" aria-label="説明を開く">説明</button>
             <button id="sidebarToggle" type="button" class="header-action-btn header-settings-btn" aria-label="詳細設定を開く" title="詳細設定">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <line x1="4" y1="6" x2="20" y2="6"/>
@@ -664,7 +664,29 @@
             <line x1="6" y1="6" x2="18" y2="18"/>
           </svg>
         </button>
-        <img id="screenshotModalImage" class="screenshot-modal-image" alt="スクリーンショット" />
+        <div class="screenshot-modal-toolbar" role="toolbar" aria-label="拡大操作">
+          <button id="screenshotZoomOutBtn" type="button" class="btn-secondary screenshot-zoom-btn" aria-label="縮小">-</button>
+          <button id="screenshotZoomResetBtn" type="button" class="btn-secondary screenshot-zoom-btn" aria-label="拡大率をリセット">100%</button>
+          <button id="screenshotZoomInBtn" type="button" class="btn-secondary screenshot-zoom-btn" aria-label="拡大">+</button>
+        </div>
+        <div id="screenshotModalViewport" class="screenshot-modal-viewport">
+          <div id="screenshotModalStage" class="screenshot-modal-stage">
+            <img id="screenshotModalImage" class="screenshot-modal-image" alt="スクリーンショット" />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="helpModal" class="screenshot-modal help-modal" hidden>
+      <div class="screenshot-modal-backdrop" data-help-modal-close></div>
+      <div class="screenshot-modal-dialog glass-panel help-modal-dialog" role="dialog" aria-modal="true" aria-label="使い方">
+        <button id="helpModalClose" type="button" class="icon-btn screenshot-modal-close" aria-label="閉じる">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+        <iframe id="helpModalFrame" class="help-modal-frame" title="whistx の使い方" loading="lazy"></iframe>
       </div>
     </div>
   </body>
