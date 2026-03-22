@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from contextlib import contextmanager
 from typing import Any
 
 from openai import BadRequestError, OpenAI
+from .core.logging import emit_container_log
 from .langfuse_observer import LangfuseObserver
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -486,6 +491,7 @@ class OpenAISummarizer:
         temperature: float,
         messages: list[dict[str, str]],
     ) -> Any:
+        prompt_chars = sum(len(str(message.get("content") or "")) for message in messages)
         request_payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -493,21 +499,54 @@ class OpenAISummarizer:
         }
 
         try:
+            emit_container_log(__name__, "info", "LLM POST /v1/chat/completions: model=%s messages=%d chars=%d temp=%s stream=false", model, len(messages), prompt_chars, temperature)
+            logger.info(
+                "LLM POST /v1/chat/completions: model=%s messages=%d chars=%d temp=%s stream=false",
+                model,
+                len(messages),
+                prompt_chars,
+                temperature,
+            )
             return self.client.chat.completions.create(**request_payload)
         except BadRequestError as exc:
             if not _is_temperature_unsupported_error(exc):
                 raise
             request_payload.pop("temperature", None)
+            emit_container_log(__name__, "info", "LLM POST /v1/chat/completions retry-without-temperature: model=%s messages=%d chars=%d stream=false", model, len(messages), prompt_chars)
+            logger.info(
+                "LLM POST /v1/chat/completions retry-without-temperature: model=%s messages=%d chars=%d stream=false",
+                model,
+                len(messages),
+                prompt_chars,
+            )
             return self.client.chat.completions.create(**request_payload)
 
     def _create_chat_completion_stream(self, request_payload: dict[str, Any]):
+        messages = request_payload.get("messages") or []
+        prompt_chars = sum(len(str(message.get("content") or "")) for message in messages if isinstance(message, dict))
+        model = str(request_payload.get("model") or self.model)
         try:
+            emit_container_log(__name__, "info", "LLM POST /v1/chat/completions: model=%s messages=%d chars=%d temp=%s stream=true", model, len(messages), prompt_chars, request_payload.get("temperature"))
+            logger.info(
+                "LLM POST /v1/chat/completions: model=%s messages=%d chars=%d temp=%s stream=true",
+                model,
+                len(messages),
+                prompt_chars,
+                request_payload.get("temperature"),
+            )
             return self.client.chat.completions.create(**request_payload)
         except BadRequestError as exc:
             if not _is_temperature_unsupported_error(exc):
                 raise
             request_payload = dict(request_payload)
             request_payload.pop("temperature", None)
+            emit_container_log(__name__, "info", "LLM POST /v1/chat/completions retry-without-temperature: model=%s messages=%d chars=%d stream=true", model, len(messages), prompt_chars)
+            logger.info(
+                "LLM POST /v1/chat/completions retry-without-temperature: model=%s messages=%d chars=%d stream=true",
+                model,
+                len(messages),
+                prompt_chars,
+            )
             return self.client.chat.completions.create(**request_payload)
 
 

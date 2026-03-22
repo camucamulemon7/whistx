@@ -70,6 +70,7 @@ from .transcript_store import (
     TranscriptRecord,
     TranscriptStore,
     read_jsonl_records,
+    resolve_debug_audio_path,
     resolve_screenshot_path,
     resolve_transcript_path,
 )
@@ -84,6 +85,7 @@ from .core.security import (
     signed_payload as security_signed_payload,
     unsigned_payload as security_unsigned_payload,
 )
+from .core.logging import emit_container_log, is_debug_logging_enabled
 
 
 logging.basicConfig(
@@ -197,6 +199,15 @@ async def on_startup() -> None:
         settings.enable_self_signup,
         settings.keycloak_require_email_verified,
     )
+    emit_container_log(
+        __name__,
+        "info",
+        "startup config: history_dir=%s keycloak=%s self_signup=%s require_verified_email=%s",
+        settings.history_dir,
+        _keycloak_login_enabled(),
+        settings.enable_self_signup,
+        settings.keycloak_require_email_verified,
+    )
     LANGFUSE_OBSERVER = make_langfuse_observer(
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,
@@ -265,6 +276,7 @@ async def on_startup() -> None:
         DIARIZER = None
 
     logger.info("whistx started (model=%s, ws=%s)", settings.asr_model, settings.ws_path)
+    emit_container_log(__name__, "info", "whistx started (model=%s, ws=%s)", settings.asr_model, settings.ws_path)
 
 
 @app.on_event("shutdown")
@@ -989,6 +1001,22 @@ async def ws_transcribe(ws: WebSocket) -> None:
                     )
                     continue
                 worker_task = asyncio.create_task(_session_worker(ws, session))
+                logger.info(
+                    "ws session ready: session=%s source=%s language=%s diarization=%s",
+                    session.session_id,
+                    session.audio_source,
+                    session.language or "auto",
+                    session.collect_audio_for_diarization,
+                )
+                emit_container_log(
+                    __name__,
+                    "info",
+                    "ws session ready: session=%s source=%s language=%s diarization=%s",
+                    session.session_id,
+                    session.audio_source,
+                    session.language or "auto",
+                    session.collect_audio_for_diarization,
+                )
 
                 await _safe_send(
                     ws,
@@ -1038,7 +1066,37 @@ async def ws_transcribe(ws: WebSocket) -> None:
                     session.queue.put_nowait(chunk)
                     session.last_chunk_seq = chunk.seq
                     session.last_chunk_offset_ms = chunk.offset_ms
+                    logger.debug(
+                        "ws chunk queued: session=%s seq=%s duration_ms=%s queue=%s",
+                        session.session_id,
+                        chunk.seq,
+                        chunk.duration_ms,
+                        session.queue.qsize(),
+                    )
+                    emit_container_log(
+                        __name__,
+                        "debug",
+                        "ws chunk queued: session=%s seq=%s duration_ms=%s queue=%s",
+                        session.session_id,
+                        chunk.seq,
+                        chunk.duration_ms,
+                        session.queue.qsize(),
+                    )
                 except asyncio.QueueFull:
+                    logger.warning(
+                        "ws server busy: session=%s seq=%s queue=%s",
+                        session.session_id,
+                        chunk.seq,
+                        session.queue.qsize(),
+                    )
+                    emit_container_log(
+                        __name__,
+                        "warning",
+                        "ws server busy: session=%s seq=%s queue=%s",
+                        session.session_id,
+                        chunk.seq,
+                        session.queue.qsize(),
+                    )
                     await _safe_send(
                         ws,
                         {
@@ -1049,7 +1107,47 @@ async def ws_transcribe(ws: WebSocket) -> None:
                     )
                 continue
 
+            if msg_type == "telemetry":
+                if session is None:
+                    await _safe_send(ws, {"type": "error", "message": "not_started"})
+                    continue
+                event_name = _as_str(data.get("event")) or "unknown"
+                detail = data.get("detail")
+                if event_name in {"degraded_capture_enabled", "server_busy_acknowledged", "transcription_failed_acknowledged"}:
+                    logger.warning(
+                        "client telemetry: session=%s event=%s detail=%s",
+                        session.session_id,
+                        event_name,
+                        json.dumps(detail, ensure_ascii=False, sort_keys=True),
+                    )
+                    emit_container_log(
+                        __name__,
+                        "warning",
+                        "client telemetry: session=%s event=%s detail=%s",
+                        session.session_id,
+                        event_name,
+                        json.dumps(detail, ensure_ascii=False, sort_keys=True),
+                    )
+                else:
+                    logger.debug(
+                        "client telemetry: session=%s event=%s detail=%s",
+                        session.session_id,
+                        event_name,
+                        json.dumps(detail, ensure_ascii=False, sort_keys=True),
+                    )
+                    emit_container_log(
+                        __name__,
+                        "debug",
+                        "client telemetry: session=%s event=%s detail=%s",
+                        session.session_id,
+                        event_name,
+                        json.dumps(detail, ensure_ascii=False, sort_keys=True),
+                    )
+                continue
+
             if msg_type == "stop":
+                logger.info("ws stop received: session=%s", session.session_id if session is not None else "unknown")
+                emit_container_log(__name__, "info", "ws stop received: session=%s", session.session_id if session is not None else "unknown")
                 await _safe_send(ws, {"type": "info", "message": "stopping"})
                 break
 
@@ -1122,6 +1220,7 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                         item.seq,
                         exc,
                     )
+            _save_debug_audio_chunk(session, item)
 
             try:
                 prepared = _prepare_audio_for_asr(session=session, item=item)
@@ -1222,7 +1321,7 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
             session.asr_total_tokens += max(0, int(usage.get("total", 0) or 0))
             session.asr_estimated_tokens += max(0, int(result.estimated_tokens or 0))
             if result.suspicious:
-                logger.info(
+                logger.debug(
                     "Suspicious ASR chunk: session=%s seq=%s no_speech=%s avg_logprob=%s compression_ratio=%s",
                     session.session_id,
                     effective_seq if "effective_seq" in locals() else item.seq,
@@ -1277,6 +1376,14 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 language=session.language,
                 createdAt=datetime.now(timezone.utc).isoformat(),
                 screenshotPath=_store_screenshot_for_chunk(session, item),
+                rawAudioPath=(
+                    _store_debug_raw_audio_for_final(session, item)
+                    or _resolve_existing_debug_audio_url(session, prefix="raw", seq=item.seq)
+                ),
+                audioPath=(
+                    _store_debug_audio_for_final(session, effective_seq, effective_audio_bytes)
+                    or _resolve_existing_debug_audio_url(session, prefix="asr", seq=effective_seq)
+                ),
             )
             session.store.append_final(record)
             session.last_emitted_text = text
@@ -1297,7 +1404,27 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                     "tsEnd": record.tsEnd,
                     "speaker": record.speaker,
                     "screenshotPath": record.screenshotPath,
+                    "rawAudioPath": record.rawAudioPath,
+                    "audioPath": record.audioPath,
                 },
+            )
+            logger.debug(
+                "ws final sent: session=%s seq=%s chars=%s ts_start=%s ts_end=%s",
+                session.session_id,
+                record.seq,
+                len(record.text),
+                record.tsStart,
+                record.tsEnd,
+            )
+            emit_container_log(
+                __name__,
+                "debug",
+                "ws final sent: session=%s seq=%s chars=%s ts_start=%s ts_end=%s",
+                session.session_id,
+                record.seq,
+                len(record.text),
+                record.tsStart,
+                record.tsEnd,
             )
 
         if LANGFUSE_OBSERVER is not None and trace_context is not None:
@@ -2052,6 +2179,98 @@ def _store_screenshot_for_chunk(session: LiveSession, item: ChunkMessage) -> str
         return None
 
 
+def _save_debug_audio_chunk(session: LiveSession, item: ChunkMessage) -> None:
+    if not is_debug_logging_enabled():
+        return
+    if not item.audio_bytes:
+        return
+    try:
+        ext = _debug_audio_ext_from_mime(item.mime_type)
+        debug_dir = settings.debug_chunks_dir / session.session_id
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        path = debug_dir / f"raw-{item.seq:06d}{ext}"
+        path.write_bytes(item.audio_bytes)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Debug chunk save failed: session=%s seq=%s err=%s",
+            session.session_id,
+            item.seq,
+            exc,
+        )
+
+
+def _store_debug_raw_audio_for_final(session: LiveSession, item: ChunkMessage) -> str | None:
+    if not is_debug_logging_enabled():
+        return None
+    if not item.audio_bytes:
+        return None
+    try:
+        ext = _debug_audio_ext_from_mime(item.mime_type)
+        debug_dir = settings.debug_chunks_dir / session.session_id
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"raw-{item.seq:06d}{ext}"
+        path = debug_dir / filename
+        if not path.exists():
+            path.write_bytes(item.audio_bytes)
+        return f"/api/transcripts/{session.session_id}/audio/{filename}?token={session.access_token}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Debug raw audio save failed: session=%s seq=%s err=%s",
+            session.session_id,
+            item.seq,
+            exc,
+        )
+        return None
+
+
+def _store_debug_audio_for_final(session: LiveSession, seq: int, audio_bytes: bytes) -> str | None:
+    if not is_debug_logging_enabled():
+        return None
+    if not audio_bytes:
+        return None
+    try:
+        debug_dir = settings.debug_chunks_dir / session.session_id
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"asr-{seq:06d}.wav"
+        (debug_dir / filename).write_bytes(audio_bytes)
+        return f"/api/transcripts/{session.session_id}/audio/{filename}?token={session.access_token}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Debug ASR audio save failed: session=%s seq=%s err=%s",
+            session.session_id,
+            seq,
+            exc,
+        )
+        return None
+
+
+def _debug_audio_ext_from_mime(mime_type: str) -> str:
+    lowered = (mime_type or "").lower()
+    if "wav" in lowered:
+        return ".wav"
+    if "webm" in lowered:
+        return ".webm"
+    if "ogg" in lowered or "opus" in lowered:
+        return ".ogg"
+    if "mp4" in lowered or "m4a" in lowered:
+        return ".m4a"
+    if "mpeg" in lowered or "mp3" in lowered:
+        return ".mp3"
+    return ".bin"
+
+
+def _resolve_existing_debug_audio_url(session: LiveSession, *, prefix: str, seq: int) -> str | None:
+    if not is_debug_logging_enabled():
+        return None
+    debug_dir = settings.debug_chunks_dir / session.session_id
+    if not debug_dir.exists():
+        return None
+    matches = sorted(debug_dir.glob(f"{prefix}-{seq:06d}.*"))
+    if not matches:
+        return None
+    return f"/api/transcripts/{session.session_id}/audio/{matches[0].name}?token={session.access_token}"
+
+
 def _clamp_diarization_speakers(value: int) -> int:
     return max(0, min(MAX_DIARIZATION_SPEAKERS, value))
 
@@ -2377,6 +2596,28 @@ async def get_screenshot(session_id: str, filename: str, token: str | None = Que
         media_type = "image/jpeg"
     elif suffix == ".png":
         media_type = "image/png"
+
+    return FileResponse(str(path), media_type=media_type)
+
+
+@app.get("/api/transcripts/{session_id}/audio/{filename}", response_model=None)
+async def get_debug_audio(session_id: str, filename: str, token: str | None = Query(default=None)) -> Response:
+    if not _runtime_access_allowed(session_id, token):
+        return HTMLResponse(status_code=404, content="not found")
+    path = resolve_debug_audio_path(settings.debug_chunks_dir, session_id, filename)
+    if not path or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+
+    suffix = path.suffix.lower()
+    media_type = "application/octet-stream"
+    if suffix == ".wav":
+        media_type = "audio/wav"
+    elif suffix == ".webm":
+        media_type = "audio/webm"
+    elif suffix == ".ogg":
+        media_type = "audio/ogg"
+    elif suffix == ".mp4":
+        media_type = "audio/mp4"
 
     return FileResponse(str(path), media_type=media_type)
 

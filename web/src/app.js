@@ -1,8 +1,9 @@
 import { fetchCapabilities } from "./capabilities/api.js";
 import { fetchAuthState, loginRequest, bootstrapAdminRequest, registerRequest, logoutRequest, fetchPendingUsers as fetchPendingUsersRequest, approvePendingUserRequest } from "./auth/api.js";
 import { canUseWorkspace as canUseWorkspaceForAuth, persistGuestMode, readGuestMode, serializeUserLabel } from "./auth/session.js";
-import { fetchHistoryList as fetchHistoryListRequest, fetchHistoryDetail, saveHistoryRequest } from "./history/api.js";
+import { deleteHistoryRequest, fetchHistoryList as fetchHistoryListRequest, fetchHistoryDetail, saveHistoryRequest } from "./history/api.js";
 import { fetchSharedGlossary as fetchSharedGlossaryRequest, saveSharedGlossary as saveSharedGlossaryRequest } from "./api/glossary.js";
+import { fetchJson } from "./api/client.js";
 import { applyHistoryDetailPayload, applyHistoryListPayload, clearHistoryState } from "./history/state.js";
 import { readStoredJson, readStoredValue, writeStoredValue } from "./state/storage.js";
 import { normalizeTheme, resolveInitialTheme, themeMetaColor } from "./ui/theme.js";
@@ -16,6 +17,7 @@ const brandTitleEl = $("#brandTitle");
 const brandTaglineEl = $("#brandTagline");
 const themeToggleBtn = $("#themeToggle");
 const sidebarToggleBtn = $("#sidebarToggle");
+const historyToggleBtn = $("#historyToggleBtn");
 const sidebarCloseBtn = $("#sidebarClose");
 const sidebarBackdropEl = $("#sidebarBackdrop");
 const sidePanelEl = $("#sidePanel");
@@ -46,6 +48,8 @@ const sharedVocabularyEl = $("#sharedVocabulary");
 const sharedVocabularySaveBtn = $("#sharedVocabularySaveBtn");
 const sharedVocabularyMetaEl = $("#sharedVocabularyMeta");
 const summaryPromptEl = $("#summaryPrompt");
+const summaryPromptEditorEl = $("#summaryPromptEditor");
+const summaryPromptToggleBtn = $("#summaryPromptToggleBtn");
 const promptTemplateButtonsEl = $("#promptTemplateButtons");
 const workspacePanelsEl = $("#workspacePanels");
 const panelResizerEls = Array.from(document.querySelectorAll("[data-resizer]"));
@@ -71,11 +75,11 @@ const saveStateBadgeEl = $("#saveStateBadge");
 const helpBtn = $("#helpBtn");
 const loginBtn = $("#loginBtn");
 const logoutBtn = $("#logoutBtn");
+const historyCollapseBtn = $("#historyCollapseBtn");
 const historyDrawerCloseEl = document.querySelector("#historyDrawerClose");
 const authUserLabelEl = document.querySelector("#authUserLabel");
 const authGuestViewEl = $("#authGuestView");
 const authUserViewEl = $("#authUserView");
-const authPanelUserTextEl = $("#authPanelUserText");
 const adminQueueBtn = $("#adminQueueBtn");
 const adminQueueBadgeEl = $("#adminQueueBadge");
 const loginEmailEl = $("#loginEmail");
@@ -95,7 +99,6 @@ const registerEmailEl = $("#registerEmail");
 const registerPasswordEl = $("#registerPassword");
 const registerBtn = $("#registerBtn");
 const registerHintEl = $("#registerHint");
-const sidePanelPendingSummaryEl = $("#sidePanelPendingSummary");
 const historySearchInputEl = $("#historySearchInput");
 const historyListEl = $("#historyList");
 const historyEmptyEl = $("#historyEmpty");
@@ -130,6 +133,7 @@ const proofreadMetaEl = $("#proofreadMeta");
 const toastContainer = $("#toastContainer");
 const appEl = document.querySelector(".app");
 const mainContentEl = document.querySelector(".main-content");
+const workspaceShellEl = $("#workspaceShell");
 const historyRailEl = document.querySelector(".history-rail");
 const transcriptPanelEl = document.querySelector(".transcript-panel");
 const proofreadPanelEl = document.querySelector(".proofread-panel");
@@ -198,8 +202,15 @@ const SCREENSHOT_DIFF_CHANGED_RATIO_THRESHOLD = 0.015;
 const SCREENSHOT_ZOOM_MIN = 1;
 const SCREENSHOT_ZOOM_MAX = 4;
 const SCREENSHOT_ZOOM_STEP = 0.25;
+const SCREENSHOT_MAX_WIDTH = 1024;
+const SCREENSHOT_DEGRADED_MAX_WIDTH = 768;
+const SCREENSHOT_WEBP_QUALITY = 0.88;
 const CLIENT_VAD_DROP_ENABLED = false;
 const HISTORY_SEARCH_DEBOUNCE_MS = 180;
+const BACKLOG_WARN_THRESHOLD = 2;
+const BACKLOG_DANGER_THRESHOLD = 4;
+const SCREENSHOT_MIN_INTERVAL_MS = 18_000;
+const SCREENSHOT_DEGRADED_INTERVAL_MS = 45_000;
 const DEFAULT_SOC_PROMPT_TEMPLATE = `SoC, ASIC, chiplet, CPU, GPU, NPU, DSP, ISP, VPU, DPU, MCU, PMU, NoC, interconnect, AXI, AXI4, AXI-Lite, AHB, APB, ACE, CHI, UCIe, PCIe, CXL, DDR, DDR4, DDR5, LPDDR4, LPDDR5, HBM, SRAM, ROM, eMMC, UFS, PHY, SerDes, PLL, DLL, RC oscillator, clock, clock tree, clock gating, reset, async reset, sync reset, power domain, voltage island, retention, isolation, level shifter, DVFS, AVS, UPF, CPF, RTL, SystemVerilog, Verilog, VHDL, UVM, testbench, assertion, SVA, lint, SpyGlass, CDC, RDC, STA, MCMM, OCV, AOCV, POCV, derate, setup, hold, recovery, removal, skew, jitter, uncertainty, timing closure, timing path, false path, multicycle path, path group, endpoint, startpoint, slack, WNS, TNS, violating path, critical path, synthesis, logic synthesis, Design Compiler, Genus, netlist, mapped netlist, unmapped netlist, compile, incremental compile, retiming, boundary optimization, datapath optimization, resource sharing, register balancing, ECO, formal, equivalence check, LEC, Conformal, Formality, gate-level simulation, GLS, SDF, back annotation, place and route, place-and-route, PnR, floorplan, floorplanning, macro placement, standard cell, utilization, density, congestion, global placement, detailed placement, legalization, CTS, clock tree synthesis, useful skew, hold fixing, setup fixing, routing, global route, detailed route, track assignment, antenna, filler cell, decap, tap cell, endcap, spare cell, spare gate, metal fill, density fill, ECO route, route guide, signoff, sign-off, DRC, LVS, ERC, extraction, parasitic extraction, RC extraction, SPEF, DEF, LEF, Liberty, .lib, TLU+, QRC, StarRC, Quantus, IR drop, dynamic IR drop, static IR drop, EM, electromigration, voltage drop, power integrity, signal integrity, SI, crosstalk, noise, glitch, overshoot, undershoot, hotspot, thermal, leakage, dynamic power, switching power, internal power, leakage power, power analysis, PrimeTime PX, PrimePower, Voltus, RedHawk, vectorless, VCD, FSDB, SAIF, toggle rate, activity factor, inrush current, rush current, decoupling capacitor, decap cell, package model, bump, substrate, interposer, TSV, process node, 28nm, 16nm, 12nm, 7nm, 5nm, 4nm, 3nm, FinFET, GAA, foundry, TSMC, Samsung, Intel, PDK, DFM, manufacturability, yield, wafer, lot, mask, reticle, tape-out, respin, metal fix, MPW, shuttle, bring-up, validation, characterization, errata, workaround, DFT, scan, scan chain, scan compression, EDT, ATPG, stuck-at, transition fault, path delay fault, bridging fault, JTAG, boundary scan, MBIST, LBIST, BISR, repair, fuse, eFuse, OTP, secure boot, TrustZone, TEE, firmware, bootloader, NAND, NAND flash, Toggle NAND, ONFI, raw NAND, managed NAND, SLC, MLC, TLC, QLC, PLC, 3D NAND, V-NAND, charge trap, floating gate, page, block, plane, die, LUN, bad block, bad block management, BBT, ECC, BCH, LDPC, RAID, read disturb, program disturb, erase disturb, wear leveling, garbage collection, overprovisioning, endurance, retention, BER, bit error rate, read retry, soft decoding, threshold voltage, ISPP, incremental step pulse programming, erase verify, program verify, copyback, cache read, cache program, multi-plane, interleaving, channel, CE, RE, WE, ALE, CLE, R/B, spare area, OOB, metadata, FTL, flash translation layer, NVMe, SATA, controller, queue depth, throughput, latency, bandwidth, QoS, arbiter, scheduler, mux, demux, crossbar, SRAM compiler, memory compiler, register file, dual port RAM, single port RAM, SRAM macro, macro, hard macro, soft macro, black box, hierarchy, partition, block-level, top-level, full-chip, chip top, top module, hierarchy flattening, dont_touch, set_false_path, set_multicycle_path, create_clock, generated clock, propagated clock, ideal clock, set_input_delay, set_output_delay, set_clock_uncertainty, set_clock_groups, operating condition, corner, slow corner, fast corner, typical corner, SS, FF, TT, RCmax, RCmin, setup view, hold view.`;
 
 const runtimeUi = {
@@ -233,6 +244,12 @@ const state = {
   screenshotZoom: 1,
   screenshotBaseWidth: 0,
   screenshotBaseHeight: 0,
+  screenshotDragging: false,
+  screenshotDragPointerId: null,
+  screenshotDragStartX: 0,
+  screenshotDragStartY: 0,
+  screenshotDragScrollLeft: 0,
+  screenshotDragScrollTop: 0,
   recordedChunkCount: 0,
   runtimeSessionId: "",
   runtimeSessionToken: "",
@@ -255,6 +272,7 @@ const state = {
   advancedSettingsOpen: false,
   latestStatus: "idle",
   sidebarOpen: false,
+  historyCollapsed: false,
   activeResizer: null,
   panelLeftRatio: 1.35,
   panelCenterRatio: 0.95,
@@ -298,11 +316,21 @@ const state = {
   autoGainEnabled: true,
   screenshotDiffCanvas: null,
   previousScreenshotSignature: null,
+  screenshotEncodeInFlight: false,
+  screenshotLastCapturedAt: 0,
+  screenshotSkippedCount: 0,
+  pendingOutboundChunks: 0,
+  maxObservedBacklog: 0,
+  degradedCaptureMode: false,
+  lastTelemetryBacklogBucket: "",
+  lastScreenshotSkipReason: "",
+  lastScreenshotSkipSentAt: 0,
   panelCollapsed: {
     transcript: false,
     proofread: false,
     summary: false,
   },
+  summaryPromptEditorOpen: false,
   promptTemplates: [
     {
       id: "soc-design",
@@ -443,6 +471,56 @@ function applyHistoryDrawerOpen(open) {
   historyRailEl.classList.toggle("is-open", isOpen);
   historyRailEl.setAttribute("aria-hidden", isMobile ? (isOpen ? "false" : "true") : "false");
   document.body.classList.toggle("is-history-drawer-open", isOpen);
+  updateHistoryControls();
+}
+
+function applyHistoryCollapsed(value, options = {}) {
+  const persist = options.persist !== false;
+  state.historyCollapsed = !!value;
+  const isDesktop = window.innerWidth > 1100;
+  if (workspaceShellEl) {
+    workspaceShellEl.classList.toggle("is-history-collapsed", isDesktop && state.historyCollapsed);
+  }
+  if (historyRailEl) {
+    historyRailEl.classList.toggle("is-collapsed", isDesktop && state.historyCollapsed);
+  }
+  if (persist) {
+    try {
+      localStorage.setItem("whistx_history_collapsed", state.historyCollapsed ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }
+  updateHistoryControls();
+}
+
+function updateHistoryControls() {
+  const isMobile = window.innerWidth <= 1100;
+  if (historyCollapseBtn) {
+    historyCollapseBtn.hidden = isMobile;
+    historyCollapseBtn.classList.toggle("is-collapsed", !isMobile && state.historyCollapsed);
+    historyCollapseBtn.setAttribute("aria-label", state.historyCollapsed ? "履歴を展開" : "履歴をたたむ");
+    historyCollapseBtn.title = state.historyCollapsed ? "展開" : "たたむ";
+  }
+  if (historyToggleBtn) {
+    const label = isMobile
+      ? (document.body.classList.contains("is-history-drawer-open") ? "履歴を閉じる" : "履歴を開く")
+      : (state.historyCollapsed ? "履歴を開く" : "履歴をたたむ");
+    historyToggleBtn.setAttribute("aria-label", label);
+    historyToggleBtn.title = label;
+  }
+}
+
+function applySummaryPromptEditorOpen(value) {
+  state.summaryPromptEditorOpen = !!value;
+  if (summaryPromptEditorEl) {
+    summaryPromptEditorEl.hidden = !state.summaryPromptEditorOpen;
+    summaryPromptEditorEl.classList.toggle("is-open", state.summaryPromptEditorOpen);
+  }
+  if (summaryPromptToggleBtn) {
+    summaryPromptToggleBtn.setAttribute("aria-expanded", state.summaryPromptEditorOpen ? "true" : "false");
+    summaryPromptToggleBtn.textContent = state.summaryPromptEditorOpen ? "要約方針を閉じる" : "要約方針";
+  }
 }
 
 function applyAdvancedSettingsOpen(open) {
@@ -996,10 +1074,25 @@ function buildRuntimeUi() {
     screenshotZoomInBtnEl?.addEventListener("click", () => {
       zoomScreenshot(SCREENSHOT_ZOOM_STEP);
     });
+    screenshotModalViewportEl?.addEventListener("pointerdown", (event) => {
+      beginScreenshotDrag(event);
+    });
+    screenshotModalViewportEl?.addEventListener("pointermove", (event) => {
+      handleScreenshotDrag(event);
+    });
+    screenshotModalViewportEl?.addEventListener("pointerup", () => {
+      stopScreenshotDrag();
+    });
+    screenshotModalViewportEl?.addEventListener("pointercancel", () => {
+      stopScreenshotDrag();
+    });
+    screenshotModalViewportEl?.addEventListener("lostpointercapture", () => {
+      stopScreenshotDrag();
+    });
     screenshotModalViewportEl?.addEventListener("wheel", (event) => {
       if (runtimeUi.screenshotModalEl?.hidden) return;
       event.preventDefault();
-      zoomScreenshot(event.deltaY < 0 ? SCREENSHOT_ZOOM_STEP : -SCREENSHOT_ZOOM_STEP);
+      zoomScreenshot(event.deltaY < 0 ? SCREENSHOT_ZOOM_STEP : -SCREENSHOT_ZOOM_STEP, event);
     }, { passive: false });
     window.addEventListener("resize", () => {
       if (runtimeUi.screenshotModalEl?.hidden || !screenshotModalImageEl?.src) return;
@@ -1033,18 +1126,23 @@ function setAppLocked(locked) {
   }
 }
 
+function hasOpenBlockingModal() {
+  return [runtimeUi.screenshotModalEl, helpModalEl, adminQueueModalEl].some((element) => element && !element.hidden);
+}
+
+function syncBodyScrollLock() {
+  const locked = hasOpenBlockingModal();
+  runtimeUi.bodyScrollLocks = locked ? 1 : 0;
+  document.body.style.overflow = locked ? "hidden" : "";
+  document.body.classList.toggle("is-modal-open", locked);
+}
+
 function lockBodyScroll() {
-  runtimeUi.bodyScrollLocks = Math.max(0, Number(runtimeUi.bodyScrollLocks || 0)) + 1;
-  document.body.style.overflow = "hidden";
-  document.body.classList.add("is-modal-open");
+  syncBodyScrollLock();
 }
 
 function unlockBodyScroll() {
-  runtimeUi.bodyScrollLocks = Math.max(0, Number(runtimeUi.bodyScrollLocks || 0) - 1);
-  if (runtimeUi.bodyScrollLocks === 0) {
-    document.body.style.overflow = "";
-    document.body.classList.remove("is-modal-open");
-  }
+  syncBodyScrollLock();
 }
 
 function setHistorySearchQuery(value) {
@@ -1110,6 +1208,7 @@ function updateScreenshotZoomUi() {
   screenshotModalImageEl.style.width = renderedWidth + "px";
   screenshotModalImageEl.style.height = renderedHeight + "px";
   screenshotModalViewportEl.classList.toggle("is-zoomed", zoom > SCREENSHOT_ZOOM_MIN);
+  screenshotModalViewportEl.classList.toggle("is-dragging", state.screenshotDragging);
 
   if (screenshotZoomOutBtnEl) screenshotZoomOutBtnEl.disabled = zoom <= SCREENSHOT_ZOOM_MIN;
   if (screenshotZoomInBtnEl) screenshotZoomInBtnEl.disabled = zoom >= SCREENSHOT_ZOOM_MAX;
@@ -1158,8 +1257,83 @@ function setScreenshotZoom(nextZoom, { recenter = false } = {}) {
   screenshotModalViewportEl.scrollTop = nextScrollableY * ratioY;
 }
 
-function zoomScreenshot(delta) {
+function setScreenshotZoomAt(nextZoom, clientX, clientY) {
+  if (!screenshotModalViewportEl) return;
+
+  const currentZoom = clampScreenshotZoom(state.screenshotZoom);
+  const resolvedZoom = clampScreenshotZoom(nextZoom);
+  if (resolvedZoom === currentZoom) return;
+
+  const rect = screenshotModalViewportEl.getBoundingClientRect();
+  const offsetX = Math.max(0, Math.min(rect.width, clientX - rect.left));
+  const offsetY = Math.max(0, Math.min(rect.height, clientY - rect.top));
+  const baseWidth = Math.max(1, state.screenshotBaseWidth || rect.width || 1);
+  const baseHeight = Math.max(1, state.screenshotBaseHeight || rect.height || 1);
+  const currentWidth = Math.max(1, Math.round(baseWidth * currentZoom));
+  const currentHeight = Math.max(1, Math.round(baseHeight * currentZoom));
+  const contentRatioX = (screenshotModalViewportEl.scrollLeft + offsetX) / currentWidth;
+  const contentRatioY = (screenshotModalViewportEl.scrollTop + offsetY) / currentHeight;
+
+  state.screenshotZoom = resolvedZoom;
+  updateScreenshotZoomUi();
+
+  if (resolvedZoom <= SCREENSHOT_ZOOM_MIN) {
+    centerScreenshotViewport();
+    return;
+  }
+
+  const nextWidth = Math.max(1, Math.round(baseWidth * resolvedZoom));
+  const nextHeight = Math.max(1, Math.round(baseHeight * resolvedZoom));
+  const nextScrollableX = Math.max(0, screenshotModalViewportEl.scrollWidth - screenshotModalViewportEl.clientWidth);
+  const nextScrollableY = Math.max(0, screenshotModalViewportEl.scrollHeight - screenshotModalViewportEl.clientHeight);
+  screenshotModalViewportEl.scrollLeft = Math.max(0, Math.min(nextScrollableX, contentRatioX * nextWidth - offsetX));
+  screenshotModalViewportEl.scrollTop = Math.max(0, Math.min(nextScrollableY, contentRatioY * nextHeight - offsetY));
+}
+
+function zoomScreenshot(delta, anchorEvent = null) {
+  if (anchorEvent && screenshotModalViewportEl) {
+    setScreenshotZoomAt(state.screenshotZoom + delta, anchorEvent.clientX, anchorEvent.clientY);
+    return;
+  }
   setScreenshotZoom(state.screenshotZoom + delta);
+}
+
+function stopScreenshotDrag() {
+  if (screenshotModalViewportEl && state.screenshotDragPointerId !== null) {
+    try {
+      if (screenshotModalViewportEl.hasPointerCapture?.(state.screenshotDragPointerId)) {
+        screenshotModalViewportEl.releasePointerCapture(state.screenshotDragPointerId);
+      }
+    } catch {
+      // ignore pointer capture release failures
+    }
+  }
+  state.screenshotDragging = false;
+  state.screenshotDragPointerId = null;
+  updateScreenshotZoomUi();
+}
+
+function beginScreenshotDrag(event) {
+  if (!screenshotModalViewportEl || state.screenshotZoom <= SCREENSHOT_ZOOM_MIN) return;
+  state.screenshotDragging = true;
+  state.screenshotDragPointerId = event.pointerId;
+  state.screenshotDragStartX = event.clientX;
+  state.screenshotDragStartY = event.clientY;
+  state.screenshotDragScrollLeft = screenshotModalViewportEl.scrollLeft;
+  state.screenshotDragScrollTop = screenshotModalViewportEl.scrollTop;
+  screenshotModalViewportEl.setPointerCapture?.(event.pointerId);
+  updateScreenshotZoomUi();
+  event.preventDefault();
+}
+
+function handleScreenshotDrag(event) {
+  if (!screenshotModalViewportEl || !state.screenshotDragging) return;
+  if (state.screenshotDragPointerId !== null && event.pointerId !== state.screenshotDragPointerId) return;
+  const deltaX = event.clientX - state.screenshotDragStartX;
+  const deltaY = event.clientY - state.screenshotDragStartY;
+  screenshotModalViewportEl.scrollLeft = state.screenshotDragScrollLeft - deltaX;
+  screenshotModalViewportEl.scrollTop = state.screenshotDragScrollTop - deltaY;
+  event.preventDefault();
 }
 
 function resetScreenshotZoom() {
@@ -1171,6 +1345,7 @@ function showScreenshotModal(src, alt = "スクリーンショット") {
   state.screenshotZoom = SCREENSHOT_ZOOM_MIN;
   state.screenshotBaseWidth = 0;
   state.screenshotBaseHeight = 0;
+  stopScreenshotDrag();
   runtimeUi.screenshotModalImageEl.src = src;
   runtimeUi.screenshotModalImageEl.alt = alt;
   runtimeUi.screenshotModalEl.hidden = false;
@@ -1197,6 +1372,7 @@ function hideScreenshotModal() {
   state.screenshotZoom = SCREENSHOT_ZOOM_MIN;
   state.screenshotBaseWidth = 0;
   state.screenshotBaseHeight = 0;
+  stopScreenshotDrag();
   updateScreenshotZoomUi();
   unlockBodyScroll();
 }
@@ -1216,6 +1392,70 @@ function closeHelpModal() {
   helpModalEl.classList.remove("is-open");
   helpModalEl.hidden = true;
   unlockBodyScroll();
+}
+
+function logWsEvent(event, detail = {}) {
+  console.info(`[whistx][ws] ${event}`, detail);
+}
+
+function logClientEvent(event, detail = {}) {
+  console.info(`[whistx][client] ${event}`, detail);
+}
+
+function sendWsTelemetry(event, detail = {}) {
+  const ws = state.ws;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  try {
+    ws.send(JSON.stringify({
+      type: "telemetry",
+      event,
+      detail,
+    }));
+  } catch {
+    // ignore telemetry send failures
+  }
+}
+
+function bucketizeBacklog(value) {
+  if (value >= BACKLOG_DANGER_THRESHOLD) return "danger";
+  if (value >= BACKLOG_WARN_THRESHOLD) return "warn";
+  return "normal";
+}
+
+function emitScreenshotSkipTelemetry(reason, extra = {}) {
+  const now = Date.now();
+  const sameReason = state.lastScreenshotSkipReason === reason;
+  const sentRecently = now - state.lastScreenshotSkipSentAt < 15_000;
+  if (sameReason && sentRecently) return;
+  state.lastScreenshotSkipReason = reason;
+  state.lastScreenshotSkipSentAt = now;
+  sendWsTelemetry("screenshot_skipped", {
+    reason,
+    skippedCount: state.screenshotSkippedCount,
+    backlog: state.pendingOutboundChunks,
+    ...extra,
+  });
+}
+
+function updateBackpressureState() {
+  state.maxObservedBacklog = Math.max(state.maxObservedBacklog, state.pendingOutboundChunks);
+  const nextBucket = bucketizeBacklog(state.pendingOutboundChunks);
+  if (nextBucket !== state.lastTelemetryBacklogBucket) {
+    state.lastTelemetryBacklogBucket = nextBucket;
+    sendWsTelemetry("client_backlog", {
+      backlog: state.pendingOutboundChunks,
+      maxObservedBacklog: state.maxObservedBacklog,
+      bucket: nextBucket,
+    });
+  }
+  const nextDegraded = state.pendingOutboundChunks >= BACKLOG_WARN_THRESHOLD;
+  if (nextDegraded !== state.degradedCaptureMode) {
+    state.degradedCaptureMode = nextDegraded;
+    sendWsTelemetry(nextDegraded ? "degraded_capture_enabled" : "degraded_capture_cleared", {
+      backlog: state.pendingOutboundChunks,
+      maxObservedBacklog: state.maxObservedBacklog,
+    });
+  }
 }
 
 function setupWorkspaceResizers() {
@@ -1668,11 +1908,10 @@ function renderHistoryList() {
     historyCountBadgeEl.textContent = historyCount + "件";
   }
   state.history.items.forEach((item) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "history-item";
+    const article = document.createElement("article");
+    article.className = "history-item";
     if (state.history.selectedId === item.id) {
-      button.classList.add("is-active");
+      article.classList.add("is-active");
     }
     const savedAt = item.savedAt
       ? new Date(item.savedAt).toLocaleString("ja-JP", {
@@ -1683,21 +1922,37 @@ function renderHistoryList() {
         })
       : "日時不明";
     const language = formatLanguageLabel(item.language || "auto");
-    button.innerHTML = `
-      <div class="history-item-header">
-        <div class="history-item-title">${escapeHtml(item.title || "無題")}</div>
-        <div class="history-item-date">${escapeHtml(savedAt)}</div>
+    article.innerHTML = `
+      <div class="history-item-main" role="button" tabindex="0" aria-label="履歴を開く">
+        <div class="history-item-header">
+          <div class="history-item-title">${escapeHtml(item.title || "無題")}</div>
+          <div class="history-item-date">${escapeHtml(savedAt)}</div>
+        </div>
+        <div class="history-item-meta-row">
+          <span class="history-item-badge">${escapeHtml(language)}</span>
+        </div>
+        <div class="history-item-meta">${escapeHtml(formatHistoryMeta(item))}</div>
+        <div class="history-item-preview">${escapeHtml(item.preview || "")}</div>
       </div>
-      <div class="history-item-meta-row">
-        <span class="history-item-badge">${escapeHtml(language)}</span>
+      <div class="history-item-actions">
+        <button type="button" class="history-item-delete" aria-label="履歴を削除">削除</button>
       </div>
-      <div class="history-item-meta">${escapeHtml(formatHistoryMeta(item))}</div>
-      <div class="history-item-preview">${escapeHtml(item.preview || "")}</div>
     `;
-    button.addEventListener("click", () => {
+    article.querySelector(".history-item-main")?.addEventListener("click", () => {
       openHistoryDetail(item.id);
     });
-    historyListEl.appendChild(button);
+    article.querySelector(".history-item-main")?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openHistoryDetail(item.id);
+      }
+    });
+    article.querySelector(".history-item-delete")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      deleteHistory(item.id);
+    });
+    historyListEl.appendChild(article);
   });
   updateHistoryEmptyState();
 }
@@ -1750,9 +2005,6 @@ function renderAuthState() {
   if (authUserLabelEl) {
     authUserLabelEl.textContent = userLabel;
   }
-  if (authPanelUserTextEl) {
-    authPanelUserTextEl.textContent = userLabel;
-  }
   const historyUserLabelEl = $("#historyUserLabel");
   if (historyUserLabelEl) {
     historyUserLabelEl.textContent = authenticated ? serializeUserLabel(state.auth.user) : isGuest ? "ゲスト利用中" : "";
@@ -1787,15 +2039,6 @@ function renderAuthState() {
   }
   if (adminQueueBadgeEl) {
     adminQueueBadgeEl.textContent = String(state.auth.pendingApprovalCount || 0);
-  }
-  if (sidePanelPendingSummaryEl) {
-    if (!authenticated || !isAdmin) {
-      sidePanelPendingSummaryEl.textContent = "管理者アカウントでログインすると承認待ちを確認できます。";
-    } else if (state.auth.pendingApprovalCount > 0) {
-      sidePanelPendingSummaryEl.textContent = `承認待ち ${state.auth.pendingApprovalCount} 件があります。`;
-    } else {
-      sidePanelPendingSummaryEl.textContent = "承認待ちはありません。";
-    }
   }
   if (registerBtn) {
     registerBtn.disabled = !state.selfSignupEnabled;
@@ -1950,7 +2193,7 @@ function scrollLogToBottom() {
   });
 }
 
-function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "") {
+function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", rawAudioPath = "", audioPath = "") {
   const shouldAutoScroll = state.logAutoScrollEnabled || isLogNearBottom();
 
   // Hide empty state on first log entry
@@ -1982,7 +2225,13 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "") {
   body.className = "log-body";
   body.append(content);
 
-  if (screenshotPath) {
+  let mediaGroup = null;
+  if (screenshotPath || rawAudioPath || audioPath) {
+    mediaGroup = document.createElement("div");
+    mediaGroup.className = "log-media-group";
+  }
+
+  if (screenshotPath && mediaGroup) {
     const link = document.createElement("a");
     link.className = "log-screenshot-link";
     link.href = screenshotPath;
@@ -2005,7 +2254,77 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "") {
     });
 
     link.append(image);
-    body.append(link);
+    mediaGroup.append(link);
+  }
+
+  if ((rawAudioPath || audioPath) && mediaGroup) {
+    const audioActions = document.createElement("div");
+    audioActions.className = "log-audio-actions";
+    const inlineAudio = document.createElement("audio");
+    inlineAudio.className = "log-inline-audio";
+    inlineAudio.controls = true;
+    inlineAudio.preload = "none";
+    inlineAudio.hidden = true;
+    inlineAudio.addEventListener("play", () => {
+      document.querySelectorAll(".log-inline-audio").forEach((element) => {
+        if (element !== inlineAudio && typeof element.pause === "function") {
+          element.pause();
+        }
+      });
+    });
+
+    const createAudioButton = (label, url, extraClass = "") => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `log-audio-link ${extraClass}`.trim();
+      button.title = `${label}を再生`;
+      button.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="6 3 20 12 6 21 6 3"></polygon>
+        </svg>
+        <span>${label}</span>
+      `;
+      button.addEventListener("click", async () => {
+        const isSameSource = inlineAudio.dataset.src === url;
+        if (isSameSource && !inlineAudio.hidden) {
+          if (inlineAudio.paused) {
+            try {
+              await inlineAudio.play();
+            } catch {
+              // ignore
+            }
+          } else {
+            inlineAudio.pause();
+          }
+          return;
+        }
+        inlineAudio.pause();
+        inlineAudio.src = url;
+        inlineAudio.dataset.src = url;
+        inlineAudio.hidden = false;
+        try {
+          await inlineAudio.play();
+        } catch {
+          // controls stay visible for manual playback
+        }
+      });
+      return button;
+    };
+
+    if (rawAudioPath) {
+      audioActions.append(createAudioButton("元音声", rawAudioPath));
+    }
+
+    if (audioPath) {
+      audioActions.append(createAudioButton("加工後", audioPath, "is-processed"));
+    }
+
+    mediaGroup.append(audioActions);
+    mediaGroup.append(inlineAudio);
+  }
+
+  if (mediaGroup) {
+    body.append(mediaGroup);
   }
 
   row.append(range, body);
@@ -2022,6 +2341,8 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "") {
     seq,
     speaker,
     screenshotPath,
+    rawAudioPath,
+    audioPath,
   });
   updateSegmentCount();
   markProofreadStale();
@@ -2159,6 +2480,7 @@ function setUiRecording(active) {
   }
 
   startBtn.disabled = false;
+  updateSaveControls();
 }
 
 function normalizeAudioSource(value) {
@@ -2271,6 +2593,11 @@ async function captureDisplayScreenshot() {
   const video = state.displayCaptureVideo;
   const displayStream = state.displayStream;
   if (!video || !displayStream) return null;
+  if (state.screenshotEncodeInFlight) {
+    state.screenshotSkippedCount += 1;
+    emitScreenshotSkipTelemetry("encode_in_flight");
+    return null;
+  }
 
   const [videoTrack] = displayStream.getVideoTracks?.() || [];
   if (!videoTrack) return null;
@@ -2279,7 +2606,15 @@ async function captureDisplayScreenshot() {
   const height = Number(video.videoHeight || videoTrack.getSettings?.().height || 0);
   if (!width || !height) return null;
 
-  const maxWidth = 960;
+  const now = performance.now();
+  const minIntervalMs = state.degradedCaptureMode ? SCREENSHOT_DEGRADED_INTERVAL_MS : SCREENSHOT_MIN_INTERVAL_MS;
+  if (now - state.screenshotLastCapturedAt < minIntervalMs) {
+    state.screenshotSkippedCount += 1;
+    emitScreenshotSkipTelemetry("interval_guard", { minIntervalMs });
+    return null;
+  }
+
+  const maxWidth = state.degradedCaptureMode ? SCREENSHOT_DEGRADED_MAX_WIDTH : SCREENSHOT_MAX_WIDTH;
   const targetWidth = Math.min(maxWidth, width);
   const targetHeight = Math.max(1, Math.round((height * targetWidth) / width));
 
@@ -2294,15 +2629,23 @@ async function captureDisplayScreenshot() {
 
   const signature = buildScreenshotSignature(canvas);
   if (shouldSkipScreenshotByDiff(signature)) {
+    state.screenshotSkippedCount += 1;
+    emitScreenshotSkipTelemetry("diff_unchanged");
     return null;
   }
 
+  state.screenshotEncodeInFlight = true;
   const blob = await new Promise((resolve) => {
-    canvas.toBlob((nextBlob) => resolve(nextBlob), "image/webp", 0.7);
+    canvas.toBlob((nextBlob) => resolve(nextBlob), "image/webp", SCREENSHOT_WEBP_QUALITY);
   });
-  if (!blob) return null;
+  state.screenshotEncodeInFlight = false;
+  if (!blob) {
+    emitScreenshotSkipTelemetry("encode_failed");
+    return null;
+  }
 
   const buffer = await blob.arrayBuffer();
+  state.screenshotLastCapturedAt = now;
   return {
     mimeType: blob.type || "image/webp",
     data: arrayBufferToBase64(buffer),
@@ -2630,6 +2973,7 @@ async function ensureSocket() {
 
   const ws = new WebSocket(wsUrl());
   state.ws = ws;
+  logWsEvent("connect", { url: wsUrl() });
 
   ws.addEventListener("message", (event) => {
     let data;
@@ -2638,6 +2982,8 @@ async function ensureSocket() {
     } catch {
       return;
     }
+
+    logWsEvent("message", { type: data.type, message: data.message || "", seq: data.seq ?? null });
 
     if (data.type === "conn") {
       return;
@@ -2660,7 +3006,9 @@ async function ensureSocket() {
         Number(data.tsEnd || 0),
         Number(data.seq),
         String(data.speaker || ""),
-        String(data.screenshotPath || "")
+        String(data.screenshotPath || ""),
+        String(data.rawAudioPath || ""),
+        String(data.audioPath || "")
       );
       return;
     }
@@ -2672,22 +3020,39 @@ async function ensureSocket() {
 
     if (data.type === "error") {
       const detail = data.detail ? ` (${data.detail})` : "";
+      if (data.message === "server_busy") {
+        state.degradedCaptureMode = true;
+        sendWsTelemetry("server_busy_acknowledged", {
+          detail: data.detail || "",
+          backlog: state.pendingOutboundChunks,
+        });
+        showToast("サーバ処理が詰まっています。画面キャプチャを自動で抑制します", "error", 5000);
+      } else if (data.message === "transcription_failed") {
+        sendWsTelemetry("transcription_failed_acknowledged", {
+          seq: data.seq ?? "",
+          buffered: !!data.buffered,
+        });
+        showToast("文字起こし処理で一時エラーが発生しました", "error", 4000);
+      }
       setStatus(`error: ${data.message || "unknown"}${detail}`);
     }
   });
 
   ws.addEventListener("close", () => {
     state.ws = null;
+    logWsEvent("close");
     if (!state.recording) {
       setStatus("disconnected");
     }
   });
 
   ws.addEventListener("error", () => {
+    logWsEvent("error");
     setStatus("socket_error");
   });
 
   await waitForOpen(ws);
+  logWsEvent("open");
   return ws;
 }
 
@@ -3048,27 +3413,42 @@ async function sendChunk(blob, mimeType, durationMsOverride, vadDecision) {
     return;
   }
 
+  state.pendingOutboundChunks += 1;
+  updateBackpressureState();
   const seq = state.seq++;
   state.recordedChunkCount += 1;
-  const buffer = await blob.arrayBuffer();
-  const audio = arrayBufferToBase64(buffer);
-  const screenshot = await captureDisplayScreenshot();
+  try {
+    const buffer = await blob.arrayBuffer();
+    const audio = arrayBufferToBase64(buffer);
+    const screenshot = await captureDisplayScreenshot();
 
-  state.ws.send(
-    JSON.stringify({
-      type: "chunk",
+    state.ws.send(
+      JSON.stringify({
+        type: "chunk",
+        seq,
+        offsetMs,
+        durationMs,
+        mimeType: mimeType || blob.type || "audio/webm",
+        audio,
+        screenshot: screenshot?.data || "",
+        screenshotMimeType: screenshot?.mimeType || "",
+        speechRatio: Number.isFinite(vadDecision?.speechRatio) ? vadDecision.speechRatio : null,
+        activeMs: Number.isFinite(vadDecision?.activeMs) ? vadDecision.activeMs : null,
+        silenceMs: Number.isFinite(vadDecision?.silenceMs) ? vadDecision.silenceMs : null,
+      })
+    );
+    logWsEvent("send_chunk", {
       seq,
-      offsetMs,
       durationMs,
-      mimeType: mimeType || blob.type || "audio/webm",
-      audio,
-      screenshot: screenshot?.data || "",
-      screenshotMimeType: screenshot?.mimeType || "",
-      speechRatio: Number.isFinite(vadDecision?.speechRatio) ? vadDecision.speechRatio : null,
-      activeMs: Number.isFinite(vadDecision?.activeMs) ? vadDecision.activeMs : null,
-      silenceMs: Number.isFinite(vadDecision?.silenceMs) ? vadDecision.silenceMs : null,
-    })
-  );
+      offsetMs,
+      bytes: blob.size,
+      screenshot: screenshot ? "sent" : "skipped",
+      backlog: state.pendingOutboundChunks,
+    });
+  } finally {
+    state.pendingOutboundChunks = Math.max(0, state.pendingOutboundChunks - 1);
+    updateBackpressureState();
+  }
 }
 
 function clearChunkTimer() {
@@ -3183,6 +3563,7 @@ async function finalizeStop() {
     state.pendingSendChain = Promise.resolve();
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
       state.ws.send(JSON.stringify({ type: "stop" }));
+      logWsEvent("send_stop", { sessionId: state.runtimeSessionId || "" });
     }
     cleanupMedia();
     setUiRecording(false);
@@ -3193,6 +3574,7 @@ async function finalizeStop() {
     state.recordedChunkCount = 0;
     updateRecordingTelemetry();
     state.finalizingStop = false;
+    updateSaveControls();
   }
 }
 
@@ -3213,6 +3595,15 @@ async function startRecording() {
   state.recordingFallbackReason = "";
   state.recordingStartedAt = performance.now();
   state.recordedChunkCount = 0;
+  state.pendingOutboundChunks = 0;
+  state.maxObservedBacklog = 0;
+  state.degradedCaptureMode = false;
+  state.screenshotEncodeInFlight = false;
+  state.screenshotLastCapturedAt = 0;
+  state.screenshotSkippedCount = 0;
+  state.lastTelemetryBacklogBucket = "";
+  state.lastScreenshotSkipReason = "";
+  state.lastScreenshotSkipSentAt = 0;
   state.seq = 0;
   state.offsetMs = 0;
   state.runtimeSessionId = "";
@@ -3251,20 +3642,24 @@ async function startRecording() {
     const diarizationOptions = resolveDiarizationStartOptions();
 
     const readyPromise = waitForSessionReady(ws);
-    ws.send(
-      JSON.stringify({
-        type: "start",
-        sessionId: generateSessionSeed(),
-        language: selectedLanguage(),
-        audioSource: selectedAudioSource,
-        prompt: promptEl.value.trim(),
-        sharedVocabulary: String(sharedVocabularyEl?.value || state.sharedVocabulary || "").trim(),
-        diarizationEnabled: !!(state.diarizationAvailable && state.diarizationEnabled),
-        diarizationNumSpeakers: diarizationOptions.diarizationNumSpeakers,
-        diarizationMinSpeakers: diarizationOptions.diarizationMinSpeakers,
-        diarizationMaxSpeakers: diarizationOptions.diarizationMaxSpeakers,
-      })
-    );
+    const startPayload = {
+      type: "start",
+      sessionId: generateSessionSeed(),
+      language: selectedLanguage(),
+      audioSource: selectedAudioSource,
+      prompt: promptEl.value.trim(),
+      sharedVocabulary: String(sharedVocabularyEl?.value || state.sharedVocabulary || "").trim(),
+      diarizationEnabled: !!(state.diarizationAvailable && state.diarizationEnabled),
+      diarizationNumSpeakers: diarizationOptions.diarizationNumSpeakers,
+      diarizationMinSpeakers: diarizationOptions.diarizationMinSpeakers,
+      diarizationMaxSpeakers: diarizationOptions.diarizationMaxSpeakers,
+    };
+    ws.send(JSON.stringify(startPayload));
+    logWsEvent("send_start", {
+      sessionId: startPayload.sessionId,
+      language: startPayload.language || "auto",
+      audioSource: startPayload.audioSource,
+    });
     await readyPromise;
 
     state.recordingStartedAt = performance.now();
@@ -3438,8 +3833,10 @@ async function proofreadAll() {
   showToast(`${proofreadActionLabel()}中...`, "default", 5000);
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 300000);
+  const proofreadStartedAt = performance.now();
 
   try {
+    console.info("[whistx][api] request", { method: "POST", url: "/api/proofread/stream" });
     const response = await fetch("/api/proofread/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3459,8 +3856,21 @@ async function proofreadAll() {
         // ignore
       }
       const detail = payload.detail || payload.error || `http_${response.status}`;
+      console.error("[whistx][api] error", {
+        method: "POST",
+        url: "/api/proofread/stream",
+        status: response.status,
+        durationMs: Math.round(performance.now() - proofreadStartedAt),
+        detail: String(detail),
+      });
       throw new Error(String(detail));
     }
+    console.info("[whistx][api] response", {
+      method: "POST",
+      url: "/api/proofread/stream",
+      status: response.status,
+      durationMs: Math.round(performance.now() - proofreadStartedAt),
+    });
 
     let correctedText = "";
     let modelName = "";
@@ -3549,7 +3959,7 @@ async function summarizeAll() {
   showToast("要約を生成中...", "default", 5000);
 
   try {
-    const response = await fetch("/api/summarize", {
+    const payload = await fetchJson("/api/summarize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -3558,19 +3968,6 @@ async function summarizeAll() {
         prompt: String(summaryPromptEl?.value || "").trim(),
       }),
     });
-
-    let payload = {};
-    try {
-      payload = await response.json();
-    } catch {
-      // ignore
-    }
-
-    if (!response.ok) {
-      const detail = payload.detail || payload.error || `http_${response.status}`;
-      throw new Error(String(detail));
-    }
-
     const summaryText = String(payload.summary || "").trim();
     if (!summaryText) {
       throw new Error("empty_summary");
@@ -3766,6 +4163,22 @@ if (historyDrawerCloseEl) {
   });
 }
 
+if (historyCollapseBtn) {
+  historyCollapseBtn.addEventListener("click", () => {
+    applyHistoryCollapsed(!state.historyCollapsed);
+  });
+}
+
+if (historyToggleBtn) {
+  historyToggleBtn.addEventListener("click", () => {
+    if (window.innerWidth <= 1100) {
+      applyHistoryDrawerOpen(!document.body.classList.contains("is-history-drawer-open"));
+      return;
+    }
+    applyHistoryCollapsed(!state.historyCollapsed);
+  });
+}
+
 if (loginSubmitBtn) {
   loginSubmitBtn.addEventListener("click", () => {
     login();
@@ -3885,11 +4298,25 @@ if (helpModalEl) {
   });
 }
 
+if (summaryPromptToggleBtn) {
+  summaryPromptToggleBtn.addEventListener("click", () => {
+    applySummaryPromptEditorOpen(!state.summaryPromptEditorOpen);
+  });
+}
+
+window.addEventListener("message", (event) => {
+  if (event.origin !== window.location.origin) return;
+  if (event.data?.type === "whistx:help-close") {
+    closeHelpModal();
+  }
+});
+
 window.addEventListener("resize", () => {
   updateWorkspaceGridTemplate();
   if (window.innerWidth > 1100) {
     applyHistoryDrawerOpen(false);
   }
+  applyHistoryCollapsed(state.historyCollapsed, { persist: false });
   applyActiveAiPanel(state.activeAiPanel);
 });
 
@@ -3916,6 +4343,13 @@ try {
   }
 } catch {
   // ignore
+}
+
+try {
+  const savedHistoryCollapsed = readStoredValue("whistx_history_collapsed", null);
+  applyHistoryCollapsed(savedHistoryCollapsed === "1", { persist: false });
+} catch {
+  applyHistoryCollapsed(false, { persist: false });
 }
 
 try {
@@ -4008,11 +4442,14 @@ function updateSharedVocabularyMeta() {
 }
 
 async function loadSharedGlossary() {
+  logClientEvent("shared_glossary.load.start");
   try {
     const payload = await fetchSharedGlossaryRequest();
     applySharedVocabulary(payload);
+    logClientEvent("shared_glossary.load.success", { hasItems: !!String(payload?.items || "").trim() });
   } catch {
     applySharedVocabulary({ items: "", updatedAt: "", updatedBy: "" });
+    logClientEvent("shared_glossary.load.fallback");
   }
 }
 
@@ -4133,6 +4570,7 @@ initTheme();
 handleAuthErrorFromLocation();
 
 async function loadCapabilities() {
+  logClientEvent("capabilities.load.start");
   try {
     const health = await fetchCapabilities();
     renderBanners(health.banners);
@@ -4208,14 +4646,21 @@ async function loadCapabilities() {
     }
 
     applyDiarizationEnabled(state.diarizationEnabled, { persist: false });
+    logClientEvent("capabilities.load.success", {
+      asrReady: !!health.asrReady,
+      proofreadReady: !!health.proofreadModel,
+      diarizationEnabled: !!health.diarizationEnabled,
+    });
     return health;
   } catch {
     // ignore capability check errors
+    logClientEvent("capabilities.load.failed");
     return null;
   }
 }
 
 async function loadAuthState() {
+  logClientEvent("auth_state.load.start");
   try {
     const payload = await fetchAuthState();
     if (!payload?.authenticated) {
@@ -4234,6 +4679,7 @@ async function loadAuthState() {
       }
       setAppLocked(!canUseWorkspace());
       renderAuthState();
+      logClientEvent("auth_state.load.success", { authenticated: false, guest: !!state.auth.isGuest });
       return;
     }
     state.auth.authenticated = !!payload.authenticated;
@@ -4274,6 +4720,11 @@ async function loadAuthState() {
         loginEmailEl?.focus();
       }
     }
+    logClientEvent("auth_state.load.success", {
+      authenticated: !!state.auth.authenticated,
+      guest: !!state.auth.isGuest,
+      isAdmin: !!state.auth.user?.isAdmin,
+    });
   } catch {
     // ignore auth bootstrap errors
     try {
@@ -4284,8 +4735,10 @@ async function loadAuthState() {
       }
       setAppLocked(!canUseWorkspace());
       renderAuthState();
+      logClientEvent("auth_state.load.fallback", { guest: !!state.auth.isGuest });
     } catch {
       // ignore
+      logClientEvent("auth_state.load.failed");
     }
   }
 }
@@ -4422,14 +4875,17 @@ function loginAsGuest() {
 
 async function loadPendingUsers() {
   if (!state.auth.authenticated || !state.auth.user?.isAdmin) return;
+  logClientEvent("pending_users.load.start");
   try {
     const payload = await fetchPendingUsersRequest();
     state.adminPendingUsers = Array.isArray(payload.items) ? payload.items : [];
     state.auth.pendingApprovalCount = state.adminPendingUsers.length;
     renderAuthState();
     renderAdminPendingUsers();
+    logClientEvent("pending_users.load.success", { count: state.adminPendingUsers.length });
   } catch {
     showToast("承認待ち一覧の取得に失敗しました", "error");
+    logClientEvent("pending_users.load.failed");
   }
 }
 
@@ -4456,9 +4912,11 @@ async function loadHistoryList() {
   if (!state.auth.authenticated) {
     clearHistoryState(state);
     renderHistoryList();
+    logClientEvent("history.load.skipped");
     return;
   }
 
+  logClientEvent("history.load.start", { query: state.history.query, offset: state.history.offset, limit: state.history.limit });
   try {
     const payload = await fetchHistoryListRequest({
       limit: state.history.limit,
@@ -4467,8 +4925,10 @@ async function loadHistoryList() {
     });
     applyHistoryListPayload(state, payload);
     renderHistoryList();
+    logClientEvent("history.load.success", { total: state.history.total, items: state.history.items.length });
   } catch {
     updateHistoryEmptyState("履歴の取得に失敗しました");
+    logClientEvent("history.load.failed");
   }
 }
 
@@ -4484,7 +4944,9 @@ function renderHistoryDetail(payload) {
       Number(segment.tsEnd || 0),
       Number(segment.seq),
       String(segment.speaker || ""),
-      String(segment.screenshotUrl || "")
+      String(segment.screenshotUrl || ""),
+      String(segment.rawAudioUrl || segment.rawAudioPath || ""),
+      String(segment.audioUrl || segment.audioPath || "")
     );
   });
   if (!payload.segments || payload.segments.length === 0) {
@@ -4520,6 +4982,26 @@ async function openHistoryDetail(historyId) {
   } catch {
     showToast("履歴の取得に失敗しました", "error");
   }
+}
+
+async function deleteHistory(historyId) {
+  if (!historyId || !state.auth.authenticated) return;
+  const target = state.history.items.find((item) => item.id === historyId);
+  const confirmed = window.confirm(`履歴「${target?.title || historyId}」を削除しますか？`);
+  if (!confirmed) return;
+
+  try {
+    await deleteHistoryRequest(historyId);
+  } catch {
+    showToast("履歴の削除に失敗しました", "error");
+    return;
+  }
+
+  if (state.viewingHistoryId === historyId || state.savedHistoryId === historyId || state.history.selectedId === historyId) {
+    clearView();
+  }
+  await loadHistoryList();
+  showToast("履歴を削除しました", "success");
 }
 
 function buildAutoSaveTitle() {
@@ -4602,8 +5084,10 @@ if (summaryBtnLabelEl) {
   summaryBtnLabelEl.textContent = "生成";
 }
 applyAdvancedSettingsOpen(false);
+applySummaryPromptEditorOpen(false);
 applyActiveAiPanel(state.activeAiPanel);
 applySidebarOpen(false);
+updateHistoryControls();
 setStatus("idle");
 
 // Show initial empty state for transcript
@@ -4693,7 +5177,9 @@ if (logEl && !logEl.querySelector(".log-row")) {
 })();
 
 (async () => {
+  logClientEvent("bootstrap.start");
   await loadCapabilities();
   await loadSharedGlossary();
   await loadAuthState();
+  logClientEvent("bootstrap.done");
 })();

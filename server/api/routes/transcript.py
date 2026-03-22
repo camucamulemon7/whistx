@@ -26,3 +26,8 @@ async def get_zip(session_id: str, token: str | None = Query(default=None)) -> R
 @router.get("/api/transcripts/{session_id}/screenshots/{filename}", response_model=None)
 async def get_screenshot(session_id: str, filename: str, token: str | None = Query(default=None)) -> Response:
     return await legacy.get_screenshot(session_id, filename, token)
+
+
+@router.get("/api/transcripts/{session_id}/audio/{filename}", response_model=None)
+async def get_debug_audio(session_id: str, filename: str, token: str | None = Query(default=None)) -> Response:
+    return await legacy.get_debug_audio(session_id, filename, token)

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi.responses import FileResponse
 from sqlalchemy.exc import IntegrityError
@@ -21,6 +22,7 @@ from ..repositories import history_repository
 from ..transcript_store import (
     is_runtime_transcript_finalized,
     read_jsonl_records,
+    resolve_debug_audio_path,
     resolve_transcript_path,
 )
 
@@ -138,6 +140,8 @@ def save_history(
     temp_artifact_dir = Path(tempfile.mkdtemp(prefix=f".{history_id}.", dir=str(user_history_dir)))
     screenshots_dir = temp_artifact_dir / "screenshots"
     screenshots_dir.mkdir(parents=True, exist_ok=True)
+    audio_dir = temp_artifact_dir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
 
     summary_value = (summary_text or "").strip() or None
     proofread_value = (proofread_text or "").strip() or None
@@ -162,10 +166,20 @@ def save_history(
     for row in snapshot.records:
         copied = dict(row)
         screenshot_filename = copy_runtime_screenshot(runtime_session_id, copied, screenshots_dir)
+        raw_audio_filename = copy_runtime_debug_audio(runtime_session_id, copied, audio_dir, key="rawAudioPath")
+        asr_audio_filename = copy_runtime_debug_audio(runtime_session_id, copied, audio_dir, key="audioPath")
         if screenshot_filename:
             copied["screenshotPath"] = f"/api/history/{history_id}/screenshots/{screenshot_filename}"
         elif "screenshotPath" in copied:
             copied["screenshotPath"] = None
+        if raw_audio_filename:
+            copied["rawAudioPath"] = f"/api/history/{history_id}/audio/{raw_audio_filename}"
+        elif "rawAudioPath" in copied:
+            copied["rawAudioPath"] = None
+        if asr_audio_filename:
+            copied["audioPath"] = f"/api/history/{history_id}/audio/{asr_audio_filename}"
+        elif "audioPath" in copied:
+            copied["audioPath"] = None
         copied_records.append(copied)
 
         if copied.get("type") != "final":
@@ -271,6 +285,11 @@ def build_history_zip(*, zip_path: Path, artifact_dir: Path, include_summary: bo
             for path in sorted(screenshots_dir.iterdir()):
                 if path.is_file():
                     archive.write(path, arcname=f"screenshots/{path.name}")
+        audio_dir = artifact_dir / "audio"
+        if audio_dir.exists():
+            for path in sorted(audio_dir.iterdir()):
+                if path.is_file():
+                    archive.write(path, arcname=f"audio/{path.name}")
 
 
 def copy_runtime_screenshot(runtime_session_id: str, row: dict[str, Any], target_dir: Path) -> str | None:
@@ -288,6 +307,26 @@ def copy_runtime_screenshot(runtime_session_id: str, row: dict[str, Any], target
     if not src or not src.exists() or not filename:
         return None
     if not src.exists():
+        return None
+    shutil.copy2(src, target_dir / filename)
+    return filename
+
+
+def copy_runtime_debug_audio(runtime_session_id: str, row: dict[str, Any], target_dir: Path, *, key: str) -> str | None:
+    raw_path = _as_str(row.get(key))
+    filename = ""
+    if raw_path:
+        parsed = urlparse(raw_path)
+        filename = Path(parsed.path).name
+    src = resolve_debug_audio_path(settings.debug_chunks_dir, runtime_session_id, filename) if filename else None
+    if (not src or not src.exists() or not filename) and _as_int(row.get("seq"), -1) >= 0:
+        prefix = "raw" if key == "rawAudioPath" else "asr"
+        debug_dir = settings.debug_chunks_dir / runtime_session_id
+        matches = sorted(debug_dir.glob(f"{prefix}-{_as_int(row.get('seq'), -1):06d}.*")) if debug_dir.exists() else []
+        if matches:
+            src = matches[0]
+            filename = src.name
+    if not src or not src.exists() or not filename:
         return None
     shutil.copy2(src, target_dir / filename)
     return filename
@@ -317,6 +356,24 @@ def list_histories(
 
 def get_history_for_user(db: Session, *, user: User, history_id: str) -> TranscriptHistory | None:
     return history_repository.get_history_for_user(db, user_id=user.id, history_id=history_id, with_segments=True)
+
+
+def delete_history_for_user(db: Session, *, user: User, history_id: str) -> bool:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    if history is None:
+        return False
+
+    artifact_path = settings.history_dir / history.artifact_dir if history.artifact_dir else None
+    history_repository.delete_history(db, history)
+    try:
+      db.commit()
+    except Exception:
+      db.rollback()
+      raise
+
+    if artifact_path:
+        shutil.rmtree(artifact_path, ignore_errors=True)
+    return True
 
 
 def get_history_file_path(history: TranscriptHistory, relative_path: str | None) -> Path | None:
@@ -366,7 +423,41 @@ def resolve_history_screenshot_path(history: TranscriptHistory, filename: str) -
     return resolved_path
 
 
+def resolve_history_audio_path(history: TranscriptHistory, filename: str) -> Path | None:
+    if not history.artifact_dir:
+        return None
+    if not re.fullmatch(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", filename or ""):
+        return None
+
+    audio_dir = settings.history_dir / history.artifact_dir / "audio"
+    path = audio_dir / filename
+    try:
+        resolved_dir = audio_dir.resolve()
+        resolved_path = path.resolve()
+    except Exception:
+        return None
+    if resolved_path.parent != resolved_dir:
+        return None
+    return resolved_path
+
+
 def build_history_detail_payload(history: TranscriptHistory) -> dict[str, Any]:
+    audio_map: dict[int, dict[str, str | None]] = {}
+    jsonl_path = get_history_file_path(history, history.jsonl_path)
+    if jsonl_path is not None and jsonl_path.exists():
+        try:
+            for row in read_jsonl_records(jsonl_path):
+                if not isinstance(row, dict) or row.get("type") != "final":
+                    continue
+                seq = _as_int(row.get("seq"), -1)
+                if seq < 0:
+                    continue
+                audio_map[seq] = {
+                    "rawAudioPath": _as_str(row.get("rawAudioPath")) or None,
+                    "audioPath": _as_str(row.get("audioPath")) or None,
+                }
+        except Exception:
+            audio_map = {}
     return {
         "id": history.id,
         "title": history.title,
@@ -389,6 +480,8 @@ def build_history_detail_payload(history: TranscriptHistory) -> dict[str, Any]:
                 "chunkDurationMs": segment.chunk_duration_ms,
                 "language": segment.language,
                 "speaker": segment.speaker,
+                "rawAudioUrl": audio_map.get(segment.seq, {}).get("rawAudioPath"),
+                "audioUrl": audio_map.get(segment.seq, {}).get("audioPath"),
                 "screenshotUrl": (
                     f"/api/history/{history.id}/screenshots/{(segment.screenshot_path or _history_segment_screenshot_filename(history, segment.seq))}"
                     if (segment.screenshot_path or _history_segment_screenshot_filename(history, segment.seq))
@@ -542,4 +635,24 @@ def get_history_screenshot_response(db: Session, *, user: User, history_id: str,
         media_type = 'image/jpeg'
     elif suffix == '.png':
         media_type = 'image/png'
+    return FileResponse(str(path), media_type=media_type)
+
+
+def get_history_audio_response(db: Session, *, user: User, history_id: str, filename: str) -> FileResponse | None:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    if history is None:
+        return None
+    path = resolve_history_audio_path(history, filename)
+    if path is None or not path.exists():
+        return None
+    suffix = path.suffix.lower()
+    media_type = 'application/octet-stream'
+    if suffix == '.wav':
+        media_type = 'audio/wav'
+    elif suffix == '.webm':
+        media_type = 'audio/webm'
+    elif suffix == '.ogg':
+        media_type = 'audio/ogg'
+    elif suffix == '.mp4':
+        media_type = 'audio/mp4'
     return FileResponse(str(path), media_type=media_type)

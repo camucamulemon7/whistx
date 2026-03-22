@@ -14,6 +14,8 @@ class AppConfig:
     app_data_dir: Path
     transcripts_dir: Path
     history_dir: Path
+    app_log_level: str
+    debug_chunks_dir: Path
     app_db_url: str
     app_session_secret: str
     app_session_days: int
@@ -25,6 +27,9 @@ def load_app_config() -> AppConfig:
     app_data_dir = Path(app_data_dir_raw) if app_data_dir_raw else Path("data")
     transcripts_dir = ensure_dir(Path(env_first_non_empty("APP_TRANSCRIPTS_DIR") or str(app_data_dir / "transcripts")))
     history_dir = ensure_dir(Path(env_first_non_empty("APP_HISTORY_DIR") or str(app_data_dir / "history")))
+    app_log_level = (env_first_non_empty("APP_LOG_LEVEL") or "INFO").strip().upper()
+    if app_log_level not in {"DEBUG", "INFO"}:
+        app_log_level = "INFO"
     return AppConfig(
         host=env_first_non_empty("APP_HOST", "HOST") or "0.0.0.0",
         port=to_int_alias(8005, "APP_PORT", "PORT"),
@@ -32,6 +37,8 @@ def load_app_config() -> AppConfig:
         app_data_dir=app_data_dir,
         transcripts_dir=transcripts_dir,
         history_dir=history_dir,
+        app_log_level=app_log_level,
+        debug_chunks_dir=Path(env_first_non_empty("APP_DEBUG_CHUNKS_DIR") or str(app_data_dir / "debug_chunks")),
         app_db_url=env_first_non_empty("APP_DB_URL") or f"sqlite:///{app_data_dir / 'app.db'}",
         app_session_secret=env_first_non_empty("APP_SESSION_SECRET") or "change-me",
         app_session_days=max(1, to_int("APP_SESSION_DAYS", 7)),

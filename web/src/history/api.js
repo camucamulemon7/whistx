@@ -19,3 +19,9 @@ export function saveHistoryRequest(payload) {
     body: JSON.stringify(payload),
   });
 }
+
+export function deleteHistoryRequest(historyId) {
+  return fetchJson(`/api/history/${historyId}`, {
+    method: "DELETE",
+  });
+}

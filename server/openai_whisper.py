@@ -10,6 +10,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, Internal
 
 from .asr import ASRChunkResult
 from .config import settings
+from .core.logging import emit_container_log
 from .langfuse_observer import LangfuseObserver
 
 
@@ -65,6 +66,19 @@ class OpenAIWhisperTranscriber:
                     local_attempt += 1
                     file_obj = io.BytesIO(audio_bytes)
                     file_obj.name = f"chunk{suffix}"
+                    emit_container_log(
+                        __name__,
+                        "info",
+                        "ASR POST /v1/audio/transcriptions: model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d temp=%.2f",
+                        self.model,
+                        mime_type,
+                        len(audio_bytes),
+                        language or "",
+                        bool(prompt),
+                        local_attempt,
+                        self.retry_max_attempts,
+                        request_temperature,
+                    )
                     logger.info(
                         "ASR POST /v1/audio/transcriptions: model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d temp=%.2f",
                         self.model,
@@ -136,6 +150,18 @@ class OpenAIWhisperTranscriber:
             )
             if _should_drop_as_silence(response, text, metrics):
                 text = ""
+            emit_container_log(
+                __name__,
+                "info",
+                "ASR POST /v1/audio/transcriptions done: model=%s chars=%d attempts=%d suspicious=%s no_speech=%.3f avg_logprob=%s compression_ratio=%s",
+                self.model,
+                len(text),
+                attempt,
+                metrics["suspicious"],
+                metrics["max_no_speech_prob"] or 0.0,
+                metrics["avg_logprob"],
+                metrics["compression_ratio"],
+            )
             logger.info(
                 "ASR POST /v1/audio/transcriptions done: model=%s chars=%d attempts=%d suspicious=%s no_speech=%.3f avg_logprob=%s compression_ratio=%s",
                 self.model,

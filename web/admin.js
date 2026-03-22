@@ -9,6 +9,26 @@ const userCardsEl = document.querySelector("#userCards");
 const statusEl = document.querySelector("#adminStatus");
 const refreshBtnEl = document.querySelector("#adminRefreshBtn");
 
+function normalizeTheme(value) {
+  return value === "dark" ? "dark" : "light";
+}
+
+function applyTheme(theme) {
+  const normalized = normalizeTheme(theme);
+  document.documentElement.setAttribute("data-theme", normalized);
+  document.documentElement.style.colorScheme = normalized;
+  const color = normalized === "dark" ? "#0a0a0a" : "#f5f5f7";
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", color);
+}
+
+function initTheme() {
+  try {
+    applyTheme(localStorage.getItem("whistx_theme") || "light");
+  } catch {
+    applyTheme("light");
+  }
+}
+
 function formatDate(value) {
   if (!value) return "-";
   const date = new Date(value);
@@ -196,6 +216,13 @@ refreshBtnEl?.addEventListener("click", () => {
   });
 });
 
+window.addEventListener("storage", (event) => {
+  if (event.key === "whistx_theme") {
+    applyTheme(event.newValue || "light");
+  }
+});
+
+initTheme();
 loadAdminData().catch((error) => {
   statusEl.textContent = error?.message || "読み込みに失敗しました";
 });

@@ -58,3 +58,7 @@ def get_history_for_user(
     if with_segments:
         stmt = stmt.options(selectinload(TranscriptHistory.segments))
     return db.scalar(stmt)
+
+
+def delete_history(db: Session, history: TranscriptHistory) -> None:
+    db.delete(history)

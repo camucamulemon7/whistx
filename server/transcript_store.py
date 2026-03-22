@@ -26,6 +26,8 @@ class TranscriptRecord:
     createdAt: str
     speaker: str | None = None
     screenshotPath: str | None = None
+    rawAudioPath: str | None = None
+    audioPath: str | None = None
 
 
 class TranscriptStore:
@@ -155,6 +157,24 @@ def resolve_screenshot_path(root_dir: Path, session_id: str, filename: str) -> P
     path = root_dir / "_screenshots" / session_id / filename
     try:
         resolved_root = (root_dir / "_screenshots" / session_id).resolve()
+        resolved_path = path.resolve()
+    except Exception:
+        return None
+
+    if resolved_root != resolved_path.parent:
+        return None
+    return path
+
+
+def resolve_debug_audio_path(root_dir: Path, session_id: str, filename: str) -> Path | None:
+    if not SESSION_ID_RE.fullmatch(session_id):
+        return None
+    if not re.fullmatch(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", filename or ""):
+        return None
+
+    path = root_dir / session_id / filename
+    try:
+        resolved_root = (root_dir / session_id).resolve()
         resolved_path = path.resolve()
     except Exception:
         return None

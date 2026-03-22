@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>whistx 説明</title>
-    <link rel="stylesheet" href="/style.css?v=20260321c" />
+    <link rel="stylesheet" href="/style.css?v=20260322a" />
     <style>
       body {
         background: var(--bg-secondary, #f5f7fb);
@@ -25,6 +25,9 @@
       }
       .help-backlink {
         text-decoration: none;
+      }
+      body.is-embedded .help-topbar {
+        display: none;
       }
       .help-card {
         display: grid;
@@ -89,7 +92,7 @@
   <body>
     <main class="help-shell">
       <div class="help-topbar">
-        <a href="/" class="header-action-btn header-link-btn help-backlink">戻る</a>
+        <button id="helpBackBtn" type="button" class="header-action-btn header-link-btn help-backlink">戻る</button>
       </div>
 
       <section class="glass-panel help-card">
@@ -163,5 +166,26 @@
         </article>
       </section>
     </main>
+    <script>
+      (() => {
+        if (window.parent && window.parent !== window) {
+          document.body.classList.add("is-embedded");
+        }
+        const backBtn = document.getElementById("helpBackBtn");
+        if (!backBtn) return;
+
+        backBtn.addEventListener("click", () => {
+          if (window.parent && window.parent !== window) {
+            try {
+              window.parent.postMessage({ type: "whistx:help-close" }, window.location.origin);
+              return;
+            } catch {
+              // fall through
+            }
+          }
+          window.location.href = "/";
+        });
+      })();
+    </script>
   </body>
 </html>

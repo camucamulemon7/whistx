@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
 from ... import legacy_app as legacy
+from ...core.logging import emit_container_log
 from ...core.security import clear_session_cookie, set_session_cookie, serialize_user
 from ...db import get_db
 from ...schemas import BootstrapAdminRequest, LoginRequest, RegisterRequest
@@ -18,10 +21,13 @@ from ...services.auth_service import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get('/api/auth/me')
 async def auth_me(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    emit_container_log(__name__, "debug", "auth me requested")
+    logger.debug("auth me requested")
     return JSONResponse(build_auth_me_payload(request, db))
 
 

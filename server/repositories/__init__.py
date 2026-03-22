@@ -1,5 +1,6 @@
 from .history_repository import (
     count_histories_for_user,
+    delete_history,
     get_history_by_runtime_session,
     get_history_for_user,
     list_histories_for_user,
