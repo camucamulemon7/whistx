@@ -1285,6 +1285,15 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                     temperature=session.temperature,
                     trace_context=trace_context,
                 )
+                _accumulate_asr_usage(session, result)
+                result = await _retry_weird_transcription_if_needed(
+                    session=session,
+                    prepared=prepared,
+                    trace_context=trace_context,
+                    audio_bytes=effective_audio_bytes,
+                    previous_text=session.last_emitted_text,
+                    result=result,
+                )
                 session.failed_prepared_chunks.clear()
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Transcription failed: session=%s seq=%s", session.session_id, item.seq)
@@ -1315,11 +1324,6 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 continue
 
             text = result.text.strip()
-            usage = result.usage_details or {}
-            session.asr_input_tokens += max(0, int(usage.get("input", 0) or 0))
-            session.asr_output_tokens += max(0, int(usage.get("output", 0) or 0))
-            session.asr_total_tokens += max(0, int(usage.get("total", 0) or 0))
-            session.asr_estimated_tokens += max(0, int(result.estimated_tokens or 0))
             if result.suspicious:
                 logger.debug(
                     "Suspicious ASR chunk: session=%s seq=%s no_speech=%s avg_logprob=%s compression_ratio=%s",
@@ -1336,6 +1340,17 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 text = _light_proofread(text, language=session.language)
             if not text:
                 await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
+                continue
+            if _should_drop_boundary_fragment(
+                text,
+                session.last_emitted_text,
+                source_mode=session.audio_source,
+                suspicious=bool(result.suspicious),
+            ):
+                await _safe_send(
+                    ws,
+                    {"type": "ack", "seq": item.seq, "empty": True, "skipped": True, "reason": "boundary_fragment"},
+                )
                 continue
 
             current_start_hint = max(0, effective_offset_ms - prepared.overlap_ms_used) + (result.start_ms or 0)
@@ -1702,6 +1717,7 @@ MAX_OVERLAP_MATCH_CHARS = 96
 MIN_OVERLAP_MATCH_RATIO = 0.5
 FUZZY_OVERLAP_MIN_RATIO = 0.82
 LEADING_CONNECTOR_MARKERS = ("次に", "また", "なお", "では", "そして")
+BROKEN_BOUNDARY_RE = re.compile(r"(.)\1{2,}")
 
 
 def _sanitize_transcript_text(text: str, *, language: str | None = None) -> str:
@@ -1736,6 +1752,187 @@ def _light_proofread(text: str, *, language: str | None = None) -> str:
     value = value.replace('"', "”").replace("'", "’")
     value = MULTISPACE_NUMBER_RE.sub("", value)
     return _sanitize_transcript_text(value, language=language)
+
+
+def _should_drop_boundary_fragment(
+    current: str,
+    previous: str,
+    *,
+    source_mode: str | None = None,
+    suspicious: bool = False,
+) -> bool:
+    clean = (current or "").strip()
+    normalized = _normalize_compare_text(clean)
+    if not clean or not normalized:
+        return False
+
+    if "\ufffd" in clean and len(normalized) <= 32:
+        return True
+
+    overlap_prefix = _has_previous_suffix_overlap(current, previous, min_chars=5)
+    repeated_tail = bool(BROKEN_BOUNDARY_RE.search(normalized))
+    is_display = (source_mode or "").strip().lower() == "display"
+
+    if suspicious and len(normalized) <= 28 and overlap_prefix:
+        return True
+    if is_display and len(normalized) <= 24 and overlap_prefix and repeated_tail:
+        return True
+    return False
+
+
+def _has_previous_suffix_overlap(current: str, previous: str, *, min_chars: int = 5) -> bool:
+    a = _normalize_compare_text(current)
+    b = _normalize_compare_text(previous)
+    if not a or not b:
+        return False
+
+    max_overlap = min(len(a), len(b), 16)
+    if max_overlap < min_chars:
+        return False
+
+    for overlap_len in range(max_overlap, min_chars - 1, -1):
+        if b.endswith(a[:overlap_len]):
+            return True
+    return False
+
+
+def _accumulate_asr_usage(session: LiveSession, result: ASRChunkResult) -> None:
+    usage = result.usage_details or {}
+    session.asr_input_tokens += max(0, int(usage.get("input", 0) or 0))
+    session.asr_output_tokens += max(0, int(usage.get("output", 0) or 0))
+    session.asr_total_tokens += max(0, int(usage.get("total", 0) or 0))
+    session.asr_estimated_tokens += max(0, int(result.estimated_tokens or 0))
+
+
+def _should_retry_weird_transcription(
+    text: str,
+    previous_text: str,
+    *,
+    source_mode: str | None = None,
+    suspicious: bool = False,
+) -> bool:
+    clean = (text or "").strip()
+    normalized = _normalize_compare_text(clean)
+    if not clean or not normalized:
+        return False
+    if _should_drop_boundary_fragment(clean, previous_text, source_mode=source_mode, suspicious=suspicious):
+        return True
+    if suspicious and len(normalized) <= 40:
+        return True
+    if "\ufffd" in clean:
+        return True
+    return False
+
+
+async def _retry_weird_transcription_if_needed(
+    *,
+    session: LiveSession,
+    prepared,
+    trace_context: dict[str, str] | None,
+    audio_bytes: bytes,
+    previous_text: str,
+    result: ASRChunkResult,
+) -> ASRChunkResult:
+    if not bool(getattr(settings, "asr_rescue_retry_enabled", True)):
+        return result
+    if not _should_retry_weird_transcription(
+        result.text,
+        previous_text,
+        source_mode=session.audio_source,
+        suspicious=bool(result.suspicious),
+    ):
+        return result
+
+    retry_temperature = float(getattr(settings, "asr_rescue_retry_temperature", 0.25) or 0.25)
+    retry_prompt = _build_rescue_prompt(session)
+    logger.info(
+        "Retrying weird transcription: session=%s chars=%d suspicious=%s source=%s",
+        session.session_id,
+        len((result.text or "").strip()),
+        bool(result.suspicious),
+        session.audio_source,
+    )
+    rescue_result = await asyncio.to_thread(
+        session.transcriber.transcribe_chunk,
+        audio_bytes,
+        mime_type=prepared.mime_type,
+        language=session.language,
+        prompt=retry_prompt,
+        temperature=retry_temperature,
+        trace_context=trace_context,
+    )
+    _accumulate_asr_usage(session, rescue_result)
+    if _prefer_rescue_transcription_result(
+        original=result,
+        retry=rescue_result,
+        previous_text=previous_text,
+        source_mode=session.audio_source,
+    ):
+        logger.info("Using rescued transcription: session=%s chars=%d", session.session_id, len((rescue_result.text or "").strip()))
+        return rescue_result
+    return result
+
+
+def _build_rescue_prompt(session: LiveSession) -> str | None:
+    parts: list[str] = []
+    shared_vocabulary = str(getattr(session, "shared_vocabulary", "") or "").strip()
+    base_prompt = str(getattr(session, "base_prompt", "") or "").strip()
+    if shared_vocabulary:
+        parts.append(shared_vocabulary)
+    if base_prompt:
+        parts.append(base_prompt)
+    parts.append("断片的な音声でも無理に補完せず、聞こえた範囲だけをそのまま文字起こししてください。")
+    prompt = "\n".join(part for part in parts if part).strip()
+    return prompt or None
+
+
+def _prefer_rescue_transcription_result(
+    *,
+    original: ASRChunkResult,
+    retry: ASRChunkResult,
+    previous_text: str,
+    source_mode: str | None = None,
+) -> bool:
+    original_score = _transcription_weirdness_score(
+        original.text,
+        previous_text,
+        source_mode=source_mode,
+        suspicious=bool(original.suspicious),
+    )
+    retry_score = _transcription_weirdness_score(
+        retry.text,
+        previous_text,
+        source_mode=source_mode,
+        suspicious=bool(retry.suspicious),
+    )
+    if retry_score != original_score:
+        return retry_score < original_score
+    return len(_normalize_compare_text(retry.text)) > len(_normalize_compare_text(original.text))
+
+
+def _transcription_weirdness_score(
+    text: str,
+    previous_text: str,
+    *,
+    source_mode: str | None = None,
+    suspicious: bool = False,
+) -> int:
+    clean = (text or "").strip()
+    normalized = _normalize_compare_text(clean)
+    score = 0
+    if not clean:
+        return 100
+    if suspicious:
+        score += 4
+    if "\ufffd" in clean:
+        score += 8
+    if _should_drop_boundary_fragment(clean, previous_text, source_mode=source_mode, suspicious=suspicious):
+        score += 10
+    if _is_repetition_noise(clean):
+        score += 6
+    if len(normalized) <= 12:
+        score += 2
+    return score
 
 
 def _trim_overlap_prefix(current: str, previous: str) -> str:

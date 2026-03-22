@@ -18,6 +18,8 @@ class AsrConfig:
     asr_retry_max_attempts: int
     asr_retry_base_delay_ms: int
     asr_multi_pass_enabled: bool
+    asr_rescue_retry_enabled: bool
+    asr_rescue_retry_temperature: float
     asr_light_proofread_enabled: bool
     default_language: str
     default_prompt: str
@@ -43,6 +45,8 @@ def load_asr_config() -> AsrConfig:
         asr_retry_max_attempts=max(1, to_int_alias(3, "ASR_RETRY_MAX_ATTEMPTS")),
         asr_retry_base_delay_ms=max(0, to_int_alias(1_000, "ASR_RETRY_BASE_DELAY_MS")),
         asr_multi_pass_enabled=to_bool_alias(True, "ASR_MULTI_PASS_ENABLED"),
+        asr_rescue_retry_enabled=to_bool_alias(True, "ASR_RESCUE_RETRY_ENABLED"),
+        asr_rescue_retry_temperature=max(0.0, min(1.0, to_float_alias(0.25, "ASR_RESCUE_RETRY_TEMPERATURE"))),
         asr_light_proofread_enabled=to_bool_alias(True, "ASR_LIGHT_PROOFREAD_ENABLED"),
         default_language=env_first_non_empty("ASR_DEFAULT_LANGUAGE", "DEFAULT_LANGUAGE") or "ja",
         default_prompt=env_first_non_empty("ASR_DEFAULT_PROMPT", "DEFAULT_PROMPT") or "",

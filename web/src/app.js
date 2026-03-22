@@ -152,6 +152,7 @@ const VAD_MIN_ACTIVE_MS = 120;
 const VAD_SEGMENT_MIN_MS = 12_000;
 const VAD_SEGMENT_MAX_SILENCE_MS = 1_100;
 const VAD_SEGMENT_MIN_SILENCE_MS = 450;
+const VAD_SOFT_CUT_GRACE_MS = 6_000;
 const VAD_NOISE_FLOOR_WARMUP_MS = 1_800;
 const VAD_NOISE_FLOOR_EWMA = 0.18;
 const VAD_NOISE_FLOOR_OFFSET = {
@@ -3463,18 +3464,29 @@ function minSegmentMs() {
   return Math.max(Math.min(VAD_SEGMENT_MIN_MS, state.chunkMs), Math.round(state.chunkMs * policy.minSegmentRatio));
 }
 
-function shouldCutChunkOnSilence() {
+function chunkHardMaxMs() {
+  const mode = currentVadSourceMode();
+  const sourceExtra = mode === "display" ? 2_500 : mode === "both" ? 1_500 : 0;
+  return Math.max(state.chunkMs + 2_000, state.chunkMs + VAD_SOFT_CUT_GRACE_MS + sourceExtra);
+}
+
+function shouldCutChunkOnSilence(options = {}) {
   if (!state.vadAnalyser || !state.segmentStartedAt) return false;
 
   const policy = vadSourceCutPolicy(currentVadSourceMode());
+  const relaxed = !!options.relaxed;
   const now = performance.now();
   const elapsedMs = now - state.segmentStartedAt;
   if (elapsedMs < minSegmentMs()) return false;
 
   const silenceMs = Math.max(0, now - (state.vadLastSpeechAt || state.segmentStartedAt));
-  if (silenceMs < policy.minSilenceMs) return false;
+  const minSilenceMs = relaxed
+    ? Math.max(220, Math.min(policy.minSilenceMs, Math.round(policy.minSilenceMs * 0.55)))
+    : policy.minSilenceMs;
+  if (silenceMs < minSilenceMs) return false;
 
-  return silenceMs >= Math.min(policy.maxSilenceMs, Math.max(policy.minSilenceMs + 200, Math.round(elapsedMs * policy.silenceRatio)));
+  const silenceRatio = relaxed ? Math.max(0.1, policy.silenceRatio * 0.72) : policy.silenceRatio;
+  return silenceMs >= Math.min(policy.maxSilenceMs, Math.max(minSilenceMs + 160, Math.round(elapsedMs * silenceRatio)));
 }
 
 function requestChunkFlush(recorder) {
@@ -3498,7 +3510,12 @@ function scheduleChunkStop(recorder) {
     }
 
     const elapsedMs = Math.max(0, performance.now() - state.segmentStartedAt);
-    if (elapsedMs >= state.chunkMs || shouldCutChunkOnSilence()) {
+    if (elapsedMs >= chunkHardMaxMs()) {
+      requestChunkFlush(recorder);
+      return;
+    }
+
+    if (shouldCutChunkOnSilence({ relaxed: elapsedMs >= state.chunkMs })) {
       requestChunkFlush(recorder);
       return;
     }

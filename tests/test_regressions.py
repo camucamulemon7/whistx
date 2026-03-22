@@ -42,6 +42,7 @@ if str(ROOT) not in sys.path:
 from server import app as app_module
 from server import legacy_app
 from server import openai_whisper
+from server.asr import ASRChunkResult
 from server.app import LoginRequest
 from server.core.config.asr import load_asr_config
 from server.models import TranscriptHistory, TranscriptSegment, User
@@ -90,6 +91,8 @@ class RegressionTests(unittest.TestCase):
             {
                 'ASR_RETRY_MAX_ATTEMPTS': '5',
                 'ASR_RETRY_BASE_DELAY_MS': '250',
+                'ASR_RESCUE_RETRY_ENABLED': '1',
+                'ASR_RESCUE_RETRY_TEMPERATURE': '0.35',
             },
             clear=False,
         ):
@@ -97,6 +100,8 @@ class RegressionTests(unittest.TestCase):
 
         self.assertEqual(config.asr_retry_max_attempts, 5)
         self.assertEqual(config.asr_retry_base_delay_ms, 250)
+        self.assertTrue(config.asr_rescue_retry_enabled)
+        self.assertEqual(config.asr_rescue_retry_temperature, 0.35)
 
     def test_asr_context_defaults_are_expanded(self) -> None:
         config = load_asr_config()
@@ -512,6 +517,45 @@ class RegressionTests(unittest.TestCase):
         self.assertIn('えーと', value)
         self.assertNotIn('えーと、えーと', value)
         self.assertIn('2025', value)
+
+    def test_boundary_fragment_detection_drops_broken_display_chunk(self) -> None:
+        self.assertTrue(
+            legacy_app._should_drop_boundary_fragment(
+                'おすすめとかえええ\ufffd',
+                '有識者のみなさんぜひ教えてくださいよということでお願いしますよお願いしますほなじゃあなんかありますかおすすめとか',
+                source_mode='display',
+                suspicious=False,
+            )
+        )
+
+    def test_frontend_vad_uses_soft_target_and_hard_max(self) -> None:
+        source = (ROOT / 'web' / 'src' / 'app.js').read_text(encoding='utf-8')
+        self.assertIn('const VAD_SOFT_CUT_GRACE_MS = 6_000;', source)
+        self.assertIn('function chunkHardMaxMs()', source)
+        self.assertIn('if (elapsedMs >= chunkHardMaxMs()) {', source)
+        self.assertIn('shouldCutChunkOnSilence({ relaxed: elapsedMs >= state.chunkMs })', source)
+
+    def test_weird_transcription_retry_detection_handles_broken_chunk(self) -> None:
+        self.assertTrue(
+            legacy_app._should_retry_weird_transcription(
+                'おすすめとかえええ\ufffd',
+                '有識者のみなさんぜひ教えてくださいよということでお願いしますよお願いしますほなじゃあなんかありますかおすすめとか',
+                source_mode='display',
+                suspicious=False,
+            )
+        )
+
+    def test_rescue_transcription_result_prefers_cleaner_retry(self) -> None:
+        original = ASRChunkResult(text='おすすめとかえええ\ufffd', start_ms=0, end_ms=1000, suspicious=True)
+        retry = ASRChunkResult(text='おすすめとか', start_ms=0, end_ms=1000, suspicious=False)
+        self.assertTrue(
+            legacy_app._prefer_rescue_transcription_result(
+                original=original,
+                retry=retry,
+                previous_text='有識者のみなさんぜひ教えてくださいよということでお願いしますよお願いしますほなじゃあなんかありますか',
+                source_mode='display',
+            )
+        )
 
     def test_monotonic_bounds_prevent_timestamp_overlap(self) -> None:
         self.assertEqual(legacy_app._coerce_monotonic_bounds(ts_start=8100, ts_end=8900, previous_end_ms=9000), (9000, 9000))
