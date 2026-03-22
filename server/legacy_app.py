@@ -17,6 +17,7 @@ import hmac
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
+import wave
 from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest, urlopen
 
@@ -102,8 +103,22 @@ class ChunkMessage:
     duration_ms: int
     mime_type: str
     audio_bytes: bytes
+    speech_ratio: float = 1.0
+    active_ms: int = 0
+    silence_ms: int = 0
     screenshot_mime_type: str | None = None
     screenshot_bytes: bytes | None = None
+
+
+@dataclass(slots=True)
+class FailedPreparedChunk:
+    seq: int
+    offset_ms: int
+    duration_ms: int
+    audio_bytes: bytes
+    speech_ratio: float
+    active_ms: int
+    silence_ms: int
 
 
 @dataclass(slots=True)
@@ -134,6 +149,7 @@ class LiveSession:
     overlap_tail_pcm: bytes
     last_chunk_seq: int
     last_chunk_offset_ms: int
+    failed_prepared_chunks: list[FailedPreparedChunk]
     asr_input_tokens: int
     asr_output_tokens: int
     asr_total_tokens: int
@@ -1065,6 +1081,8 @@ async def ws_transcribe(ws: WebSocket) -> None:
 async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
     emitted_segments = 0
     emitted_chars = 0
+    if not hasattr(session, "failed_prepared_chunks"):
+        session.failed_prepared_chunks = []
     trace_context = LANGFUSE_OBSERVER.create_trace_context(
         name="asr.session",
         input={
@@ -1106,6 +1124,26 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
 
             try:
                 prepared = _prepare_audio_for_asr(session=session, item=item)
+                buffered_count = len(session.failed_prepared_chunks)
+                effective_audio_bytes = prepared.audio_bytes
+                effective_seq = item.seq
+                effective_offset_ms = item.offset_ms
+                effective_duration_ms = item.duration_ms
+                if session.failed_prepared_chunks:
+                    buffered = list(session.failed_prepared_chunks)
+                    effective_audio_bytes = _merge_wav_chunks(
+                        [entry.audio_bytes for entry in buffered] + [prepared.audio_bytes]
+                    )
+                    effective_seq = buffered[0].seq
+                    effective_offset_ms = buffered[0].offset_ms
+                    effective_duration_ms = sum(entry.duration_ms for entry in buffered) + item.duration_ms
+                    logger.info(
+                        "Merging failed chunks before retry: session=%s buffered=%d first_seq=%s current_seq=%s",
+                        session.session_id,
+                        buffered_count,
+                        effective_seq,
+                        item.seq,
+                    )
                 logger.info(
                     "Prepared audio: session=%s seq=%s rms=%.4f peak=%.4f speech_ratio=%.4f overlap_ms=%d",
                     session.session_id,
@@ -1140,21 +1178,37 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 prompt = _build_prompt(session)
                 result = await asyncio.to_thread(
                     session.transcriber.transcribe_chunk,
-                    prepared.audio_bytes,
+                    effective_audio_bytes,
                     mime_type=prepared.mime_type,
                     language=session.language,
                     prompt=prompt,
                     temperature=session.temperature,
                     trace_context=trace_context,
                 )
+                session.failed_prepared_chunks.clear()
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Transcription failed: session=%s seq=%s", session.session_id, item.seq)
+                if len(session.failed_prepared_chunks) >= 2:
+                    session.failed_prepared_chunks = session.failed_prepared_chunks[-1:]
+                session.failed_prepared_chunks.append(
+                    FailedPreparedChunk(
+                        seq=item.seq,
+                        offset_ms=item.offset_ms,
+                        duration_ms=item.duration_ms,
+                        audio_bytes=prepared.audio_bytes if "prepared" in locals() else b"",
+                        speech_ratio=item.speech_ratio,
+                        active_ms=item.active_ms,
+                        silence_ms=item.silence_ms,
+                    )
+                )
                 await _safe_send(
                     ws,
                     {
                         "type": "error",
                         "message": "transcription_failed",
                         "seq": item.seq,
+                        "buffered": True,
+                        "bufferedCount": len(session.failed_prepared_chunks),
                         "detail": str(exc),
                     },
                 )
@@ -1180,12 +1234,12 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                 )
                 continue
 
-            ts_base_offset = max(0, item.offset_ms - prepared.overlap_ms_used)
+            ts_base_offset = max(0, effective_offset_ms - prepared.overlap_ms_used)
             ts_start = ts_base_offset + (result.start_ms or 0)
             if result.end_ms is not None:
                 ts_end = ts_base_offset + result.end_ms
             else:
-                ts_end = item.offset_ms + max(item.duration_ms, 600)
+                ts_end = effective_offset_ms + max(effective_duration_ms, 600)
 
             ts_start, ts_end = _coerce_monotonic_bounds(
                 ts_start=ts_start,
@@ -1195,13 +1249,13 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
 
             record = TranscriptRecord(
                 type="final",
-                segmentId=f"{item.seq:06d}",
-                seq=item.seq,
+                segmentId=f"{effective_seq:06d}",
+                seq=effective_seq,
                 text=text,
                 tsStart=ts_start,
                 tsEnd=ts_end,
-                chunkOffsetMs=item.offset_ms,
-                chunkDurationMs=item.duration_ms,
+                chunkOffsetMs=effective_offset_ms,
+                chunkDurationMs=effective_duration_ms,
                 language=session.language,
                 createdAt=datetime.now(timezone.utc).isoformat(),
                 screenshotPath=_store_screenshot_for_chunk(session, item),
@@ -1295,6 +1349,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         overlap_tail_pcm=b"",
         last_chunk_seq=-1,
         last_chunk_offset_ms=-1,
+        failed_prepared_chunks=[],
         asr_input_tokens=0,
         asr_output_tokens=0,
         asr_total_tokens=0,
@@ -1345,6 +1400,9 @@ def _prepare_audio_for_asr(*, session: LiveSession, item: ChunkMessage):
         previous_tail_pcm=session.overlap_tail_pcm,
         chunk_duration_ms=item.duration_ms,
         source_mode=session.audio_source,
+        speech_ratio=item.speech_ratio,
+        active_ms=item.active_ms,
+        silence_ms=item.silence_ms,
     )
     session.overlap_tail_pcm = prepared.tail_pcm
     return prepared
@@ -1839,6 +1897,9 @@ def _parse_chunk_message(payload: dict[str, Any]) -> ChunkMessage | None:
     seq = _as_int(payload.get("seq"), 0)
     offset_ms = max(0, _as_int(payload.get("offsetMs"), 0))
     duration_ms = max(200, _as_int(payload.get("durationMs"), 2000))
+    speech_ratio = max(0.0, min(1.0, _as_float(payload.get("speechRatio"), 1.0)))
+    active_ms = max(0, _as_int(payload.get("activeMs"), duration_ms))
+    silence_ms = max(0, _as_int(payload.get("silenceMs"), 0))
 
     return ChunkMessage(
         seq=seq,
@@ -1846,6 +1907,9 @@ def _parse_chunk_message(payload: dict[str, Any]) -> ChunkMessage | None:
         duration_ms=duration_ms,
         mime_type=mime_type,
         audio_bytes=audio_bytes,
+        speech_ratio=speech_ratio,
+        active_ms=active_ms,
+        silence_ms=silence_ms,
         screenshot_mime_type=screenshot_mime_type,
         screenshot_bytes=screenshot_bytes,
     )
@@ -1957,6 +2021,26 @@ def _as_bool(value: Any, default: bool) -> bool:
         if lowered in {"0", "false", "no", "off"}:
             return False
     return default
+
+
+def _merge_wav_chunks(chunks: list[bytes]) -> bytes:
+    frames: list[bytes] = []
+    sample_rate = settings.asr_preprocess_sample_rate
+    for chunk in chunks:
+        if not chunk:
+            continue
+        with wave.open(BytesIO(chunk), "rb") as wav_in:
+            sample_rate = wav_in.getframerate() or sample_rate
+            frames.append(wav_in.readframes(wav_in.getnframes()))
+
+    with BytesIO() as buffer:
+        with wave.open(buffer, "wb") as wav_out:
+            wav_out.setnchannels(1)
+            wav_out.setsampwidth(2)
+            wav_out.setframerate(sample_rate)
+            for frame in frames:
+                wav_out.writeframes(frame)
+        return buffer.getvalue()
 
 
 def _normalize_asr_language(value: str) -> str | None:

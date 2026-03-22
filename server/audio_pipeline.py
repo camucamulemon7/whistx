@@ -48,12 +48,22 @@ class AudioPreprocessor:
         previous_tail_pcm: bytes,
         chunk_duration_ms: int | None = None,
         source_mode: str = "mic",
+        speech_ratio: float | None = None,
+        active_ms: int | None = None,
+        silence_ms: int | None = None,
     ) -> PreparedAudio:
         pcm = self._decode_to_pcm(audio_bytes=audio_bytes, mime_type=mime_type, source_mode=source_mode)
-        overlap_pcm = self._trim_tail(previous_tail_pcm, target_ms=self._resolve_overlap_ms(chunk_duration_ms))
+        target_overlap_ms = self._resolve_overlap_ms(
+            chunk_duration_ms,
+            speech_ratio=speech_ratio,
+            active_ms=active_ms,
+            silence_ms=silence_ms,
+            source_mode=source_mode,
+        )
+        overlap_pcm = self._trim_tail(previous_tail_pcm, target_ms=target_overlap_ms)
         merged_pcm = overlap_pcm + pcm if overlap_pcm else pcm
         overlap_ms_used = self._pcm_bytes_to_ms(len(overlap_pcm))
-        tail_pcm = self._trim_tail(pcm, target_ms=self._resolve_overlap_ms(chunk_duration_ms))
+        tail_pcm = self._trim_tail(pcm, target_ms=target_overlap_ms)
         wav_bytes = self._encode_wav(merged_pcm)
         metrics = self._compute_audio_metrics(merged_pcm)
         return PreparedAudio(
@@ -135,7 +145,15 @@ class AudioPreprocessor:
             return b""
         return pcm_bytes[-tail_bytes:]
 
-    def _resolve_overlap_ms(self, chunk_duration_ms: int | None) -> int:
+    def _resolve_overlap_ms(
+        self,
+        chunk_duration_ms: int | None,
+        *,
+        speech_ratio: float | None = None,
+        active_ms: int | None = None,
+        silence_ms: int | None = None,
+        source_mode: str = "mic",
+    ) -> int:
         if self.overlap_ms <= 0:
             return 0
         if not chunk_duration_ms or chunk_duration_ms <= 0:
@@ -144,7 +162,29 @@ class AudioPreprocessor:
         adaptive = int(round(chunk_duration_ms * 0.14))
         lower_bound = min(self.overlap_ms, 2_500)
         upper_bound = max(self.overlap_ms, 4_000)
-        return max(lower_bound, min(upper_bound, adaptive))
+        resolved = max(lower_bound, min(upper_bound, adaptive))
+
+        ratio = 0.0 if speech_ratio is None else max(0.0, min(1.0, float(speech_ratio)))
+        if ratio >= 0.45:
+            resolved = int(round(resolved * 1.18))
+        elif ratio <= 0.12:
+            resolved = int(round(resolved * 0.9))
+
+        if active_ms is not None and chunk_duration_ms > 0:
+            activity_ratio = max(0.0, min(1.0, float(active_ms) / float(chunk_duration_ms)))
+            if activity_ratio >= 0.65:
+                resolved = int(round(resolved * 1.08))
+
+        if silence_ms is not None and silence_ms >= 1200:
+            resolved = int(round(resolved * 0.82))
+
+        mode = (source_mode or "mic").strip().lower()
+        if mode == "display":
+            resolved = int(round(resolved * 1.08))
+        elif mode == "both":
+            resolved = int(round(resolved * 1.12))
+
+        return max(lower_bound, min(upper_bound, resolved))
 
     def _encode_wav(self, pcm_bytes: bytes) -> bytes:
         with io.BytesIO() as buffer:

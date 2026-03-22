@@ -144,6 +144,38 @@ const VAD_MIN_ACTIVE_MS = 120;
 const VAD_SEGMENT_MIN_MS = 12_000;
 const VAD_SEGMENT_MAX_SILENCE_MS = 1_100;
 const VAD_SEGMENT_MIN_SILENCE_MS = 450;
+const VAD_NOISE_FLOOR_WARMUP_MS = 1_800;
+const VAD_NOISE_FLOOR_EWMA = 0.18;
+const VAD_NOISE_FLOOR_OFFSET = {
+  mic: 0.0012,
+  display: 0.0008,
+  both: 0.0010,
+};
+const VAD_NOISE_FLOOR_MULTIPLIER = {
+  mic: 3.0,
+  display: 3.4,
+  both: 3.2,
+};
+const VAD_SOURCE_CUT_POLICY = {
+  mic: {
+    minSilenceMs: 450,
+    maxSilenceMs: 1_100,
+    silenceRatio: 0.18,
+    minSegmentRatio: 0.45,
+  },
+  display: {
+    minSilenceMs: 550,
+    maxSilenceMs: 1_400,
+    silenceRatio: 0.22,
+    minSegmentRatio: 0.50,
+  },
+  both: {
+    minSilenceMs: 500,
+    maxSilenceMs: 1_500,
+    silenceRatio: 0.20,
+    minSegmentRatio: 0.50,
+  },
+};
 const AUDIO_LEVEL_NOISE_FLOOR = 0.0025;
 const AUDIO_LEVEL_GAIN = 22;
 const AUDIO_LEVEL_EXPONENT = 0.65;
@@ -241,6 +273,8 @@ const state = {
   vadSpeechFrameCount: 0,
   vadLastSpeechAt: 0,
   vadRmsThreshold: 0.01,
+  vadNoiseFloor: null,
+  vadNoiseFloorAt: 0,
   audioLevel: 0,
   audioLevelColumns: [],
   segmentStartedAt: 0,
@@ -2146,7 +2180,7 @@ function applyAudioSource(value) {
   if (audioSourceHintTextEl || audioSourceHintEl) {
     (audioSourceHintTextEl || audioSourceHintEl).textContent = audioSourceHintText(source);
   }
-  state.vadRmsThreshold = vadThresholdForSource(source);
+  state.vadRmsThreshold = vadThresholdForSource(source, state.vadNoiseFloor);
   try {
     localStorage.setItem("whistx_audio_source", source);
   } catch {
@@ -2155,10 +2189,49 @@ function applyAudioSource(value) {
   return source;
 }
 
-function vadThresholdForSource(source) {
-  if (source === "display") return 0.0045;
-  if (source === "both") return 0.0065;
-  return 0.0075;
+function vadThresholdForSource(source, noiseFloor = null) {
+  const mode = normalizeAudioSource(source);
+  const baseThreshold = mode === "display" ? 0.0045 : mode === "both" ? 0.0065 : 0.0075;
+  const floor = Number.isFinite(noiseFloor) ? Math.max(0, Number(noiseFloor)) : 0;
+  if (floor <= 0) return baseThreshold;
+
+  const multiplier = VAD_NOISE_FLOOR_MULTIPLIER[mode] || VAD_NOISE_FLOOR_MULTIPLIER.mic;
+  const offset = VAD_NOISE_FLOOR_OFFSET[mode] || VAD_NOISE_FLOOR_OFFSET.mic;
+  return Math.max(baseThreshold, floor * multiplier + offset);
+}
+
+function vadSourceCutPolicy(source) {
+  return VAD_SOURCE_CUT_POLICY[normalizeAudioSource(source)] || VAD_SOURCE_CUT_POLICY.mic;
+}
+
+function currentVadSourceMode() {
+  return normalizeAudioSource(state.recordingAudioSource || state.recordingRequestedAudioSource || "mic");
+}
+
+function updateVadNoiseFloor(rms, now) {
+  if (!Number.isFinite(rms) || rms <= 0) {
+    return;
+  }
+
+  const startedAt = state.vadNoiseFloorAt || now;
+  const elapsed = Math.max(0, now - startedAt);
+  const source = currentVadSourceMode();
+  const threshold = vadThresholdForSource(source, state.vadNoiseFloor);
+  const isWarmup = elapsed <= VAD_NOISE_FLOOR_WARMUP_MS;
+  const trackingThreshold = state.vadNoiseFloor === null ? threshold * 0.88 : threshold * (isWarmup ? 0.95 : 0.92);
+  const shouldTrack = rms < trackingThreshold;
+
+  if (!shouldTrack) {
+    return;
+  }
+
+  if (state.vadNoiseFloor === null) {
+    state.vadNoiseFloor = rms;
+  } else {
+    state.vadNoiseFloor = state.vadNoiseFloor * (1 - VAD_NOISE_FLOOR_EWMA) + rms * VAD_NOISE_FLOOR_EWMA;
+  }
+
+  state.vadRmsThreshold = vadThresholdForSource(source, state.vadNoiseFloor);
 }
 
 function hasAudioTrack(stream) {
@@ -2769,14 +2842,17 @@ function sampleVad() {
   }
 
   const rms = Math.sqrt(sum / state.vadBuffer.length);
+  const now = performance.now();
+  updateVadNoiseFloor(rms, now);
+  const threshold = state.vadRmsThreshold || vadThresholdForSource(currentVadSourceMode(), state.vadNoiseFloor);
   const leveled = Math.max(0, rms - AUDIO_LEVEL_NOISE_FLOOR);
   const boosted = Math.min(1, Math.pow(leveled * AUDIO_LEVEL_GAIN, AUDIO_LEVEL_EXPONENT));
   const smoothed = state.audioLevel * 0.72 + boosted * 0.28;
   renderAudioLevel(smoothed);
   state.vadFrameCount += 1;
-  if (rms >= state.vadRmsThreshold) {
+  if (rms >= threshold) {
     state.vadSpeechFrameCount += 1;
-    state.vadLastSpeechAt = performance.now();
+    state.vadLastSpeechAt = now;
   }
   updateRecordingTelemetry();
 }
@@ -2810,6 +2886,9 @@ async function setupVad(stream) {
   state.vadFrameCount = 0;
   state.vadSpeechFrameCount = 0;
   state.vadLastSpeechAt = performance.now();
+  state.vadNoiseFloor = null;
+  state.vadNoiseFloorAt = performance.now();
+  state.vadRmsThreshold = vadThresholdForSource(currentVadSourceMode(), null);
   state.vadTimer = setInterval(sampleVad, VAD_SAMPLE_MS);
   updateRecordingTelemetry();
 }
@@ -2849,6 +2928,9 @@ function stopVad() {
   state.vadFrameCount = 0;
   state.vadSpeechFrameCount = 0;
   state.vadLastSpeechAt = 0;
+  state.vadNoiseFloor = null;
+  state.vadNoiseFloorAt = 0;
+  state.vadRmsThreshold = vadThresholdForSource(currentVadSourceMode(), null);
   state.audioLevel = 0;
   renderAudioLevel(0);
   updateRecordingTelemetry();
@@ -2886,30 +2968,39 @@ function snapshotVadCounters() {
   return {
     frameCount: state.vadFrameCount,
     speechFrameCount: state.vadSpeechFrameCount,
+    startedAt: performance.now(),
   };
 }
 
-function buildVadDecision(snapshot) {
+function buildVadDecision(snapshot, endedAt, sourceMode) {
   if (!state.vadAnalyser) {
     return {
       enabled: false,
       speechRatio: 1,
       activeMs: state.chunkMs,
+      silenceMs: 0,
       skip: false,
     };
   }
 
   const totalFrames = Math.max(1, state.vadFrameCount - snapshot.frameCount);
   const speechFrames = Math.max(0, state.vadSpeechFrameCount - snapshot.speechFrameCount);
+  const policy = vadSourceCutPolicy(sourceMode);
+  const chunkEndAt = Number.isFinite(endedAt) ? endedAt : performance.now();
+  const lastSpeechAt = state.vadLastSpeechAt || state.segmentStartedAt || snapshot.startedAt || chunkEndAt;
 
   const speechRatio = speechFrames / totalFrames;
   const activeMs = speechFrames * VAD_SAMPLE_MS;
+  const silenceMs = Math.max(0, chunkEndAt - lastSpeechAt);
   const skip = speechRatio < VAD_MIN_SPEECH_RATIO && activeMs < VAD_MIN_ACTIVE_MS;
 
   return {
     enabled: true,
     speechRatio,
     activeMs,
+    silenceMs,
+    sourceMode: normalizeAudioSource(sourceMode),
+    policy,
     skip,
   };
 }
@@ -2964,6 +3055,9 @@ async function sendChunk(blob, mimeType, durationMsOverride, vadDecision) {
       audio,
       screenshot: screenshot?.data || "",
       screenshotMimeType: screenshot?.mimeType || "",
+      speechRatio: Number.isFinite(vadDecision?.speechRatio) ? vadDecision.speechRatio : null,
+      activeMs: Number.isFinite(vadDecision?.activeMs) ? vadDecision.activeMs : null,
+      silenceMs: Number.isFinite(vadDecision?.silenceMs) ? vadDecision.silenceMs : null,
     })
   );
 }
@@ -2976,20 +3070,22 @@ function clearChunkTimer() {
 }
 
 function minSegmentMs() {
-  return Math.max(Math.min(VAD_SEGMENT_MIN_MS, state.chunkMs), Math.round(state.chunkMs * 0.45));
+  const policy = vadSourceCutPolicy(currentVadSourceMode());
+  return Math.max(Math.min(VAD_SEGMENT_MIN_MS, state.chunkMs), Math.round(state.chunkMs * policy.minSegmentRatio));
 }
 
 function shouldCutChunkOnSilence() {
   if (!state.vadAnalyser || !state.segmentStartedAt) return false;
 
+  const policy = vadSourceCutPolicy(currentVadSourceMode());
   const now = performance.now();
   const elapsedMs = now - state.segmentStartedAt;
   if (elapsedMs < minSegmentMs()) return false;
 
   const silenceMs = Math.max(0, now - (state.vadLastSpeechAt || state.segmentStartedAt));
-  if (silenceMs < VAD_SEGMENT_MIN_SILENCE_MS) return false;
+  if (silenceMs < policy.minSilenceMs) return false;
 
-  return silenceMs >= Math.min(VAD_SEGMENT_MAX_SILENCE_MS, Math.max(700, Math.round(elapsedMs * 0.18)));
+  return silenceMs >= Math.min(policy.maxSilenceMs, Math.max(policy.minSilenceMs + 200, Math.round(elapsedMs * policy.silenceRatio)));
 }
 
 function requestChunkFlush(recorder) {
@@ -3035,8 +3131,9 @@ function startRecorderCycle() {
   const vadSnapshot = snapshotVadCounters();
 
   recorder.addEventListener("dataavailable", (event) => {
-    const durationMs = Math.max(200, Math.round(performance.now() - cycleStartedAt));
-    const vadDecision = buildVadDecision(vadSnapshot);
+    const eventEndedAt = performance.now();
+    const durationMs = Math.max(200, Math.round(eventEndedAt - cycleStartedAt));
+    const vadDecision = buildVadDecision(vadSnapshot, eventEndedAt, state.recordingAudioSource);
 
     state.pendingSendChain = state.pendingSendChain
       .then(() => sendChunk(event.data, state.recorderMimeType, durationMs, vadDecision))
