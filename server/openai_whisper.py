@@ -101,6 +101,7 @@ class OpenAIWhisperTranscriber:
 
             assert response is not None
             text = _extract_text(response).strip()
+            metrics = _extract_confidence_metrics(response)
             usage_details = _extract_usage_details(response)
             estimated_tokens = _estimate_token_count(text)
             effective_usage_details = usage_details or (
@@ -108,13 +109,17 @@ class OpenAIWhisperTranscriber:
                 if estimated_tokens > 0
                 else None
             )
-            if _should_drop_as_silence(response, text):
+            if _should_drop_as_silence(response, text, metrics):
                 text = ""
             logger.info(
-                "ASR POST /v1/audio/transcriptions done: model=%s chars=%d attempts=%d",
+                "ASR POST /v1/audio/transcriptions done: model=%s chars=%d attempts=%d suspicious=%s no_speech=%.3f avg_logprob=%s compression_ratio=%s",
                 self.model,
                 len(text),
                 attempt,
+                metrics["suspicious"],
+                metrics["max_no_speech_prob"] or 0.0,
+                metrics["avg_logprob"],
+                metrics["compression_ratio"],
             )
             if generation is not None:
                 generation.update(
@@ -123,6 +128,10 @@ class OpenAIWhisperTranscriber:
                         "chars": len(text),
                         "estimatedTokens": estimated_tokens,
                         "retryCount": max(0, attempt - 1),
+                        "suspicious": metrics["suspicious"],
+                        "maxNoSpeechProb": metrics["max_no_speech_prob"],
+                        "avgLogprob": metrics["avg_logprob"],
+                        "compressionRatio": metrics["compression_ratio"],
                     },
                     usage_details=effective_usage_details,
                 )
@@ -134,6 +143,10 @@ class OpenAIWhisperTranscriber:
             end_ms=end_ms,
             usage_details=effective_usage_details,
             estimated_tokens=estimated_tokens,
+            max_no_speech_prob=metrics["max_no_speech_prob"],
+            avg_logprob=metrics["avg_logprob"],
+            compression_ratio=metrics["compression_ratio"],
+            suspicious=bool(metrics["suspicious"]),
         )
 
     def close(self) -> None:
@@ -226,6 +239,46 @@ def _estimate_token_count(text: str) -> int:
     return max(1, int(round(ascii_tokens + non_ascii_tokens)))
 
 
+def _extract_confidence_metrics(response: Any) -> dict[str, Any]:
+    segments = _read_field(response, "segments")
+    no_speech_probs: list[float] = []
+    avg_logprobs: list[float] = []
+    compression_ratios: list[float] = []
+
+    if isinstance(segments, list):
+        for seg in segments:
+            no_speech = _as_float(_read_field(seg, "no_speech_prob"))
+            avg_logprob = _as_float(_read_field(seg, "avg_logprob"))
+            compression_ratio = _as_float(_read_field(seg, "compression_ratio"))
+            if no_speech is not None:
+                no_speech_probs.append(no_speech)
+            if avg_logprob is not None:
+                avg_logprobs.append(avg_logprob)
+            if compression_ratio is not None:
+                compression_ratios.append(compression_ratio)
+
+    max_no_speech_prob = max(no_speech_probs) if no_speech_probs else None
+    avg_logprob_value = min(avg_logprobs) if avg_logprobs else None
+    compression_ratio_value = max(compression_ratios) if compression_ratios else None
+
+    suspicion_score = 0
+    if max_no_speech_prob is not None and max_no_speech_prob >= 0.8:
+        suspicion_score += 2
+    elif max_no_speech_prob is not None and max_no_speech_prob >= 0.6:
+        suspicion_score += 1
+    if avg_logprob_value is not None and avg_logprob_value <= -1.0:
+        suspicion_score += 1
+    if compression_ratio_value is not None and compression_ratio_value >= 2.4:
+        suspicion_score += 1
+
+    return {
+        "max_no_speech_prob": max_no_speech_prob,
+        "avg_logprob": avg_logprob_value,
+        "compression_ratio": compression_ratio_value,
+        "suspicious": suspicion_score >= 2,
+    }
+
+
 RETRYABLE_OPENAI_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)
 
 
@@ -298,7 +351,7 @@ def _normalize_for_match(text: str) -> str:
     return normalized.strip()
 
 
-def _should_drop_as_silence(response: Any, text: str) -> bool:
+def _should_drop_as_silence(response: Any, text: str, metrics: dict[str, Any] | None = None) -> bool:
     clean = text.strip()
     if not clean:
         return True
@@ -322,6 +375,9 @@ def _should_drop_as_silence(response: Any, text: str) -> bool:
 
     if any(pattern in clean for pattern in SILENCE_HALLUCINATION_PATTERNS):
         return max(no_speech_probs) >= 0.55 and len(normalized) <= 64
+
+    if metrics and metrics.get("suspicious") and (metrics.get("max_no_speech_prob") or 0.0) >= 0.7 and len(normalized) <= 24:
+        return True
 
     # 無音寄り判定が高く、かつ短文なら無音ハルシネーションの可能性が高い。
     return max(no_speech_probs) >= 0.85 and len(normalized) <= 32

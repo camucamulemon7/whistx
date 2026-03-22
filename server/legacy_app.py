@@ -1221,6 +1221,15 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
             session.asr_output_tokens += max(0, int(usage.get("output", 0) or 0))
             session.asr_total_tokens += max(0, int(usage.get("total", 0) or 0))
             session.asr_estimated_tokens += max(0, int(result.estimated_tokens or 0))
+            if result.suspicious:
+                logger.info(
+                    "Suspicious ASR chunk: session=%s seq=%s no_speech=%s avg_logprob=%s compression_ratio=%s",
+                    session.session_id,
+                    effective_seq if "effective_seq" in locals() else item.seq,
+                    result.max_no_speech_prob,
+                    result.avg_logprob,
+                    result.compression_ratio,
+                )
             text = _sanitize_transcript_text(text, language=session.language)
             text = _trim_overlap_prefix(text, session.last_emitted_text)
             text = _sanitize_transcript_text(text, language=session.language)
@@ -1414,16 +1423,24 @@ def _prepare_audio_for_asr(*, session: LiveSession, item: ChunkMessage):
 def _build_prompt(session: LiveSession) -> str | None:
     parts: list[str] = []
     shared_vocabulary = str(getattr(session, "shared_vocabulary", "") or "").strip()
+    language = (session.language or "").lower()
+    operator_prompt = str(session.base_prompt or "").strip()
+    recent_history = list(session.context_history or [])
+    recent_terms = list(session.context_terms or [])
+
     if shared_vocabulary:
-        if (session.language or "").lower().startswith("en"):
+        if language.startswith("en"):
             parts.append("Shared glossary:\n" + shared_vocabulary)
         else:
             parts.append("共有用語辞典:\n" + shared_vocabulary)
-    if session.base_prompt:
-        parts.append(session.base_prompt.strip())
+    if operator_prompt:
+        if language.startswith("en"):
+            parts.append("Operator prompt:\n" + operator_prompt)
+        else:
+            parts.append("利用者プロンプト:\n" + operator_prompt)
 
-    if session.context_prompt_enabled and (session.context_history or session.context_terms):
-        if (session.language or "").lower().startswith("en"):
+    if session.context_prompt_enabled and (recent_history or recent_terms):
+        if language.startswith("en"):
             header = "Recent transcript context:"
             terms_header = "Key terms:"
         elif not session.language:
@@ -1432,10 +1449,10 @@ def _build_prompt(session: LiveSession) -> str | None:
         else:
             header = "直前の文字起こし文脈:"
             terms_header = "直前の重要語:"
-        if session.context_history:
-            parts.append(f"{header}\n" + "\n".join(session.context_history))
-        if session.context_terms:
-            parts.append(f"{terms_header}\n" + ", ".join(session.context_terms))
+        if recent_history:
+            parts.append(f"{header}\n" + "\n".join(recent_history))
+        if recent_terms:
+            parts.append(f"{terms_header}\n" + ", ".join(recent_terms))
 
     merged = "\n\n".join(part for part in parts if part).strip()
     if session.context_max_chars > 0 and len(merged) > session.context_max_chars:
@@ -1487,6 +1504,10 @@ def _extract_context_terms(text: str) -> list[str]:
                 continue
             tokens.append(token)
 
+    return _rank_context_terms(tokens)
+
+
+def _rank_context_terms(tokens: list[str]) -> list[str]:
     ranked = sorted(
         set(tokens),
         key=lambda item: (

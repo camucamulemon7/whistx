@@ -33,8 +33,8 @@
 - ✅ T08 動的 VAD 閾値
 - ✅ T09 chunk/overlap 適応化
 - ✅ T10 用語辞書 UI
-- T11 prompt 構造化
-- T12 hallucination スコアリング
+- ✅ T11 prompt 構造化
+- ✅ T12 hallucination スコアリング
 
 ### M4: 後続改善
 
@@ -336,7 +336,7 @@
 
 - なし
 
-### T11: prompt 構造化と context 拡張
+### ✅ T11: prompt 構造化と context 拡張
 
 目的:
 
@@ -365,7 +365,7 @@
 
 - T10 推奨
 
-### T12: hallucination スコアリングを追加
+### ✅ T12: hallucination スコアリングを追加
 
 目的:
 

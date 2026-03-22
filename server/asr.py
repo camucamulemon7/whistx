@@ -11,6 +11,10 @@ class ASRChunkResult:
     end_ms: int | None
     usage_details: dict[str, int] | None = None
     estimated_tokens: int = 0
+    max_no_speech_prob: float | None = None
+    avg_logprob: float | None = None
+    compression_ratio: float | None = None
+    suspicious: bool = False
 
 
 class SessionTranscriber(Protocol):

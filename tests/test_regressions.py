@@ -98,6 +98,12 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(config.asr_retry_max_attempts, 5)
         self.assertEqual(config.asr_retry_base_delay_ms, 250)
 
+    def test_asr_context_defaults_are_expanded(self) -> None:
+        config = load_asr_config()
+        self.assertEqual(config.context_recent_lines, 4)
+        self.assertEqual(config.context_max_chars, 2200)
+        self.assertEqual(config.context_term_limit, 80)
+
     def test_shared_glossary_service_persists_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.object(glossary_service, 'settings', SimpleNamespace(app_data_dir=Path(tmpdir))):
@@ -379,6 +385,44 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(sleep_mock.call_count, 2)
         self.assertEqual(sleep_mock.call_args_list[0].args[0], 0.05)
         self.assertEqual(sleep_mock.call_args_list[1].args[0], 0.1)
+
+    def test_openai_whisper_extracts_confidence_metrics(self) -> None:
+        response = SimpleNamespace(
+            text='短い定型文です',
+            segments=[
+                {
+                    'start': 0.0,
+                    'end': 1.0,
+                    'no_speech_prob': 0.91,
+                    'avg_logprob': -1.2,
+                    'compression_ratio': 2.6,
+                }
+            ],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=0, total_tokens=1),
+        )
+
+        transcriber = openai_whisper.OpenAIWhisperTranscriber(
+            api_key='test-key',
+            base_url=None,
+            model='whisper-1',
+            observer=None,
+        )
+        transcriber.client = SimpleNamespace(
+            audio=SimpleNamespace(transcriptions=SimpleNamespace(create=lambda **_kwargs: response))
+        )
+
+        result = transcriber.transcribe_chunk(
+            b'abc',
+            mime_type='audio/webm',
+            language='ja',
+            prompt=None,
+            temperature=0.0,
+        )
+
+        self.assertTrue(result.suspicious)
+        self.assertAlmostEqual(result.max_no_speech_prob or 0.0, 0.91)
+        self.assertAlmostEqual(result.avg_logprob or 0.0, -1.2)
+        self.assertAlmostEqual(result.compression_ratio or 0.0, 2.6)
 
     def test_openai_whisper_does_not_retry_non_retryable_errors(self) -> None:
         request = httpx.Request('POST', 'https://example.com/v1/audio/transcriptions')
