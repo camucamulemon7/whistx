@@ -2,6 +2,7 @@ import { fetchCapabilities } from "./capabilities/api.js";
 import { fetchAuthState, loginRequest, bootstrapAdminRequest, registerRequest, logoutRequest, fetchPendingUsers as fetchPendingUsersRequest, approvePendingUserRequest } from "./auth/api.js";
 import { canUseWorkspace as canUseWorkspaceForAuth, persistGuestMode, readGuestMode, serializeUserLabel } from "./auth/session.js";
 import { fetchHistoryList as fetchHistoryListRequest, fetchHistoryDetail, saveHistoryRequest } from "./history/api.js";
+import { fetchSharedGlossary as fetchSharedGlossaryRequest, saveSharedGlossary as saveSharedGlossaryRequest } from "./api/glossary.js";
 import { applyHistoryDetailPayload, applyHistoryListPayload, clearHistoryState } from "./history/state.js";
 import { readStoredJson, readStoredValue, writeStoredValue } from "./state/storage.js";
 import { normalizeTheme, resolveInitialTheme, themeMetaColor } from "./ui/theme.js";
@@ -41,6 +42,9 @@ const autoGainEnabledEl = $("#autoGainEnabled");
 const autoGainStateTextEl = $("#autoGainStateText");
 const chunkSecondsEl = $("#chunkSeconds");
 const promptEl = $("#prompt");
+const sharedVocabularyEl = $("#sharedVocabulary");
+const sharedVocabularySaveBtn = $("#sharedVocabularySaveBtn");
+const sharedVocabularyMetaEl = $("#sharedVocabularyMeta");
 const summaryPromptEl = $("#summaryPrompt");
 const promptTemplateButtonsEl = $("#promptTemplateButtons");
 const workspacePanelsEl = $("#workspacePanels");
@@ -306,6 +310,10 @@ const state = {
       content: DEFAULT_SOC_PROMPT_TEMPLATE,
     },
   ],
+  sharedVocabulary: "",
+  sharedVocabularyUpdatedAt: "",
+  sharedVocabularyUpdatedBy: "",
+  sharedVocabularySaving: false,
   auth: {
     authenticated: false,
     isGuest: false,
@@ -1803,6 +1811,7 @@ function renderAuthState() {
   }
   updateHistoryEmptyState();
   updateSaveControls();
+  updateSharedVocabularyMeta();
 }
 
 function resetCurrentSaveState() {
@@ -3249,6 +3258,7 @@ async function startRecording() {
         language: selectedLanguage(),
         audioSource: selectedAudioSource,
         prompt: promptEl.value.trim(),
+        sharedVocabulary: String(sharedVocabularyEl?.value || state.sharedVocabulary || "").trim(),
         diarizationEnabled: !!(state.diarizationAvailable && state.diarizationEnabled),
         diarizationNumSpeakers: diarizationOptions.diarizationNumSpeakers,
         diarizationMinSpeakers: diarizationOptions.diarizationMinSpeakers,
@@ -3962,6 +3972,74 @@ function renderPromptTemplateButtons(rawTemplates) {
   });
 }
 
+function applySharedVocabulary(payload, options = {}) {
+  const preserveDraft = options.preserveDraft === true;
+  const text = String(payload?.items || "").trim();
+  state.sharedVocabulary = text;
+  state.sharedVocabularyUpdatedAt = String(payload?.updatedAt || "").trim();
+  state.sharedVocabularyUpdatedBy = String(payload?.updatedBy || "").trim();
+  if (sharedVocabularyEl && !preserveDraft) {
+    sharedVocabularyEl.value = text;
+  }
+  updateSharedVocabularyMeta();
+}
+
+function updateSharedVocabularyMeta() {
+  const authenticated = !!state.auth.authenticated;
+  const isGuest = !!state.auth.isGuest;
+  if (sharedVocabularySaveBtn) {
+    sharedVocabularySaveBtn.disabled = !authenticated || isGuest || state.sharedVocabularySaving;
+    sharedVocabularySaveBtn.textContent = state.sharedVocabularySaving ? "保存中..." : "共有保存";
+    sharedVocabularySaveBtn.title = isGuest ? "ゲストでは共有用語辞典を更新できません" : authenticated ? "" : "ログインが必要です";
+  }
+  if (!sharedVocabularyMetaEl) return;
+  if (!state.sharedVocabulary) {
+    sharedVocabularyMetaEl.textContent = "共有用語辞典は未設定です";
+    return;
+  }
+  const parts = [];
+  if (state.sharedVocabularyUpdatedAt) {
+    parts.push(`更新: ${new Date(state.sharedVocabularyUpdatedAt).toLocaleString("ja-JP")}`);
+  }
+  if (state.sharedVocabularyUpdatedBy) {
+    parts.push(`更新者: ${state.sharedVocabularyUpdatedBy}`);
+  }
+  sharedVocabularyMetaEl.textContent = parts.join(" / ") || "共有用語辞典を使用します";
+}
+
+async function loadSharedGlossary() {
+  try {
+    const payload = await fetchSharedGlossaryRequest();
+    applySharedVocabulary(payload);
+  } catch {
+    applySharedVocabulary({ items: "", updatedAt: "", updatedBy: "" });
+  }
+}
+
+async function saveSharedGlossary() {
+  if (state.auth.isGuest) {
+    showToast("ゲストでは共有用語辞典を更新できません", "error");
+    return;
+  }
+  if (!state.auth.authenticated) {
+    showToast("ログインが必要です", "error");
+    loginEmailEl?.focus();
+    return;
+  }
+  state.sharedVocabularySaving = true;
+  updateSharedVocabularyMeta();
+  try {
+    const payload = await saveSharedGlossaryRequest(String(sharedVocabularyEl?.value || "").trim());
+    applySharedVocabulary(payload);
+    showToast("共有用語辞典を保存しました", "success");
+  } catch (error) {
+    showToast(`共有用語辞典の保存に失敗: ${error.message}`, "error");
+  } finally {
+    state.sharedVocabularySaving = false;
+    updateSharedVocabularyMeta();
+  }
+}
+
 // Download link feedback
 [dlTxt, dlJsonl, dlZip].forEach((link) => {
   link.addEventListener("click", () => {
@@ -4042,6 +4120,12 @@ function toggleTheme() {
 
 if (themeToggleBtn) {
   themeToggleBtn.addEventListener("click", toggleTheme);
+}
+
+if (sharedVocabularySaveBtn) {
+  sharedVocabularySaveBtn.addEventListener("click", () => {
+    void saveSharedGlossary();
+  });
 }
 
 // Initialize theme on load
@@ -4512,6 +4596,7 @@ updateDownloadLinks();
 setSummary("", "未生成");
 setProofread("", "未生成");
 renderAuthState();
+updateSharedVocabularyMeta();
 applyProofreadMode(proofreadModeEl?.value || "proofread");
 if (summaryBtnLabelEl) {
   summaryBtnLabelEl.textContent = "生成";
@@ -4609,5 +4694,6 @@ if (logEl && !logEl.querySelector(".log-row")) {
 
 (async () => {
   await loadCapabilities();
+  await loadSharedGlossary();
   await loadAuthState();
 })();

@@ -548,6 +548,23 @@
           class="side-panel-textarea"
           placeholder="固有名詞や専門用語を入力すると認識精度が向上します"
         ></textarea>
+        <div class="prompt-header">
+          <label for="sharedVocabulary" class="prompt-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            共有用語辞典
+          </label>
+          <button id="sharedVocabularySaveBtn" type="button" class="btn-secondary">共有保存</button>
+        </div>
+        <textarea
+          id="sharedVocabulary"
+          rows="5"
+          class="side-panel-textarea"
+          placeholder="全ユーザーで共有する固有名詞・略語・製品名を入力します"
+        ></textarea>
+        <p id="sharedVocabularyMeta" class="setting-hint">共有用語辞典は未設定です</p>
         <label for="summaryPrompt" class="prompt-label">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>

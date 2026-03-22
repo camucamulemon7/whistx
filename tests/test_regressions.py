@@ -45,7 +45,7 @@ from server import openai_whisper
 from server.app import LoginRequest
 from server.core.config.asr import load_asr_config
 from server.models import TranscriptHistory, TranscriptSegment, User
-from server.services import auth_service, history_service
+from server.services import auth_service, glossary_service, history_service
 from server.transcript_store import read_jsonl_records
 
 
@@ -97,6 +97,17 @@ class RegressionTests(unittest.TestCase):
 
         self.assertEqual(config.asr_retry_max_attempts, 5)
         self.assertEqual(config.asr_retry_base_delay_ms, 250)
+
+    def test_shared_glossary_service_persists_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(glossary_service, 'settings', SimpleNamespace(app_data_dir=Path(tmpdir))):
+                payload = glossary_service.save_shared_glossary(text='PCIe, UCIe', updated_by='user@example.com')
+                loaded = glossary_service.load_shared_glossary()
+
+        self.assertEqual(payload['text'], 'PCIe, UCIe')
+        self.assertEqual(loaded['text'], 'PCIe, UCIe')
+        self.assertEqual(loaded['updatedBy'], 'user@example.com')
+        self.assertTrue(loaded['updatedAt'])
 
     def test_keycloak_upsert_rejects_unverified_email_when_required(self) -> None:
         db = DummyDB()
@@ -313,6 +324,21 @@ class RegressionTests(unittest.TestCase):
         previous = '本日の会議では新製品の価格改定について説明します'
         current = '価格改定について説明します。次に販売計画を確認します'
         self.assertEqual(legacy_app._trim_overlap_prefix(current, previous), '次に販売計画を確認します')
+
+    def test_build_prompt_includes_shared_vocabulary(self) -> None:
+        session = SimpleNamespace(
+            base_prompt='会議用語を優先してください',
+            shared_vocabulary='PCIe, UCIe, Blackwell',
+            context_prompt_enabled=True,
+            context_history=['次回は PCIe 帯域を確認します'],
+            context_terms=['帯域', 'Gen6'],
+            context_max_chars=400,
+            language='ja',
+        )
+        prompt = legacy_app._build_prompt(session)
+        self.assertIsNotNone(prompt)
+        self.assertIn('共有用語辞典', prompt)
+        self.assertIn('PCIe, UCIe, Blackwell', prompt)
 
     def test_openai_whisper_retries_retryable_errors(self) -> None:
         request = httpx.Request('POST', 'https://example.com/v1/audio/transcriptions')

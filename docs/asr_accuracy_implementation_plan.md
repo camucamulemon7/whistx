@@ -32,7 +32,7 @@
 
 - ✅ T08 動的 VAD 閾値
 - ✅ T09 chunk/overlap 適応化
-- T10 用語辞書 UI
+- ✅ T10 用語辞書 UI
 - T11 prompt 構造化
 - T12 hallucination スコアリング
 
@@ -310,7 +310,7 @@
 - T05
 - T08
 
-### T10: 用語辞書 UI を追加
+### ✅ T10: 用語辞書 UI を追加
 
 目的:
 

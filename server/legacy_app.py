@@ -128,6 +128,7 @@ class LiveSession:
     language: str | None
     audio_source: str
     base_prompt: str
+    shared_vocabulary: str
     temperature: float
     context_prompt_enabled: bool
     context_max_chars: int
@@ -1316,6 +1317,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
     language = _normalize_asr_language(_as_str(payload.get("language")))
     audio_source = _normalize_audio_source(_as_str(payload.get("audioSource")))
     prompt = _as_str(payload.get("prompt")) or settings.default_prompt
+    shared_vocabulary = _as_str(payload.get("sharedVocabulary"))
     temperature = _as_float(payload.get("temperature"), settings.default_temperature)
     diarization_requested = _as_bool(payload.get("diarizationEnabled"), True)
     diarization_num_speakers, diarization_min_speakers, diarization_max_speakers = (
@@ -1328,6 +1330,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         language=language,
         audio_source=audio_source,
         base_prompt=prompt,
+        shared_vocabulary=shared_vocabulary,
         temperature=temperature,
         context_prompt_enabled=settings.context_prompt_enabled,
         context_max_chars=settings.context_max_chars,
@@ -1410,6 +1413,12 @@ def _prepare_audio_for_asr(*, session: LiveSession, item: ChunkMessage):
 
 def _build_prompt(session: LiveSession) -> str | None:
     parts: list[str] = []
+    shared_vocabulary = str(getattr(session, "shared_vocabulary", "") or "").strip()
+    if shared_vocabulary:
+        if (session.language or "").lower().startswith("en"):
+            parts.append("Shared glossary:\n" + shared_vocabulary)
+        else:
+            parts.append("共有用語辞典:\n" + shared_vocabulary)
     if session.base_prompt:
         parts.append(session.base_prompt.strip())
 
