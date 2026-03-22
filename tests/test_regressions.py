@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import asyncio
 import re
 import sys
@@ -31,6 +32,8 @@ if 'argon2' not in sys.modules:
     sys.modules['argon2.exceptions'] = argon2_exc
 
 from fastapi import Request
+import httpx
+from openai import APIConnectionError, BadRequestError
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -38,7 +41,9 @@ if str(ROOT) not in sys.path:
 
 from server import app as app_module
 from server import legacy_app
+from server import openai_whisper
 from server.app import LoginRequest
+from server.core.config.asr import load_asr_config
 from server.models import TranscriptHistory, TranscriptSegment, User
 from server.services import auth_service, history_service
 from server.transcript_store import read_jsonl_records
@@ -78,6 +83,20 @@ class RegressionTests(unittest.TestCase):
             response = asyncio.run(app_module.auth_login(payload, request, db))
             self.assertEqual(response.status_code, 429)
             self.assertIn('too_many_login_attempts', response.body.decode('utf-8'))
+
+    def test_asr_retry_config_is_loaded_from_environment(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                'ASR_RETRY_MAX_ATTEMPTS': '5',
+                'ASR_RETRY_BASE_DELAY_MS': '250',
+            },
+            clear=False,
+        ):
+            config = load_asr_config()
+
+        self.assertEqual(config.asr_retry_max_attempts, 5)
+        self.assertEqual(config.asr_retry_base_delay_ms, 250)
 
     def test_keycloak_upsert_rejects_unverified_email_when_required(self) -> None:
         db = DummyDB()
@@ -294,6 +313,75 @@ class RegressionTests(unittest.TestCase):
         previous = '本日の会議では新製品の価格改定について説明します'
         current = '価格改定について説明します。次に販売計画を確認します'
         self.assertEqual(legacy_app._trim_overlap_prefix(current, previous), '次に販売計画を確認します')
+
+    def test_openai_whisper_retries_retryable_errors(self) -> None:
+        request = httpx.Request('POST', 'https://example.com/v1/audio/transcriptions')
+        response = SimpleNamespace(
+            text='hello world',
+            segments=[{'start': 0.0, 'end': 1.2, 'no_speech_prob': 0.01}],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=0, total_tokens=1),
+        )
+        create_calls = []
+
+        def create(**kwargs):
+            create_calls.append(kwargs)
+            if len(create_calls) <= 2:
+                raise APIConnectionError(message='temporary', request=request)
+            return response
+
+        transcriber = openai_whisper.OpenAIWhisperTranscriber(
+            api_key='test-key',
+            base_url=None,
+            model='whisper-1',
+            observer=None,
+        )
+        transcriber.client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)))
+
+        transcriber.retry_max_attempts = 3
+        transcriber.retry_base_delay_ms = 50
+        with patch.object(openai_whisper.time, 'sleep', autospec=True) as sleep_mock:
+            result = transcriber.transcribe_chunk(
+                b'abc',
+                mime_type='audio/webm',
+                language='ja',
+                prompt=None,
+                temperature=0.0,
+            )
+
+        self.assertEqual(result.text, 'hello world')
+        self.assertEqual(len(create_calls), 3)
+        self.assertEqual(sleep_mock.call_count, 2)
+        self.assertEqual(sleep_mock.call_args_list[0].args[0], 0.05)
+        self.assertEqual(sleep_mock.call_args_list[1].args[0], 0.1)
+
+    def test_openai_whisper_does_not_retry_non_retryable_errors(self) -> None:
+        request = httpx.Request('POST', 'https://example.com/v1/audio/transcriptions')
+        response = httpx.Response(400, request=request, content=b'{}')
+
+        def create(**kwargs):
+            raise BadRequestError(message='bad request', response=response, body=None)
+
+        transcriber = openai_whisper.OpenAIWhisperTranscriber(
+            api_key='test-key',
+            base_url=None,
+            model='whisper-1',
+            observer=None,
+        )
+        transcriber.client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)))
+
+        transcriber.retry_max_attempts = 3
+        transcriber.retry_base_delay_ms = 50
+        with patch.object(openai_whisper.time, 'sleep', autospec=True) as sleep_mock:
+            with self.assertRaises(BadRequestError):
+                transcriber.transcribe_chunk(
+                    b'abc',
+                    mime_type='audio/webm',
+                    language='ja',
+                    prompt=None,
+                    temperature=0.0,
+                )
+
+        self.assertEqual(sleep_mock.call_count, 0)
 
     def test_near_duplicate_detection_does_not_drop_extended_text(self) -> None:
         previous = '本日の会議では新製品の価格改定について説明します'

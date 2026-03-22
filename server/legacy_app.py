@@ -1106,6 +1106,37 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
 
             try:
                 prepared = _prepare_audio_for_asr(session=session, item=item)
+                logger.info(
+                    "Prepared audio: session=%s seq=%s rms=%.4f peak=%.4f speech_ratio=%.4f overlap_ms=%d",
+                    session.session_id,
+                    item.seq,
+                    prepared.rms,
+                    prepared.peak,
+                    prepared.speech_ratio,
+                    prepared.overlap_ms_used,
+                )
+                if settings.asr_vad_drop_enabled and prepared.speech_ratio < settings.asr_vad_speech_ratio_min:
+                    logger.info(
+                        "Skipping low-speech chunk: session=%s seq=%s speech_ratio=%.4f threshold=%.4f",
+                        session.session_id,
+                        item.seq,
+                        prepared.speech_ratio,
+                        settings.asr_vad_speech_ratio_min,
+                    )
+                    await _safe_send(
+                        ws,
+                        {
+                            "type": "ack",
+                            "seq": item.seq,
+                            "empty": True,
+                            "skipped": True,
+                            "reason": "low_speech_ratio",
+                            "speechRatio": prepared.speech_ratio,
+                            "rms": prepared.rms,
+                            "peak": prepared.peak,
+                        },
+                    )
+                    continue
                 prompt = _build_prompt(session)
                 result = await asyncio.to_thread(
                     session.transcriber.transcribe_chunk,

@@ -5,6 +5,7 @@ import logging
 import shutil
 import subprocess
 import wave
+from array import array
 from dataclasses import dataclass
 
 
@@ -17,6 +18,10 @@ class PreparedAudio:
     mime_type: str
     overlap_ms_used: int
     tail_pcm: bytes
+    rms: float
+    peak: float
+    speech_ratio: float
+    audio_metrics: dict[str, float]
 
 
 class AudioPreprocessor:
@@ -50,11 +55,16 @@ class AudioPreprocessor:
         overlap_ms_used = self._pcm_bytes_to_ms(len(overlap_pcm))
         tail_pcm = self._trim_tail(pcm, target_ms=self._resolve_overlap_ms(chunk_duration_ms))
         wav_bytes = self._encode_wav(merged_pcm)
+        metrics = self._compute_audio_metrics(merged_pcm)
         return PreparedAudio(
             audio_bytes=wav_bytes,
             mime_type="audio/wav",
             overlap_ms_used=overlap_ms_used,
             tail_pcm=tail_pcm,
+            rms=metrics["rms"],
+            peak=metrics["peak"],
+            speech_ratio=metrics["speech_ratio"],
+            audio_metrics=metrics,
         )
 
     def _decode_to_pcm(self, *, audio_bytes: bytes, mime_type: str, source_mode: str) -> bytes:
@@ -154,6 +164,37 @@ class AudioPreprocessor:
             return 0
         samples = size_bytes // 2
         return max(0, int(round(samples * 1000 / self.sample_rate)))
+
+    def _compute_audio_metrics(self, pcm_bytes: bytes) -> dict[str, float]:
+        if not pcm_bytes:
+            return {"rms": 0.0, "peak": 0.0, "speech_ratio": 0.0}
+
+        samples = array("h")
+        samples.frombytes(pcm_bytes)
+        sample_count = len(samples)
+        if sample_count <= 0:
+            return {"rms": 0.0, "peak": 0.0, "speech_ratio": 0.0}
+
+        sum_squares = 0.0
+        peak = 0.0
+        speech_samples = 0
+        speech_threshold = 900.0 / 32768.0
+
+        for sample in samples:
+            normalized = abs(float(sample) / 32768.0)
+            sum_squares += normalized * normalized
+            if normalized > peak:
+                peak = normalized
+            if normalized >= speech_threshold:
+                speech_samples += 1
+
+        rms = (sum_squares / sample_count) ** 0.5
+        speech_ratio = speech_samples / sample_count
+        return {
+            "rms": round(rms, 6),
+            "peak": round(peak, 6),
+            "speech_ratio": round(speech_ratio, 6),
+        }
 
 
 def _ext_from_mime(mime_type: str) -> str:

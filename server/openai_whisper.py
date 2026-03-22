@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 from contextlib import contextmanager
 from typing import Any
 
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
 
 from .asr import ASRChunkResult
+from .config import settings
 from .langfuse_observer import LangfuseObserver
 
 
@@ -26,6 +28,8 @@ class OpenAIWhisperTranscriber:
         self.client = OpenAI(**kwargs)
         self.model = model
         self.observer = observer
+        self.retry_max_attempts = max(1, int(getattr(settings, "asr_retry_max_attempts", 1)))
+        self.retry_base_delay_ms = max(0, int(getattr(settings, "asr_retry_base_delay_ms", 0)))
 
     def transcribe_chunk(
         self,
@@ -38,8 +42,8 @@ class OpenAIWhisperTranscriber:
         trace_context: dict[str, str] | None = None,
     ) -> ASRChunkResult:
         suffix = _ext_from_mime(mime_type)
-        file_obj = io.BytesIO(audio_bytes)
-        file_obj.name = f"chunk{suffix}"
+        response: Any | None = None
+        attempt = 0
 
         with (self.observer.generation(
             name="asr.transcription",
@@ -54,23 +58,48 @@ class OpenAIWhisperTranscriber:
             model_parameters={"temperature": temperature},
             trace_context=trace_context,
         ) if self.observer else _noop_generation()) as generation:
-            logger.info(
-                "ASR POST /v1/audio/transcriptions: model=%s mime=%s bytes=%d language=%s prompt=%s",
-                self.model,
-                mime_type,
-                len(audio_bytes),
-                language or "",
-                bool(prompt),
-            )
-            response = self.client.audio.transcriptions.create(
-                model=self.model,
-                file=file_obj,
-                language=language or None,
-                prompt=prompt or None,
-                temperature=temperature,
-                response_format="verbose_json",
-            )
+            while True:
+                attempt += 1
+                file_obj = io.BytesIO(audio_bytes)
+                file_obj.name = f"chunk{suffix}"
+                logger.info(
+                    "ASR POST /v1/audio/transcriptions: model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d",
+                    self.model,
+                    mime_type,
+                    len(audio_bytes),
+                    language or "",
+                    bool(prompt),
+                    attempt,
+                    self.retry_max_attempts,
+                )
+                try:
+                    response = self.client.audio.transcriptions.create(
+                        model=self.model,
+                        file=file_obj,
+                        language=language or None,
+                        prompt=prompt or None,
+                        temperature=temperature,
+                        response_format="verbose_json",
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    if not _should_retry_openai_error(exc) or attempt >= self.retry_max_attempts:
+                        raise
 
+                    delay_seconds = _retry_delay_seconds(self.retry_base_delay_ms, attempt)
+                    logger.warning(
+                        "ASR retryable error: model=%s attempt=%d/%d delay_ms=%d err=%s",
+                        self.model,
+                        attempt,
+                        self.retry_max_attempts,
+                        int(round(delay_seconds * 1000)),
+                        exc,
+                    )
+                    if delay_seconds > 0:
+                        time.sleep(delay_seconds)
+                    continue
+
+            assert response is not None
             text = _extract_text(response).strip()
             usage_details = _extract_usage_details(response)
             estimated_tokens = _estimate_token_count(text)
@@ -82,13 +111,19 @@ class OpenAIWhisperTranscriber:
             if _should_drop_as_silence(response, text):
                 text = ""
             logger.info(
-                "ASR POST /v1/audio/transcriptions done: model=%s chars=%d",
+                "ASR POST /v1/audio/transcriptions done: model=%s chars=%d attempts=%d",
                 self.model,
                 len(text),
+                attempt,
             )
             if generation is not None:
                 generation.update(
-                    output={"text": text, "chars": len(text), "estimatedTokens": estimated_tokens},
+                    output={
+                        "text": text,
+                        "chars": len(text),
+                        "estimatedTokens": estimated_tokens,
+                        "retryCount": max(0, attempt - 1),
+                    },
                     usage_details=effective_usage_details,
                 )
 
@@ -189,6 +224,25 @@ def _estimate_token_count(text: str) -> int:
     ascii_tokens = ascii_chars / 4.0
     non_ascii_tokens = non_ascii_chars / 1.5
     return max(1, int(round(ascii_tokens + non_ascii_tokens)))
+
+
+RETRYABLE_OPENAI_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)
+
+
+def _should_retry_openai_error(exc: Exception) -> bool:
+    if isinstance(exc, RETRYABLE_OPENAI_ERRORS):
+        return True
+    if isinstance(exc, APIStatusError):
+        status_code = getattr(exc, "status_code", None)
+        return isinstance(status_code, int) and status_code >= 500
+    return False
+
+
+def _retry_delay_seconds(base_delay_ms: int, attempt: int) -> float:
+    if base_delay_ms <= 0:
+        return 0.0
+    exponent = max(0, attempt - 1)
+    return (base_delay_ms * (2**exponent)) / 1000.0
 
 
 
