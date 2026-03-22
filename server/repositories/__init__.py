@@ -1,9 +1,14 @@
 from .history_repository import (
+    build_history_count_stmt,
+    build_history_list_stmt,
+    build_history_search_clause,
     count_histories_for_user,
     delete_history,
     get_history_by_runtime_session,
     get_history_for_user,
+    list_histories_saved_before,
     list_histories_for_user,
+    list_runtime_session_ids,
 )
 from .session_repository import delete_session, get_user_by_session_id, prune_expired_sessions
 from .user_repository import (

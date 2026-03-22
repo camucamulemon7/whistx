@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+os.environ.setdefault("APP_SESSION_SECRET", "test-session-secret-abcdefghijklmnopqrstuvwxyz12")
 
 if "argon2" not in sys.modules:
     argon2_mod = types.ModuleType("argon2")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..models import TranscriptHistory
@@ -15,21 +15,31 @@ def get_history_by_runtime_session(db: Session, *, user_id: int, runtime_session
 
 
 def history_query_for_user(*, user_id: int, query: str | None = None) -> Select[tuple[TranscriptHistory]]:
-    stmt = (
-        select(TranscriptHistory)
-        .where(TranscriptHistory.user_id == user_id)
-        .order_by(TranscriptHistory.saved_at.desc())
-    )
-    clean_query = (query or '').strip()
-    if clean_query:
-        like = f'%{clean_query}%'
-        stmt = stmt.where(TranscriptHistory.title.ilike(like) | TranscriptHistory.plain_text.ilike(like))
+    return select(TranscriptHistory).where(TranscriptHistory.user_id == user_id).order_by(TranscriptHistory.saved_at.desc())
+
+
+def build_history_search_clause(*, query: str | None = None):
+    clean_query = (query or "").strip()
+    if not clean_query:
+        return None
+    like = f"%{clean_query}%"
+    return or_(TranscriptHistory.title.ilike(like), TranscriptHistory.plain_text.ilike(like))
+
+
+def build_history_list_stmt(*, user_id: int, query: str | None = None) -> Select[tuple[TranscriptHistory]]:
+    stmt = history_query_for_user(user_id=user_id, query=None)
+    search_clause = build_history_search_clause(query=query)
+    if search_clause is not None:
+        stmt = stmt.where(search_clause)
     return stmt
 
 
+def build_history_count_stmt(*, user_id: int, query: str | None = None):
+    return select(func.count()).select_from(build_history_list_stmt(user_id=user_id, query=query).subquery())
+
+
 def count_histories_for_user(db: Session, *, user_id: int, query: str | None = None) -> int:
-    stmt = select(func.count()).select_from(history_query_for_user(user_id=user_id, query=query).subquery())
-    return int(db.scalar(stmt) or 0)
+    return int(db.scalar(build_history_count_stmt(user_id=user_id, query=query)) or 0)
 
 
 def list_histories_for_user(
@@ -40,7 +50,17 @@ def list_histories_for_user(
     offset: int,
     query: str | None = None,
 ) -> list[TranscriptHistory]:
-    stmt = history_query_for_user(user_id=user_id, query=query).limit(limit).offset(offset)
+    stmt = build_history_list_stmt(user_id=user_id, query=query).limit(limit).offset(offset)
+    return list(db.scalars(stmt).all())
+
+
+def list_runtime_session_ids(db: Session) -> list[str]:
+    stmt = select(TranscriptHistory.runtime_session_id)
+    return [value for value in db.scalars(stmt).all() if isinstance(value, str) and value.strip()]
+
+
+def list_histories_saved_before(db: Session, *, cutoff) -> list[TranscriptHistory]:
+    stmt = select(TranscriptHistory).where(TranscriptHistory.saved_at < cutoff)
     return list(db.scalars(stmt).all())
 
 

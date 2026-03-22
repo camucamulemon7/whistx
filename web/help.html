@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>whistx 説明</title>
+    <title>使い方</title>
     <link rel="stylesheet" href="/style.css?v=20260322a" />
     <style>
       body {
@@ -98,40 +98,30 @@
       <section class="glass-panel help-card">
         <div>
           <p class="settings-section-label">Guide</p>
-          <h1 class="help-title">whistx の使い方</h1>
+          <h1 class="help-title">使い方</h1>
         </div>
-        <p class="help-lead">録音開始から確認、保存、書き出しまでの基本操作と、主な設定項目だけをまとめています。</p>
+        <p class="help-lead">録音、確認、保存、書き出しの基本的な使い方をまとめています。保存した履歴は一定日数で自動削除されます。</p>
       </section>
 
       <section class="help-grid">
         <article class="help-section">
           <h2>基本の流れ</h2>
           <ol>
+            <li>ログインします。</li>
             <li>言語と音声ソースを選びます。</li>
-            <li>必要なら話者分離や入力自動補正を切り替えます。</li>
-            <li>「録音開始」を押します。</li>
-            <li>文字起こしを確認し、必要なら校正や要約を生成します。</li>
-            <li>タイトルを付けて保存、または書き出しを行います。</li>
+            <li>「録音開始」を押して文字起こしを始めます。</li>
+            <li>必要なら校正や要約を実行します。</li>
+            <li>保存または書き出しを行います。</li>
           </ol>
         </article>
 
         <article class="help-section">
           <h2>基本設定</h2>
           <ul>
-            <li>言語: 音声認識に使う言語です。迷う場合は自動検出でも構いません。</li>
+            <li>言語: 音声認識に使う言語です。</li>
             <li>音声ソース: マイク、画面共有、両方を切り替えます。</li>
-            <li>話者分離: 発言者ごとに分けたいときに使います。</li>
-            <li>入力自動補正: 入力が小さい環境で音量を補助します。</li>
-          </ul>
-        </article>
-
-        <article class="help-section">
-          <h2>話者設定</h2>
-          <ul>
-            <li>話者分離が ON のときだけ表示されます。</li>
-            <li>自動: 人数を自動推定します。</li>
-            <li>固定人数: 会議人数が分かっているときに向きます。</li>
-            <li>範囲指定: 最小人数と最大人数を絞って推定します。</li>
+            <li>話者分離: 必要なときだけ有効にします。</li>
+            <li>入力自動補正: 小さい入力音量を補助します。</li>
           </ul>
         </article>
 
@@ -139,31 +129,21 @@
           <h2>詳細設定</h2>
           <ul>
             <li>録音詳細: 区切り時間や反応速度を調整します。</li>
-            <li>画像/画面共有: 共有画面の補助情報送信を調整します。</li>
-            <li>AIプロンプト: 認識補助や要約方針を設定します。</li>
-            <li>アカウント: ログイン状態や承認状況を確認できます。</li>
+            <li>画像 / 画面共有: 共有画面の補助情報送信を調整します。</li>
+            <li>認識ヒント: 今回だけの会話メモと、全体で使う用語辞典を設定します。</li>
           </ul>
         </article>
 
         <article class="help-section">
           <h2>保存と書き出し</h2>
           <ul>
-            <li>保存: 履歴に残して後から再確認できます。</li>
+            <li>保存: 履歴に残して後から再確認できます。履歴は設定された日数を過ぎると自動で削除されます。</li>
             <li>TXT: 読みやすいテキストとして出力します。</li>
             <li>JSONL: セグメント単位のデータとして出力します。</li>
             <li>ZIP: 関連データをまとめて取得します。</li>
           </ul>
         </article>
 
-        <article class="help-section">
-          <h2>補足</h2>
-          <ul>
-            <li>狭い画面では履歴は後ろに回り、録音と文字起こしが優先表示されます。</li>
-            <li>校正と要約は通常、文字起こしの補助として使います。</li>
-            <li>履歴の保存にはログインが必要です。</li>
-          </ul>
-          <p class="help-note">設定に迷った場合は、まず既定値のまま録音してから必要な箇所だけ調整してください。</p>
-        </article>
       </section>
     </main>
     <script>

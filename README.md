@@ -147,9 +147,14 @@ Container diarization dependency behavior:
 At minimum, set these in `.env`:
 
 ```env
+APP_ENV=development
+APP_DB_URL=postgresql+psycopg://whistx:whistx@localhost:5432/whistx
+TZ=Asia/Tokyo
 ASR_API_KEY=your_api_key
 APP_SESSION_SECRET=replace-with-a-long-random-secret
 ```
+
+`APP_ENV=production` では SQLite は許可されません。開発時のみ `APP_DB_URL` 未設定でローカル SQLite にフォールバックします。本番は PostgreSQL を前提にしてください。
 
 If you use an OpenAI-compatible local or self-hosted backend, also set:
 
@@ -185,6 +190,12 @@ ASR_MODEL=whisper-1
 - `APP_UI_BANNERS_TEXT`
 - `APP_UI_BANNERS`
 - `APP_PROMPT_TEMPLATES`
+- `APP_ENV`
+- `APP_DB_URL`
+- `HISTORY_RETENTION_DAYS` default `7`
+- `RUNTIME_TRANSCRIPT_RETENTION_HOURS`
+- `DEBUG_CHUNKS_RETENTION_HOURS`
+- `UNSAVED_RUNTIME_RETENTION_HOURS`
 
 `APP_UI_BANNERS_TEXT` is the recommended format when you generate `.env` from `Makefile` or `sed`.
 

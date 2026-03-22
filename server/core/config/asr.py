@@ -10,6 +10,10 @@ class AsrConfig:
     openai_api_key: str
     openai_base_url: str | None
     asr_model: str
+    asr_api_timeout_seconds: float
+    summary_api_timeout_seconds: float
+    proofread_api_timeout_seconds: float
+    ffmpeg_timeout_seconds: float
     asr_preprocess_enabled: bool
     asr_preprocess_sample_rate: int
     asr_overlap_ms: int
@@ -37,6 +41,10 @@ def load_asr_config() -> AsrConfig:
         openai_api_key=env_first_non_empty("ASR_API_KEY", "OPENAI_API_KEY") or "",
         openai_base_url=env_first_non_empty("ASR_BASE_URL", "OPENAI_BASE_URL"),
         asr_model=env_first_non_empty("ASR_MODEL") or env_first_non_empty("WHISPER_MODEL") or "whisper-1",
+        asr_api_timeout_seconds=max(1.0, to_float_alias(60.0, "ASR_API_TIMEOUT_SECONDS")),
+        summary_api_timeout_seconds=max(1.0, to_float_alias(60.0, "SUMMARY_API_TIMEOUT_SECONDS")),
+        proofread_api_timeout_seconds=max(1.0, to_float_alias(60.0, "PROOFREAD_API_TIMEOUT_SECONDS")),
+        ffmpeg_timeout_seconds=max(1.0, to_float_alias(30.0, "FFMPEG_TIMEOUT_SECONDS")),
         asr_preprocess_enabled=to_bool_alias(True, "ASR_PREPROCESS_ENABLED"),
         asr_preprocess_sample_rate=max(8_000, to_int_alias(16_000, "ASR_PREPROCESS_SAMPLE_RATE")),
         asr_overlap_ms=max(0, to_int_alias(3_500, "ASR_OVERLAP_MS")),

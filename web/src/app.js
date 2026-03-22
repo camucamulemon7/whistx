@@ -17,7 +17,6 @@ const brandTitleEl = $("#brandTitle");
 const brandTaglineEl = $("#brandTagline");
 const themeToggleBtn = $("#themeToggle");
 const sidebarToggleBtn = $("#sidebarToggle");
-const historyToggleBtn = $("#historyToggleBtn");
 const sidebarCloseBtn = $("#sidebarClose");
 const sidebarBackdropEl = $("#sidebarBackdrop");
 const sidePanelEl = $("#sidePanel");
@@ -201,11 +200,11 @@ const SCREENSHOT_DIFF_PIXEL_THRESHOLD = 12;
 const SCREENSHOT_DIFF_MEAN_THRESHOLD = 4;
 const SCREENSHOT_DIFF_CHANGED_RATIO_THRESHOLD = 0.015;
 const SCREENSHOT_ZOOM_MIN = 1;
-const SCREENSHOT_ZOOM_MAX = 4;
+const SCREENSHOT_ZOOM_MAX = 5;
 const SCREENSHOT_ZOOM_STEP = 0.25;
-const SCREENSHOT_MAX_WIDTH = 1024;
-const SCREENSHOT_DEGRADED_MAX_WIDTH = 768;
-const SCREENSHOT_WEBP_QUALITY = 0.88;
+const SCREENSHOT_MAX_WIDTH = 1600;
+const SCREENSHOT_DEGRADED_MAX_WIDTH = 1280;
+const SCREENSHOT_WEBP_QUALITY = 0.93;
 const CLIENT_VAD_DROP_ENABLED = false;
 const HISTORY_SEARCH_DEBOUNCE_MS = 180;
 const BACKLOG_WARN_THRESHOLD = 2;
@@ -351,6 +350,7 @@ const state = {
     pendingApprovalCount: 0,
     keycloakEnabled: false,
     keycloakButtonLabel: "Keycloakでログイン",
+    historyRetentionDays: 7,
   },
   history: {
     items: [],
@@ -502,13 +502,6 @@ function updateHistoryControls() {
     historyCollapseBtn.classList.toggle("is-collapsed", !isMobile && state.historyCollapsed);
     historyCollapseBtn.setAttribute("aria-label", state.historyCollapsed ? "履歴を展開" : "履歴をたたむ");
     historyCollapseBtn.title = state.historyCollapsed ? "展開" : "たたむ";
-  }
-  if (historyToggleBtn) {
-    const label = isMobile
-      ? (document.body.classList.contains("is-history-drawer-open") ? "履歴を閉じる" : "履歴を開く")
-      : (state.historyCollapsed ? "履歴を開く" : "履歴をたたむ");
-    historyToggleBtn.setAttribute("aria-label", label);
-    historyToggleBtn.title = label;
   }
 }
 
@@ -1787,21 +1780,51 @@ function showToast(message, type = "default", duration = 2500) {
 
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
-
-  let icon = "";
-  if (type === "success") {
-    icon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>`;
-  } else if (type === "error") {
-    icon = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6"/><path d="M9 9l6 6"/></svg>`;
+  const iconEl = createToastIcon(type);
+  if (iconEl) {
+    toast.appendChild(iconEl);
   }
-
-  toast.innerHTML = `${icon}<span>${message}</span>`;
+  const textEl = document.createElement("span");
+  textEl.textContent = String(message || "");
+  toast.appendChild(textEl);
   toastContainer.appendChild(toast);
 
   setTimeout(() => {
     toast.classList.add("hiding");
     setTimeout(() => toast.remove(), 250);
   }, duration);
+}
+
+function createToastIcon(type) {
+  if (type !== "success" && type !== "error") {
+    return null;
+  }
+  const svgNs = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNs, "svg");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+
+  if (type === "success") {
+    const path = document.createElementNS(svgNs, "path");
+    path.setAttribute("d", "M20 6L9 17l-5-5");
+    svg.appendChild(path);
+    return svg;
+  }
+
+  const circle = document.createElementNS(svgNs, "circle");
+  circle.setAttribute("cx", "12");
+  circle.setAttribute("cy", "12");
+  circle.setAttribute("r", "10");
+  const path1 = document.createElementNS(svgNs, "path");
+  path1.setAttribute("d", "M15 9l-6 6");
+  const path2 = document.createElementNS(svgNs, "path");
+  path2.setAttribute("d", "M9 9l6 6");
+  svg.append(circle, path1, path2);
+  return svg;
 }
 
 function renderEmptyTranscriptState() {
@@ -1825,7 +1848,12 @@ function escapeHtml(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function isLoginRequiredError(error) {
+  return error?.status === 401 || error?.message === "login_required" || error?.payload?.detail === "login_required";
 }
 
 function setSaveBadge(label, saved = false) {
@@ -1868,6 +1896,17 @@ function formatHistoryMeta(item) {
   if (item.savedAt) parts.push(new Date(item.savedAt).toLocaleString("ja-JP"));
   if (item.language) parts.push(formatLanguageLabel(item.language));
   return parts.join(" / ");
+}
+
+function formatHistoryDaysRemaining(item) {
+  const retentionDays = Math.max(1, Number(state.auth.historyRetentionDays || 7));
+  if (!item?.savedAt) return `${retentionDays}日で削除`;
+  const savedAtMs = new Date(item.savedAt).getTime();
+  if (!Number.isFinite(savedAtMs)) return `${retentionDays}日で削除`;
+  const expiresAtMs = savedAtMs + retentionDays * 24 * 60 * 60 * 1000;
+  const remainingMs = expiresAtMs - Date.now();
+  if (remainingMs <= 0) return "まもなく削除";
+  return `あと${Math.ceil(remainingMs / (24 * 60 * 60 * 1000))}日`;
 }
 
 function formatLanguageLabel(value) {
@@ -1923,14 +1962,15 @@ function renderHistoryList() {
         })
       : "日時不明";
     const language = formatLanguageLabel(item.language || "auto");
+    const daysRemaining = formatHistoryDaysRemaining(item);
     article.innerHTML = `
       <div class="history-item-main" role="button" tabindex="0" aria-label="履歴を開く">
         <div class="history-item-header">
           <div class="history-item-title">${escapeHtml(item.title || "無題")}</div>
-          <div class="history-item-date">${escapeHtml(savedAt)}</div>
         </div>
         <div class="history-item-meta-row">
           <span class="history-item-badge">${escapeHtml(language)}</span>
+          <span class="history-item-badge">${escapeHtml(daysRemaining)}</span>
         </div>
         <div class="history-item-meta">${escapeHtml(formatHistoryMeta(item))}</div>
         <div class="history-item-preview">${escapeHtml(item.preview || "")}</div>
@@ -3943,6 +3983,12 @@ async function proofreadAll() {
     setStatus("proofread_done");
     showToast(`${proofreadActionLabel()}を生成しました`, "success");
   } catch (err) {
+    if (isLoginRequiredError(err)) {
+      showToast("ログインが必要です", "error");
+      setAppLocked(true);
+      loginEmailEl?.focus();
+      return;
+    }
     const message = err?.name === "AbortError" ? "request_timeout" : err?.message || "unknown_error";
     showToast(`${proofreadActionLabel()}に失敗: ${message}`, "error");
     setProofread(`${proofreadActionLabel()}に失敗しました。\n${message}`, "エラー");
@@ -4005,6 +4051,12 @@ async function summarizeAll() {
     setStatus("summarized");
     showToast("要約を生成しました", "success");
   } catch (err) {
+    if (isLoginRequiredError(err)) {
+      showToast("ログインが必要です", "error");
+      setAppLocked(true);
+      loginEmailEl?.focus();
+      return;
+    }
     showToast(`要約に失敗: ${err.message}`, "error");
     setStatus(`summary_failed: ${err.message}`);
   } finally {
@@ -4182,16 +4234,6 @@ if (historyDrawerCloseEl) {
 
 if (historyCollapseBtn) {
   historyCollapseBtn.addEventListener("click", () => {
-    applyHistoryCollapsed(!state.historyCollapsed);
-  });
-}
-
-if (historyToggleBtn) {
-  historyToggleBtn.addEventListener("click", () => {
-    if (window.innerWidth <= 1100) {
-      applyHistoryDrawerOpen(!document.body.classList.contains("is-history-drawer-open"));
-      return;
-    }
     applyHistoryCollapsed(!state.historyCollapsed);
   });
 }
@@ -4440,12 +4482,12 @@ function updateSharedVocabularyMeta() {
   const isGuest = !!state.auth.isGuest;
   if (sharedVocabularySaveBtn) {
     sharedVocabularySaveBtn.disabled = !authenticated || isGuest || state.sharedVocabularySaving;
-    sharedVocabularySaveBtn.textContent = state.sharedVocabularySaving ? "保存中..." : "共有保存";
-    sharedVocabularySaveBtn.title = isGuest ? "ゲストでは共有用語辞典を更新できません" : authenticated ? "" : "ログインが必要です";
+    sharedVocabularySaveBtn.textContent = state.sharedVocabularySaving ? "保存中..." : "全体に保存";
+    sharedVocabularySaveBtn.title = isGuest ? "ゲストでは全体用語辞典を更新できません" : authenticated ? "" : "ログインが必要です";
   }
   if (!sharedVocabularyMetaEl) return;
   if (!state.sharedVocabulary) {
-    sharedVocabularyMetaEl.textContent = "共有用語辞典は未設定です";
+    sharedVocabularyMetaEl.textContent = "全体用語辞典は未設定です";
     return;
   }
   const parts = [];
@@ -4455,7 +4497,7 @@ function updateSharedVocabularyMeta() {
   if (state.sharedVocabularyUpdatedBy) {
     parts.push(`更新者: ${state.sharedVocabularyUpdatedBy}`);
   }
-  sharedVocabularyMetaEl.textContent = parts.join(" / ") || "共有用語辞典を使用します";
+  sharedVocabularyMetaEl.textContent = parts.join(" / ") || "全体用語辞典を使用します";
 }
 
 async function loadSharedGlossary() {
@@ -4472,7 +4514,7 @@ async function loadSharedGlossary() {
 
 async function saveSharedGlossary() {
   if (state.auth.isGuest) {
-    showToast("ゲストでは共有用語辞典を更新できません", "error");
+    showToast("ゲストでは全体用語辞典を更新できません", "error");
     return;
   }
   if (!state.auth.authenticated) {
@@ -4485,9 +4527,9 @@ async function saveSharedGlossary() {
   try {
     const payload = await saveSharedGlossaryRequest(String(sharedVocabularyEl?.value || "").trim());
     applySharedVocabulary(payload);
-    showToast("共有用語辞典を保存しました", "success");
+    showToast("全体用語辞典を保存しました", "success");
   } catch (error) {
-    showToast(`共有用語辞典の保存に失敗: ${error.message}`, "error");
+    showToast(`全体用語辞典の保存に失敗: ${error.message}`, "error");
   } finally {
     state.sharedVocabularySaving = false;
     updateSharedVocabularyMeta();
@@ -4683,6 +4725,7 @@ async function loadAuthState() {
     if (!payload?.authenticated) {
       state.auth.bootstrapAdminRequired = !!payload?.bootstrapAdminRequired;
       state.selfSignupEnabled = !!payload?.selfSignupEnabled;
+      state.auth.historyRetentionDays = Math.max(1, Number(payload?.historyRetentionDays || 7));
       state.auth.keycloakEnabled = !!payload?.keycloakEnabled;
       state.auth.keycloakButtonLabel = String(payload?.keycloakButtonLabel || "Keycloakでログイン");
       try {
@@ -4703,6 +4746,7 @@ async function loadAuthState() {
     state.auth.isGuest = false;
     state.auth.user = payload.user || null;
     state.selfSignupEnabled = !!payload.selfSignupEnabled;
+    state.auth.historyRetentionDays = Math.max(1, Number(payload.historyRetentionDays || 7));
     state.auth.bootstrapAdminRequired = !!payload.bootstrapAdminRequired;
     state.auth.pendingApprovalCount = Number(payload.pendingApprovalCount || 0);
     state.auth.keycloakEnabled = !!payload.keycloakEnabled;

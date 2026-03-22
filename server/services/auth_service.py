@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Request
@@ -107,6 +107,7 @@ def build_auth_me_payload(request: Request, db: Session) -> dict[str, Any]:
         'authenticated': user is not None,
         'user': serialize_user(user) if user is not None else None,
         'selfSignupEnabled': settings.enable_self_signup,
+        'historyRetentionDays': settings.history_retention_days,
         'bootstrapAdminRequired': not auth.has_admin_account(db),
         'pendingApprovalCount': user_repository.count_pending_users(db) if user is not None and user.is_admin else 0,
         'keycloakEnabled': bool(settings.keycloak_enabled and settings.keycloak_issuer and settings.keycloak_client_id),
@@ -132,7 +133,7 @@ def login_user(payload, request: Request, db: Session) -> AuthResult:
 
     for key in rate_limit_keys:
         _clear_failed_login(key)
-    user.last_login_at = datetime.utcnow()
+    user.last_login_at = datetime.now(timezone.utc)
     session = auth.create_user_session(
         db,
         user=user,
@@ -159,7 +160,7 @@ def bootstrap_admin(payload, request: Request, db: Session) -> AuthResult:
             is_active=True,
         )
         user.approved_by_user_id = user.id
-        user.last_login_at = datetime.utcnow()
+        user.last_login_at = datetime.now(timezone.utc)
         session = auth.create_user_session(
             db,
             user=user,
@@ -245,7 +246,7 @@ def upsert_keycloak_user(db: Session, userinfo: dict[str, Any]) -> User:
         if not user.is_active:
             user.is_active = True
         if user.approved_at is None:
-            user.approved_at = datetime.utcnow()
+            user.approved_at = datetime.now(timezone.utc)
         if display_name and not user.display_name:
             user.display_name = display_name
     return user

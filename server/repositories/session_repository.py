@@ -17,7 +17,10 @@ def get_user_by_session_id(db: Session, session_id: str | None, *, now: datetime
         return None
     prune_expired_sessions(db, now=now)
     session = db.scalar(select(UserSession).where(UserSession.id == session_id))
-    if session is None or session.expires_at < now:
+    expires_at = session.expires_at if session is not None else None
+    if expires_at is not None and expires_at.tzinfo is None and now.tzinfo is not None:
+        expires_at = expires_at.replace(tzinfo=now.tzinfo)
+    if session is None or expires_at is None or expires_at < now:
         return None
     return session.user
 

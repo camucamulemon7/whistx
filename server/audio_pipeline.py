@@ -8,6 +8,8 @@ import wave
 from array import array
 from dataclasses import dataclass
 
+from .config import settings
+
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +103,21 @@ class AudioPreprocessor:
             "s16le",
             "pipe:1",
         ]
-        proc = subprocess.run(cmd, input=audio_bytes, capture_output=True, check=False)
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=audio_bytes,
+                capture_output=True,
+                check=False,
+                timeout=settings.ffmpeg_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            logger.warning(
+                "ffmpeg preprocess timeout: source_mode=%s timeout=%ss",
+                source_mode,
+                settings.ffmpeg_timeout_seconds,
+            )
+            raise RuntimeError("ffmpeg preprocess timeout") from exc
         if proc.returncode != 0:
             stderr = proc.stderr.decode("utf-8", errors="ignore").strip()
             raise RuntimeError(f"ffmpeg preprocess failed: {stderr or 'unknown error'}")

@@ -42,12 +42,13 @@ class OpenAISummarizer:
         summary_prompt_template: str = "",
         proofread_system_prompt: str = "",
         proofread_prompt_template: str = "",
+        timeout_seconds: float = 60.0,
         observer: LangfuseObserver | None = None,
     ):
         if not api_key:
             raise RuntimeError("SUMMARY_API_KEY (or ASR_API_KEY / OPENAI_API_KEY) is not set")
 
-        kwargs: dict[str, Any] = {"api_key": api_key}
+        kwargs: dict[str, Any] = {"api_key": api_key, "timeout": timeout_seconds}
         if base_url:
             kwargs["base_url"] = base_url
 

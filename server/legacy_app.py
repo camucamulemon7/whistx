@@ -46,7 +46,7 @@ from .auth import (
 from .asr import SessionTranscriber
 from .audio_pipeline import AudioPreprocessor
 from .config import settings
-from .db import get_db, init_db
+from .db import db_session, get_db, init_db
 from .deps import get_current_admin, get_current_user
 from .diarizer import AudioChunk, PyannoteSpeakerDiarizer, SpeakerTurn
 from .langfuse_observer import make_langfuse_observer
@@ -58,6 +58,7 @@ from .services.history_service import (
     HistoryError,
     build_history_detail_payload,
     build_history_list_item,
+    cleanup_expired_runtime_data,
     count_histories,
     get_history_file_path,
     get_history_for_user,
@@ -69,6 +70,8 @@ from .summarizer import OpenAISummarizer
 from .transcript_store import (
     TranscriptRecord,
     TranscriptStore,
+    build_debug_chunks_dir,
+    iter_debug_chunk_dirs,
     read_jsonl_records,
     resolve_debug_audio_path,
     resolve_screenshot_path,
@@ -178,20 +181,24 @@ PROOFREADER: OpenAISummarizer | None = None
 DIARIZER: PyannoteSpeakerDiarizer | None = None
 ACTIVE_SOCKETS: set[WebSocket] = set()
 LANGFUSE_OBSERVER = None
+CLEANUP_TASK: asyncio.Task | None = None
 OIDC_STATE_COOKIE_NAME = "whistx_oidc_state"
 KEYCLOAK_PROVIDER = "keycloak"
 KEYCLOAK_DISCOVERY_CACHE: dict[str, Any] | None = None
 LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300
 LOGIN_RATE_LIMIT_ATTEMPTS = 5
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
 
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    global TRANSCRIBER_FACTORY, AUDIO_PREPROCESSOR, SUMMARIZER, PROOFREADER, DIARIZER, LANGFUSE_OBSERVER
+    global TRANSCRIBER_FACTORY, AUDIO_PREPROCESSOR, SUMMARIZER, PROOFREADER, DIARIZER, LANGFUSE_OBSERVER, CLEANUP_TASK
 
     _validate_runtime_configuration()
     init_db()
+    _run_cleanup_once("startup")
+    CLEANUP_TASK = asyncio.create_task(_periodic_cleanup_loop())
     logger.info(
         "startup config: history_dir=%s keycloak=%s self_signup=%s require_verified_email=%s",
         settings.history_dir,
@@ -234,6 +241,7 @@ async def on_startup() -> None:
             summary_prompt_template=settings.summary_prompt_template,
             proofread_system_prompt=settings.proofread_system_prompt,
             proofread_prompt_template=settings.proofread_prompt_template,
+            timeout_seconds=settings.summary_api_timeout_seconds,
             observer=LANGFUSE_OBSERVER,
         )
     except Exception as exc:  # noqa: BLE001
@@ -250,6 +258,7 @@ async def on_startup() -> None:
             summary_prompt_template=settings.summary_prompt_template,
             proofread_system_prompt=settings.proofread_system_prompt,
             proofread_prompt_template=settings.proofread_prompt_template,
+            timeout_seconds=settings.proofread_api_timeout_seconds,
             observer=LANGFUSE_OBSERVER,
         )
     except Exception as exc:  # noqa: BLE001
@@ -281,9 +290,34 @@ async def on_startup() -> None:
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
+    global CLEANUP_TASK
+    if CLEANUP_TASK is not None:
+        CLEANUP_TASK.cancel()
+        try:
+            await CLEANUP_TASK
+        except asyncio.CancelledError:
+            pass
+        CLEANUP_TASK = None
     if LANGFUSE_OBSERVER is not None:
         LANGFUSE_OBSERVER.flush()
         LANGFUSE_OBSERVER.shutdown()
+
+
+def _run_cleanup_once(reason: str) -> None:
+    try:
+        with db_session() as db:
+            cleanup_expired_runtime_data(db)
+    except Exception:
+        logger.warning("runtime artifact cleanup failed during %s", reason, exc_info=True)
+
+
+async def _periodic_cleanup_loop() -> None:
+    try:
+        while True:
+            await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+            await asyncio.to_thread(_run_cleanup_once, "periodic cleanup")
+    except asyncio.CancelledError:
+        raise
 
 
 @app.get("/api/health")
@@ -414,7 +448,7 @@ async def auth_login(
         return JSONResponse(status_code=403, content={"error": "approval_required"})
     for key in rate_limit_keys:
         _clear_failed_login(key)
-    user.last_login_at = datetime.utcnow()
+    user.last_login_at = datetime.now(timezone.utc)
 
     session = create_user_session(
         db,
@@ -453,7 +487,7 @@ async def auth_bootstrap_admin(
             is_active=True,
         )
         user.approved_by_user_id = user.id
-        user.last_login_at = datetime.utcnow()
+        user.last_login_at = datetime.now(timezone.utc)
         session = create_user_session(
             db,
             user=user,
@@ -529,7 +563,7 @@ async def auth_keycloak_callback(
         )
         userinfo = await asyncio.to_thread(_fetch_keycloak_userinfo, discovery, str(token_payload.get("access_token") or ""))
         user = _upsert_keycloak_user(db, userinfo)
-        user.last_login_at = datetime.utcnow()
+        user.last_login_at = datetime.now(timezone.utc)
         session = create_user_session(
             db,
             user=user,
@@ -715,7 +749,7 @@ async def create_history(
             "history": {
                 "id": history.id,
                 "title": history.title,
-                "savedAt": history.saved_at.isoformat(),
+                "savedAt": history_service.serialize_app_datetime(history.saved_at),
                 "segmentCount": history.segment_count,
             },
         }
@@ -2383,7 +2417,7 @@ def _save_debug_audio_chunk(session: LiveSession, item: ChunkMessage) -> None:
         return
     try:
         ext = _debug_audio_ext_from_mime(item.mime_type)
-        debug_dir = settings.debug_chunks_dir / session.session_id
+        debug_dir = build_debug_chunks_dir(settings.debug_chunks_dir, session.session_id)
         debug_dir.mkdir(parents=True, exist_ok=True)
         path = debug_dir / f"raw-{item.seq:06d}{ext}"
         path.write_bytes(item.audio_bytes)
@@ -2403,7 +2437,7 @@ def _store_debug_raw_audio_for_final(session: LiveSession, item: ChunkMessage) -
         return None
     try:
         ext = _debug_audio_ext_from_mime(item.mime_type)
-        debug_dir = settings.debug_chunks_dir / session.session_id
+        debug_dir = build_debug_chunks_dir(settings.debug_chunks_dir, session.session_id)
         debug_dir.mkdir(parents=True, exist_ok=True)
         filename = f"raw-{item.seq:06d}{ext}"
         path = debug_dir / filename
@@ -2426,7 +2460,7 @@ def _store_debug_audio_for_final(session: LiveSession, seq: int, audio_bytes: by
     if not audio_bytes:
         return None
     try:
-        debug_dir = settings.debug_chunks_dir / session.session_id
+        debug_dir = build_debug_chunks_dir(settings.debug_chunks_dir, session.session_id)
         debug_dir.mkdir(parents=True, exist_ok=True)
         filename = f"asr-{seq:06d}.wav"
         (debug_dir / filename).write_bytes(audio_bytes)
@@ -2459,13 +2493,13 @@ def _debug_audio_ext_from_mime(mime_type: str) -> str:
 def _resolve_existing_debug_audio_url(session: LiveSession, *, prefix: str, seq: int) -> str | None:
     if not is_debug_logging_enabled():
         return None
-    debug_dir = settings.debug_chunks_dir / session.session_id
-    if not debug_dir.exists():
-        return None
-    matches = sorted(debug_dir.glob(f"{prefix}-{seq:06d}.*"))
-    if not matches:
-        return None
-    return f"/api/transcripts/{session.session_id}/audio/{matches[0].name}?token={session.access_token}"
+    for debug_dir in iter_debug_chunk_dirs(settings.debug_chunks_dir, session.session_id):
+        if not debug_dir.exists():
+            continue
+        matches = sorted(debug_dir.glob(f"{prefix}-{seq:06d}.*"))
+        if matches:
+            return f"/api/transcripts/{session.session_id}/audio/{matches[0].name}?token={session.access_token}"
+    return None
 
 
 def _clamp_diarization_speakers(value: int) -> int:
@@ -2813,8 +2847,10 @@ async def get_debug_audio(session_id: str, filename: str, token: str | None = Qu
         media_type = "audio/webm"
     elif suffix == ".ogg":
         media_type = "audio/ogg"
-    elif suffix == ".mp4":
+    elif suffix in {".mp4", ".m4a"}:
         media_type = "audio/mp4"
+    elif suffix == ".mp3":
+        media_type = "audio/mpeg"
 
     return FileResponse(str(path), media_type=media_type)
 

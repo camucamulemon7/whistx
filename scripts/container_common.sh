@@ -65,6 +65,7 @@ build_common_container_env() {
     -e "APP_ENTRYPOINT=${APP_ENTRYPOINT}"
     -e "APP_WS_PATH=${APP_WS_PATH}"
     -e "APP_LOG_LEVEL=${APP_LOG_LEVEL:-INFO}"
+    -e "TZ=${TZ:-Asia/Tokyo}"
     -e "APP_DEBUG_CHUNKS_DIR=${APP_DEBUG_CHUNKS_DIR:-/app/data/debug_chunks}"
     -e "APP_DATA_DIR=/app/data"
     -e "APP_TRANSCRIPTS_DIR=/app/data/transcripts"

@@ -59,7 +59,7 @@ def create_app() -> FastAPI:
     app.include_router(transcript.router)
     app.include_router(transcribe_router)
 
-    web_dir = Path("web")
+    web_dir = Path(__file__).resolve().parents[2] / "web"
     if web_dir.exists():
         app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="static")
     return app

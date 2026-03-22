@@ -22,7 +22,7 @@ class OpenAIWhisperTranscriber:
         if not api_key:
             raise RuntimeError("ASR_API_KEY (or OPENAI_API_KEY) is not set")
 
-        kwargs: dict[str, Any] = {"api_key": api_key}
+        kwargs: dict[str, Any] = {"api_key": api_key, "timeout": settings.asr_api_timeout_seconds}
         if base_url:
             kwargs["base_url"] = base_url
 
