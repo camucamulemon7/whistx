@@ -66,6 +66,7 @@ from .services.history_service import (
     resolve_history_screenshot_path,
     save_history,
 )
+from .services.glossary_service import apply_shared_glossary_replacements, load_shared_glossary
 from .summarizer import OpenAISummarizer
 from .transcript_store import (
     TranscriptRecord,
@@ -915,6 +916,7 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
 
     language = _as_str(payload.language) or settings.default_language
     mode = _normalize_proofread_mode(_as_str(payload.mode))
+    glossary_text = str(load_shared_glossary().get("text") or "").strip()
     logger.info("Proofread requested: chars=%d language=%s", len(raw_text), language)
     trace_context = LANGFUSE_OBSERVER.create_trace_context(
         name="api.proofread",
@@ -928,15 +930,17 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
             language=language,
             max_chars=settings.proofread_input_max_chars,
             mode=mode,
+            glossary_text=glossary_text,
             trace_context=trace_context,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Proofread failed")
         return JSONResponse(status_code=502, content={"error": "proofread_failed", "detail": str(exc)})
 
+    corrected_text = apply_shared_glossary_replacements(result.text, glossary_text)
     return JSONResponse(
         {
-            "corrected": result.text,
+            "corrected": corrected_text,
             "model": result.model,
             "inputChars": len(raw_text),
             "chunkCount": result.chunk_count,
@@ -963,21 +967,30 @@ async def proofread_stream(payload: ProofreadRequest) -> Response:
 
     language = _as_str(payload.language) or settings.default_language
     mode = _normalize_proofread_mode(_as_str(payload.mode))
+    glossary_text = str(load_shared_glossary().get("text") or "").strip()
     trace_context = LANGFUSE_OBSERVER.create_trace_context(
         name="api.proofread.stream",
         input={"language": language, "chars": len(raw_text), "mode": mode},
     ) if LANGFUSE_OBSERVER is not None else None
 
     def event_stream():
+        assembled_parts: list[str] = []
         try:
             for event in PROOFREADER.proofread_stream_long(
                 text=raw_text,
                 language=language,
                 max_chars=settings.proofread_input_max_chars,
                 mode=mode,
+                glossary_text=glossary_text,
                 trace_context=trace_context,
             ):
+                if str(event.get("type") or "") == "delta":
+                    assembled_parts.append(str(event.get("delta") or ""))
                 yield _format_sse(event)
+            original_text = "".join(assembled_parts).strip()
+            corrected_text = apply_shared_glossary_replacements(original_text, glossary_text)
+            if corrected_text and corrected_text != original_text:
+                yield _format_sse({"type": "final_text", "text": corrected_text})
         except Exception as exc:  # noqa: BLE001
             logger.exception("Proofread stream failed")
             yield _format_sse({"type": "error", "detail": str(exc)})

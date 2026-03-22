@@ -47,3 +47,42 @@ def save_shared_glossary(*, text: str, updated_by: str | None) -> dict[str, Any]
         temp_path = Path(handle.name)
     temp_path.replace(path)
     return payload
+
+
+def parse_shared_glossary_replacements(text: str) -> list[tuple[str, str]]:
+    replacements: list[tuple[str, str]] = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        source = ""
+        target = ""
+        for delimiter in ("=>", "->", "→", "="):
+            if delimiter not in line:
+                continue
+            left, right = line.split(delimiter, 1)
+            source = left.strip()
+            target = right.strip()
+            break
+
+        if not source or not target:
+            continue
+
+        aliases = [item.strip() for item in source.replace("、", ",").split(",")]
+        for alias in aliases:
+            if alias and alias != target:
+                replacements.append((alias, target))
+
+    replacements.sort(key=lambda item: (len(item[0]), len(item[1])), reverse=True)
+    return replacements
+
+
+def apply_shared_glossary_replacements(text: str, glossary_text: str) -> str:
+    result = str(text or "")
+    if not result:
+        return result
+
+    for source, target in parse_shared_glossary_replacements(glossary_text):
+        result = result.replace(source, target)
+    return result

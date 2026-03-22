@@ -126,13 +126,20 @@ class OpenAISummarizer:
         text: str,
         language: str,
         mode: str = "proofread",
+        glossary_text: str = "",
         trace_context: dict[str, str] | None = None,
     ) -> ProofreadResult:
         clean_text = _normalize_proofread_source_text((text or "").strip())
         if not clean_text:
             return ProofreadResult(text="", model=self.model)
 
-        return self._proofread_once(clean_text, language, mode=mode, trace_context=trace_context)
+        return self._proofread_once(
+            clean_text,
+            language,
+            mode=mode,
+            glossary_text=glossary_text,
+            trace_context=trace_context,
+        )
 
     def proofread_long(
         self,
@@ -141,6 +148,7 @@ class OpenAISummarizer:
         language: str,
         max_chars: int,
         mode: str = "proofread",
+        glossary_text: str = "",
         trace_context: dict[str, str] | None = None,
     ) -> ProofreadResult:
         clean_text = _normalize_proofread_source_text((text or "").strip())
@@ -150,7 +158,13 @@ class OpenAISummarizer:
         chunk_chars = _effective_proofread_chunk_chars(max_chars)
         chunks = _split_text_into_chunks(clean_text, max_chars=chunk_chars)
         if len(chunks) == 1:
-            return self._proofread_once(clean_text, language, mode=mode, trace_context=trace_context)
+            return self._proofread_once(
+                clean_text,
+                language,
+                mode=mode,
+                glossary_text=glossary_text,
+                trace_context=trace_context,
+            )
 
         corrected_chunks: list[str] = []
         trailing_context = ""
@@ -159,6 +173,7 @@ class OpenAISummarizer:
                 chunk,
                 language,
                 mode=mode,
+                glossary_text=glossary_text,
                 trailing_context=trailing_context,
                 trace_context=trace_context,
             ).text.strip()
@@ -173,6 +188,7 @@ class OpenAISummarizer:
                 merged,
                 language,
                 mode=mode,
+                glossary_text=glossary_text,
                 trace_context=trace_context,
             ).text.strip()
             reduced = True
@@ -191,6 +207,7 @@ class OpenAISummarizer:
         language: str,
         max_chars: int,
         mode: str = "proofread",
+        glossary_text: str = "",
         trace_context: dict[str, str] | None = None,
     ):
         clean_text = _normalize_proofread_source_text((text or "").strip())
@@ -213,6 +230,7 @@ class OpenAISummarizer:
                 chunk,
                 language,
                 mode=mode,
+                glossary_text=glossary_text,
                 trailing_context=trailing_context,
                 trace_context=trace_context,
             ):
@@ -321,6 +339,7 @@ class OpenAISummarizer:
         language: str,
         *,
         mode: str = "proofread",
+        glossary_text: str = "",
         trailing_context: str = "",
         trace_context: dict[str, str] | None = None,
     ) -> ProofreadResult:
@@ -341,6 +360,7 @@ class OpenAISummarizer:
                     language,
                     mode=mode,
                     custom_template=self.proofread_prompt_template,
+                    glossary_text=glossary_text,
                     trailing_context=trailing_context,
                 ),
             },
@@ -374,6 +394,7 @@ class OpenAISummarizer:
         language: str,
         *,
         mode: str = "proofread",
+        glossary_text: str = "",
         trailing_context: str = "",
         trace_context: dict[str, str] | None = None,
     ):
@@ -396,6 +417,7 @@ class OpenAISummarizer:
                         language,
                         mode=mode,
                         custom_template=self.proofread_prompt_template,
+                        glossary_text=glossary_text,
                         trailing_context=trailing_context,
                     ),
                 },
@@ -427,6 +449,7 @@ class OpenAISummarizer:
         language: str,
         *,
         mode: str = "proofread",
+        glossary_text: str = "",
         trace_context: dict[str, str] | None = None,
     ) -> ProofreadResult:
         messages = [
@@ -441,7 +464,7 @@ class OpenAISummarizer:
             },
             {
                 "role": "user",
-                "content": _build_proofread_consistency_prompt(text, language, mode=mode),
+                "content": _build_proofread_consistency_prompt(text, language, mode=mode, glossary_text=glossary_text),
             },
         ]
         with self._generation(
@@ -653,6 +676,7 @@ def _build_proofread_prompt(
     *,
     mode: str = "proofread",
     custom_template: str = "",
+    glossary_text: str = "",
     trailing_context: str = "",
 ) -> str:
     rendered = ""
@@ -660,6 +684,24 @@ def _build_proofread_prompt(
         rendered = _render_prompt_template(custom_template, text=text, language=language)
     if rendered.strip():
         return rendered
+
+    glossary_prefix = ""
+    clean_glossary = str(glossary_text or "").strip()
+    if clean_glossary:
+        if language.lower().startswith("en"):
+            glossary_prefix = (
+                "Preferred terminology glossary:\n"
+                "Use these official terms whenever they match the source context.\n"
+                "Do not print the glossary itself in the output.\n\n"
+                f"{clean_glossary}\n\n"
+            )
+        else:
+            glossary_prefix = (
+                "優先用語辞典:\n"
+                "文脈に合う場合は、以下の正式表記を優先してください。\n"
+                "辞典そのものは出力に含めないでください。\n\n"
+                f"{clean_glossary}\n\n"
+            )
 
     if mode == "translate_ja":
         context_prefix = ""
@@ -670,7 +712,7 @@ def _build_proofread_prompt(
                 f"直前文脈:\n{trailing_context.strip()}\n\n"
             )
         return (
-            f"{context_prefix}"
+            f"{glossary_prefix}{context_prefix}"
             "以下の文字起こしを自然な日本語に翻訳してください。\n"
             "- 事実や不確実性は保持する\n"
             "- 新しい情報を追加しない\n"
@@ -690,7 +732,7 @@ def _build_proofread_prompt(
                 f"Previous context:\n{trailing_context.strip()}\n\n"
             )
         return (
-            f"{context_prefix}"
+            f"{glossary_prefix}{context_prefix}"
             "Translate the following transcript into natural English.\n"
             "- Preserve facts and uncertainty\n"
             "- Do not add inferred content\n"
@@ -710,7 +752,7 @@ def _build_proofread_prompt(
                 f"Previous context:\n{trailing_context.strip()}\n\n"
             )
         return (
-            f"{context_prefix}"
+            f"{glossary_prefix}{context_prefix}"
             "Proofread the following ASR transcript in English.\\n"
             "Rules:\\n"
             "- Keep the original meaning and uncertainty.\\n"
@@ -730,7 +772,7 @@ def _build_proofread_prompt(
             f"直前文脈:\n{trailing_context.strip()}\n\n"
         )
     return (
-        f"{context_prefix}"
+        f"{glossary_prefix}{context_prefix}"
         "以下は音声認識の文字起こしです。日本語として校正してください。\\n"
         "ルール:\\n"
         "- 意味は変えない。新しい情報を追加しない。\\n"
@@ -742,9 +784,17 @@ def _build_proofread_prompt(
     )
 
 
-def _build_proofread_consistency_prompt(text: str, language: str, *, mode: str = "proofread") -> str:
+def _build_proofread_consistency_prompt(text: str, language: str, *, mode: str = "proofread", glossary_text: str = "") -> str:
+    glossary_prefix = ""
+    clean_glossary = str(glossary_text or "").strip()
+    if clean_glossary:
+        if language.lower().startswith("en"):
+            glossary_prefix = f"Preferred terminology glossary:\n{clean_glossary}\n\n"
+        else:
+            glossary_prefix = f"優先用語辞典:\n{clean_glossary}\n\n"
     if mode == "translate_ja":
         return (
+            f"{glossary_prefix}"
             "以下の翻訳済み本文全体の整合を取ってください。\n"
             "- 意味は変えない\n"
             "- 用語、表記、段落の一貫性を整える\n"
@@ -755,6 +805,7 @@ def _build_proofread_consistency_prompt(text: str, language: str, *, mode: str =
 
     if mode == "translate_en":
         return (
+            f"{glossary_prefix}"
             "Unify the translated transcript below.\n"
             "- Keep the meaning unchanged\n"
             "- Standardize terminology, punctuation, and paragraph consistency\n"
@@ -765,6 +816,7 @@ def _build_proofread_consistency_prompt(text: str, language: str, *, mode: str =
 
     if language.lower().startswith("en"):
         return (
+            f"{glossary_prefix}"
             "Unify the formatting of the corrected transcript below.\n"
             "- Keep the meaning unchanged.\n"
             "- Preserve paragraph order.\n"
@@ -775,6 +827,7 @@ def _build_proofread_consistency_prompt(text: str, language: str, *, mode: str =
         )
 
     return (
+        f"{glossary_prefix}"
         "以下の校正済み文字起こし全体の整合を取ってください。\n"
         "- 意味は変えない\n"
         "- 段落順は維持する\n"

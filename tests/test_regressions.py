@@ -46,6 +46,7 @@ if str(ROOT) not in sys.path:
 from server import app as app_module
 from server import legacy_app
 from server import openai_whisper
+from server import summarizer as summarizer_module
 from server.asr import ASRChunkResult
 from server.app import LoginRequest
 from server.api.routes import summary as summary_routes
@@ -136,6 +137,26 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(loaded['text'], 'PCIe, UCIe')
         self.assertEqual(loaded['updatedBy'], 'user@example.com')
         self.assertTrue(loaded['updatedAt'])
+
+    def test_shared_glossary_replacements_apply_alias_mapping(self) -> None:
+        text = 'なんど と らすこ を確認しました'
+        glossary_text = 'なんど=NAND\nらすこ=Lascaux'
+
+        replaced = glossary_service.apply_shared_glossary_replacements(text, glossary_text)
+
+        self.assertEqual(replaced, 'NAND と Lascaux を確認しました')
+
+    def test_proofread_prompt_includes_shared_glossary(self) -> None:
+        prompt = summarizer_module._build_proofread_prompt(
+            'なんど の話です',
+            'ja',
+            mode='proofread',
+            glossary_text='なんど=NAND\nらすこ=Lascaux',
+        )
+
+        self.assertIn('優先用語辞典', prompt)
+        self.assertIn('なんど=NAND', prompt)
+        self.assertIn('らすこ=Lascaux', prompt)
 
     def test_keycloak_upsert_rejects_unverified_email_when_required(self) -> None:
         db = DummyDB()

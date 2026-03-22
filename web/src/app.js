@@ -1009,13 +1009,6 @@ function buildRuntimeUi() {
   runtimeUi.screenshotModalImageEl = screenshotModalImageEl || null;
   runtimeUi.summaryCopyBtnEl = copySummaryBtnEl || null;
 
-  if (runtimeUi.historyDrawerEl && !runtimeUi.historyDrawerEl.querySelector("#historyUserLabel")) {
-    const footer = document.createElement("div");
-    footer.className = "whistx-history-footer";
-    footer.innerHTML = `<span class="whistx-history-user" id="historyUserLabel"></span>`;
-    runtimeUi.historyDrawerEl.appendChild(footer);
-  }
-
   // Hide the old auth/history side-panel sections entirely.
   sidePanelSections.forEach((section) => {
     if (section.querySelector("#loginEmail") || section.querySelector("#registerEmail")) {
@@ -2045,10 +2038,6 @@ function renderAuthState() {
   const userLabel = authenticated ? serializeUserLabel(state.auth.user) : isGuest ? "ゲスト利用中" : "未ログイン";
   if (authUserLabelEl) {
     authUserLabelEl.textContent = userLabel;
-  }
-  const historyUserLabelEl = $("#historyUserLabel");
-  if (historyUserLabelEl) {
-    historyUserLabelEl.textContent = authenticated ? serializeUserLabel(state.auth.user) : isGuest ? "ゲスト利用中" : "";
   }
   if (loginBtn) {
     loginBtn.hidden = workspaceEnabled;
@@ -3958,6 +3947,13 @@ async function proofreadAll() {
           setProofread(correctedText, chunkCount > 1 ? `処理中... ${currentChunk}/${chunkCount}` : "処理中...");
           lastRenderAt = now;
         }
+        return;
+      }
+
+      if (eventType === "final_text") {
+        correctedText = String(event.text || "").trim();
+        setProofread(correctedText, chunkCount > 1 ? `処理中... ${currentChunk}/${chunkCount}` : "処理中...");
+        lastRenderAt = Date.now();
         return;
       }
 
