@@ -331,6 +331,11 @@ class RegressionTests(unittest.TestCase):
         current = '価格改定について説明します。次に販売計画を確認します'
         self.assertEqual(legacy_app._trim_overlap_prefix(current, previous), '次に販売計画を確認します')
 
+    def test_trim_overlap_prefix_fuzzy_match_handles_small_variation(self) -> None:
+        previous = '新製品の価格改定について説明いたします'
+        current = '価格改定について説明します。次に販売計画です'
+        self.assertEqual(legacy_app._trim_overlap_prefix(current, previous), '次に販売計画です')
+
     def test_build_prompt_includes_shared_vocabulary(self) -> None:
         session = SimpleNamespace(
             base_prompt='会議用語を優先してください',
@@ -345,6 +350,7 @@ class RegressionTests(unittest.TestCase):
         self.assertIsNotNone(prompt)
         self.assertIn('共有用語辞典', prompt)
         self.assertIn('PCIe, UCIe, Blackwell', prompt)
+        self.assertIn('利用者プロンプト', prompt)
 
     def test_openai_whisper_retries_retryable_errors(self) -> None:
         request = httpx.Request('POST', 'https://example.com/v1/audio/transcriptions')
@@ -424,6 +430,43 @@ class RegressionTests(unittest.TestCase):
         self.assertAlmostEqual(result.avg_logprob or 0.0, -1.2)
         self.assertAlmostEqual(result.compression_ratio or 0.0, 2.6)
 
+    def test_openai_whisper_multi_pass_prefers_longer_retry_result(self) -> None:
+        first_response = SimpleNamespace(
+            text='短い候補',
+            segments=[{'start': 0.0, 'end': 0.6, 'no_speech_prob': 0.65, 'avg_logprob': -1.1, 'compression_ratio': 2.5}],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=0, total_tokens=1),
+        )
+        second_response = SimpleNamespace(
+            text='短い候補ではなく十分に長い改善結果です',
+            segments=[{'start': 0.0, 'end': 1.2, 'no_speech_prob': 0.2, 'avg_logprob': -0.2, 'compression_ratio': 1.2}],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=0, total_tokens=1),
+        )
+        calls = []
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            return first_response if len(calls) == 1 else second_response
+
+        transcriber = openai_whisper.OpenAIWhisperTranscriber(
+            api_key='test-key',
+            base_url=None,
+            model='whisper-1',
+            observer=None,
+        )
+        transcriber.client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)))
+        transcriber.multi_pass_enabled = True
+
+        result = transcriber.transcribe_chunk(
+            b'abc',
+            mime_type='audio/webm',
+            language='ja',
+            prompt=None,
+            temperature=0.0,
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn('改善結果', result.text)
+
     def test_openai_whisper_does_not_retry_non_retryable_errors(self) -> None:
         request = httpx.Request('POST', 'https://example.com/v1/audio/transcriptions')
         response = httpx.Response(400, request=request, content=b'{}')
@@ -457,6 +500,18 @@ class RegressionTests(unittest.TestCase):
         previous = '本日の会議では新製品の価格改定について説明します'
         current = '本日の会議では新製品の価格改定について詳細を説明します'
         self.assertFalse(legacy_app._is_near_duplicate(current, previous))
+
+    def test_near_duplicate_detection_uses_timestamp_gap(self) -> None:
+        previous = '価格改定について説明します'
+        current = '価格改定について説明します'
+        self.assertTrue(legacy_app._is_near_duplicate(current, previous, current_start_ms=1000, previous_end_ms=900))
+        self.assertFalse(legacy_app._is_near_duplicate(current, previous, current_start_ms=5000, previous_end_ms=900))
+
+    def test_light_proofread_collapses_fillers_and_normalizes_digits(self) -> None:
+        value = legacy_app._light_proofread('えーと、えーと ２０ ２５ 年の計画です', language='ja')
+        self.assertIn('えーと', value)
+        self.assertNotIn('えーと、えーと', value)
+        self.assertIn('2025', value)
 
     def test_monotonic_bounds_prevent_timestamp_overlap(self) -> None:
         self.assertEqual(legacy_app._coerce_monotonic_bounds(ts_start=8100, ts_end=8900, previous_end_ms=9000), (9000, 9000))

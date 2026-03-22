@@ -17,6 +17,8 @@ class AsrConfig:
     asr_vad_speech_ratio_min: float
     asr_retry_max_attempts: int
     asr_retry_base_delay_ms: int
+    asr_multi_pass_enabled: bool
+    asr_light_proofread_enabled: bool
     default_language: str
     default_prompt: str
     default_temperature: float
@@ -40,6 +42,8 @@ def load_asr_config() -> AsrConfig:
         asr_vad_speech_ratio_min=max(0.0, min(1.0, to_float_alias(0.02, "ASR_VAD_SPEECH_RATIO_MIN"))),
         asr_retry_max_attempts=max(1, to_int_alias(3, "ASR_RETRY_MAX_ATTEMPTS")),
         asr_retry_base_delay_ms=max(0, to_int_alias(1_000, "ASR_RETRY_BASE_DELAY_MS")),
+        asr_multi_pass_enabled=to_bool_alias(True, "ASR_MULTI_PASS_ENABLED"),
+        asr_light_proofread_enabled=to_bool_alias(True, "ASR_LIGHT_PROOFREAD_ENABLED"),
         default_language=env_first_non_empty("ASR_DEFAULT_LANGUAGE", "DEFAULT_LANGUAGE") or "ja",
         default_prompt=env_first_non_empty("ASR_DEFAULT_PROMPT", "DEFAULT_PROMPT") or "",
         default_temperature=to_float_alias(0.0, "ASR_DEFAULT_TEMPERATURE", "DEFAULT_TEMPERATURE"),

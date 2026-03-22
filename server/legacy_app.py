@@ -1233,11 +1233,19 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
             text = _sanitize_transcript_text(text, language=session.language)
             text = _trim_overlap_prefix(text, session.last_emitted_text)
             text = _sanitize_transcript_text(text, language=session.language)
+            if bool(getattr(settings, "asr_light_proofread_enabled", True)):
+                text = _light_proofread(text, language=session.language)
             if not text:
                 await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
                 continue
 
-            if _is_near_duplicate(text, session.last_emitted_text):
+            current_start_hint = max(0, effective_offset_ms - prepared.overlap_ms_used) + (result.start_ms or 0)
+            if _is_near_duplicate(
+                text,
+                session.last_emitted_text,
+                current_start_ms=current_start_hint,
+                previous_end_ms=session.last_emitted_ts_end,
+            ):
                 await _safe_send(
                     ws,
                     {"type": "ack", "seq": item.seq, "duplicate": True},
@@ -1556,6 +1564,8 @@ def _trim_context_terms_to_budget(
 REPEAT_COLLAPSE_RE = re.compile(r"(.{2,24}?)\1{2,}")
 REPEAT_DETECT_RE = re.compile(r"(.{2,24}?)\1{4,}")
 PHRASE_TOKEN_RE = re.compile(r"[^。！？!?]+[。！？!?]?")
+FILLER_REPEAT_RE = re.compile(r"(えーと|えっと|えー|あのー|あの|そのー|その)(?:[\s、,。]*\1)+")
+MULTISPACE_NUMBER_RE = re.compile(r"(?<=\d)\s+(?=\d)")
 JP_CHAR_CLASS = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
 JP_SPACE_BEFORE_RE = re.compile(rf"(?<=[{JP_CHAR_CLASS}])\s+(?=[{JP_CHAR_CLASS}])")
 JP_PUNCT_SPACE_RE = re.compile(rf"\s+([、。，．・：；！？）］】」』])|([（［【「『])\s+")
@@ -1563,6 +1573,8 @@ OVERLAP_COMPARE_DROP_RE = re.compile(r"[\s、。，．・：；！？!?,.:;()\[\
 MIN_OVERLAP_MATCH_CHARS = 12
 MAX_OVERLAP_MATCH_CHARS = 96
 MIN_OVERLAP_MATCH_RATIO = 0.5
+FUZZY_OVERLAP_MIN_RATIO = 0.82
+LEADING_CONNECTOR_MARKERS = ("次に", "また", "なお", "では", "そして")
 
 
 def _sanitize_transcript_text(text: str, *, language: str | None = None) -> str:
@@ -1585,6 +1597,18 @@ def _sanitize_transcript_text(text: str, *, language: str | None = None) -> str:
     if _is_repetition_noise(value):
         return ""
     return value
+
+
+def _light_proofread(text: str, *, language: str | None = None) -> str:
+    value = (text or "").strip()
+    if not value:
+        return ""
+
+    value = FILLER_REPEAT_RE.sub(lambda m: m.group(1), value)
+    value = value.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    value = value.replace('"', "”").replace("'", "’")
+    value = MULTISPACE_NUMBER_RE.sub("", value)
+    return _sanitize_transcript_text(value, language=language)
 
 
 def _trim_overlap_prefix(current: str, previous: str) -> str:
@@ -1613,11 +1637,18 @@ def _trim_overlap_prefix(current: str, previous: str) -> str:
             break
 
     if best_overlap <= 0:
-        return current
+        best_overlap = _find_fuzzy_overlap(previous_normalized, current_normalized)
+        if best_overlap <= 0:
+            return current
 
     cut_index = current_index_map[best_overlap - 1]
     trimmed = current[cut_index:].lstrip()
     trimmed = trimmed.lstrip("、。，．・：；！？!?,.:;）］】」』")
+    prefix = current[:cut_index].rstrip()
+    for marker in LEADING_CONNECTOR_MARKERS:
+        if prefix.endswith(marker) and not trimmed.startswith(marker):
+            trimmed = marker + trimmed
+            break
     return trimmed or current
 
 
@@ -1660,6 +1691,23 @@ def _normalize_overlap_compare_text(text: str) -> tuple[str, list[int]]:
 
 def _normalize_compare_text(text: str) -> str:
     return re.sub(r"\s+", "", (text or "").strip())
+
+
+def _find_fuzzy_overlap(previous_normalized: str, current_normalized: str) -> int:
+    max_overlap = min(len(previous_normalized), len(current_normalized), MAX_OVERLAP_MATCH_CHARS)
+    min_required_overlap = max(
+        MIN_OVERLAP_MATCH_CHARS,
+        int(min(len(previous_normalized), len(current_normalized)) * MIN_OVERLAP_MATCH_RATIO),
+    )
+    if max_overlap < min_required_overlap:
+        return 0
+
+    for overlap_len in range(max_overlap, min_required_overlap - 1, -1):
+        left = previous_normalized[-overlap_len:]
+        right = current_normalized[:overlap_len]
+        if difflib.SequenceMatcher(None, left, right).ratio() >= FUZZY_OVERLAP_MIN_RATIO:
+            return overlap_len
+    return 0
 
 
 def _is_repetition_noise(text: str) -> bool:
@@ -1747,21 +1795,30 @@ def _collapse_long_repeated_char_loops(text: str) -> str:
     return collapsed_text or value
 
 
-def _is_near_duplicate(current: str, previous: str) -> bool:
+def _is_near_duplicate(
+    current: str,
+    previous: str,
+    *,
+    current_start_ms: int | None = None,
+    previous_end_ms: int | None = None,
+) -> bool:
     a = _normalize_compare_text(current)
     b = _normalize_compare_text(previous)
     if not a or not b:
         return False
 
-    if a == b:
-        return True
-
     shorter = min(len(a), len(b))
     longer = max(len(a), len(b))
+    gap_ms: int | None = None
+    if current_start_ms is not None and previous_end_ms is not None:
+        gap_ms = max(0, int(current_start_ms) - int(previous_end_ms))
+    if a == b:
+        return gap_ms is None or gap_ms <= 2_000
     if shorter >= 24 and shorter / longer >= 0.92 and (a in b or b in a):
-        return True
+        return gap_ms is None or gap_ms <= 2_000
 
-    return shorter >= 24 and difflib.SequenceMatcher(None, a, b).ratio() >= 0.97
+    ratio_threshold = 0.9 if gap_ms is not None and gap_ms <= 2_000 else 0.97
+    return shorter >= 24 and difflib.SequenceMatcher(None, a, b).ratio() >= ratio_threshold
 
 
 async def _run_diarization_for_session(ws: WebSocket, session: LiveSession) -> None:
