@@ -45,6 +45,18 @@ Files: [`web/`](./web)
 
 Files: [`server/`](./server)
 
+
+Current backend layout after the refactor:
+
+- `server/app.py`: thin entrypoint
+- `server/core/application.py`: app wiring and router registration
+- `server/api/routes/*.py`: HTTP entrypoints
+- `server/api/ws/transcribe.py`: WebSocket entrypoint
+- `server/services/*.py`: auth/admin/history business logic
+- `server/repositories/*.py`: SQLAlchemy access boundaries
+- `server/core/config/*.py`: split configuration modules
+- `server/legacy_app.py`: remaining transitional implementation for ws/asr/keycloak helpers
+
 - FastAPI application
 - `ws://.../ws/transcribe` receives audio chunks and returns finalized transcript segments
 - Applies audio preprocessing with `ffmpeg`
@@ -64,7 +76,7 @@ Files: [`server/`](./server)
 5. Finalized text is normalized and stored
 6. UI updates immediately with final segments
 
-Realtime ASR models are not supported in the current build. Use a Whisper-compatible `ASR_MODEL`.
+Realtime ASR models are not supported in the current build. The old `server/voxtral_realtime.py` path has been removed because `_build_transcriber_factory()` rejects realtime models before runtime. Use a Whisper-compatible `ASR_MODEL`.
 
 ## Requirements
 
@@ -108,7 +120,7 @@ cp .env.example .env
 ./start.sh
 ```
 
-The container image installs Python dependencies with `uv`.
+The container image installs Python dependencies with `uv`. Dependency source of truth is `requirements.txt`; diarization-only additions live in `requirements-diarization.txt`; `pyproject.toml` remains tool metadata.
 
 ### Podman (rootless)
 
@@ -116,6 +128,8 @@ The container image installs Python dependencies with `uv`.
 cp .env.example .env
 ./podman-run.sh
 ```
+
+`podman-run.sh` builds with `--format docker` by default so the image `HEALTHCHECK` is preserved. Override with `PODMAN_BUILD_FORMAT=oci` only if you intentionally want OCI output and accept that Podman will ignore the healthcheck.
 
 Container build behavior:
 
@@ -133,9 +147,14 @@ Container diarization dependency behavior:
 At minimum, set these in `.env`:
 
 ```env
+APP_ENV=development
+APP_DB_URL=postgresql+psycopg://whistx:whistx@localhost:5432/whistx
+TZ=Asia/Tokyo
 ASR_API_KEY=your_api_key
 APP_SESSION_SECRET=replace-with-a-long-random-secret
 ```
+
+`APP_ENV=production` では SQLite は許可されません。開発時のみ `APP_DB_URL` 未設定でローカル SQLite にフォールバックします。本番は PostgreSQL を前提にしてください。
 
 If you use an OpenAI-compatible local or self-hosted backend, also set:
 
@@ -171,6 +190,12 @@ ASR_MODEL=whisper-1
 - `APP_UI_BANNERS_TEXT`
 - `APP_UI_BANNERS`
 - `APP_PROMPT_TEMPLATES`
+- `APP_ENV`
+- `APP_DB_URL`
+- `HISTORY_RETENTION_DAYS` default `7`
+- `RUNTIME_TRANSCRIPT_RETENTION_HOURS`
+- `DEBUG_CHUNKS_RETENTION_HOURS`
+- `UNSAVED_RUNTIME_RETENTION_HOURS`
 
 `APP_UI_BANNERS_TEXT` is the recommended format when you generate `.env` from `Makefile` or `sed`.
 
@@ -361,3 +386,11 @@ Current accuracy-oriented measures include:
 ## License
 
 MIT. See [LICENSE](./LICENSE).
+
+## Refactor Notes
+
+- `server/app.py` is now the thin FastAPI entrypoint. Transitional implementation lives in `server/legacy_app.py`.
+- Backend route registration lives in `server/core/application.py` and `server/api/routes/`.
+- Runtime configuration is split under `server/core/config/`. Add new env-backed settings there first.
+- `web/main.js` is now a thin module entrypoint that loads `web/src/app.js`.
+- Dependency source of truth remains `requirements.txt` and `requirements-diarization.txt`. `pyproject.toml` is metadata-only for now.

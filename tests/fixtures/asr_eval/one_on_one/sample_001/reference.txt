@@ -1,0 +1,1 @@
+CPU の reset と clock tree を 確認しました

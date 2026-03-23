@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST="${APP_HOST:-${HOST:-0.0.0.0}}"
-PORT="${APP_PORT:-${PORT:-8005}}"
-APP="${APP_ENTRYPOINT:-${APP:-server.app:app}}"
-APP_DATA_DIR="${APP_DATA_DIR:-/app/data}"
-APP_TRANSCRIPTS_DIR="${APP_TRANSCRIPTS_DIR:-${APP_DATA_DIR}/transcripts}"
-APP_SESSION_SECRET="${APP_SESSION_SECRET:-change-me}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/scripts/runtime_common.sh"
+
+resolve_app_runtime_env "${SCRIPT_DIR}"
+require_session_secret "entrypoint.sh" "${APP_SESSION_SECRET:-change-me}"
 
 mkdir -p "${APP_TRANSCRIPTS_DIR}"
 
-echo "[entrypoint.sh] host=${HOST} port=${PORT} data_dir=${APP_DATA_DIR} transcripts=${APP_TRANSCRIPTS_DIR}" >&2
+echo "[entrypoint.sh] host=${APP_HOST} port=${APP_PORT} data_dir=${APP_DATA_DIR} transcripts=${APP_TRANSCRIPTS_DIR}" >&2
 
-if [[ -z "${APP_SESSION_SECRET}" || ${#APP_SESSION_SECRET} -lt 32 ]]; then
-  echo "[entrypoint.sh] APP_SESSION_SECRET には32文字以上のランダム値を設定してください" >&2
-  exit 1
-fi
-
-exec uvicorn "${APP}" --host "${HOST}" --port "${PORT}"
+exec uvicorn "${APP_ENTRYPOINT}" --host "${APP_HOST}" --port "${APP_PORT}"

@@ -1,0 +1,8 @@
+{
+  "id": "sample_001",
+  "category": "one_on_one",
+  "language": "ja",
+  "audioSource": "mic",
+  "model": "whisper-1",
+  "notes": "Minimal dummy sample for local evaluation."
+}

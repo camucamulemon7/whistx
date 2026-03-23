@@ -1,0 +1,2893 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+import difflib
+import json
+import logging
+import time
+import re
+import secrets
+import zipfile
+from dataclasses import dataclass
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import hashlib
+import hmac
+from io import BytesIO
+from pathlib import Path
+from typing import Any, Callable
+import wave
+from urllib.parse import urlencode
+from urllib.request import Request as UrlRequest, urlopen
+
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from .auth import (
+    SESSION_COOKIE_NAME,
+    approve_user,
+    create_user,
+    create_user_session,
+    count_admin_users,
+    delete_user_session,
+    get_user_by_email,
+    get_user_by_identity,
+    has_admin_account,
+    list_all_users,
+    list_pending_users,
+    verify_password,
+)
+from .asr import SessionTranscriber
+from .audio_pipeline import AudioPreprocessor
+from .config import settings
+from .db import db_session, get_db, init_db
+from .deps import get_current_admin, get_current_user
+from .diarizer import AudioChunk, PyannoteSpeakerDiarizer, SpeakerTurn
+from .langfuse_observer import make_langfuse_observer
+from .models import TranscriptHistory, User
+from .openai_whisper import OpenAIWhisperTranscriber
+from .schemas import BootstrapAdminRequest, HistorySaveRequest, LoginRequest, RegisterRequest
+from .services.auth_service import get_optional_user_from_request as auth_service_get_optional_user_from_request, map_keycloak_auth_error as auth_service_map_keycloak_auth_error, upsert_keycloak_user as auth_service_upsert_keycloak_user
+from .services.history_service import (
+    HistoryError,
+    build_history_detail_payload,
+    build_history_list_item,
+    cleanup_expired_runtime_data,
+    count_histories,
+    get_history_file_path,
+    get_history_for_user,
+    list_histories,
+    resolve_history_screenshot_path,
+    save_history,
+)
+from .services.glossary_service import apply_shared_glossary_replacements, load_shared_glossary
+from .summarizer import OpenAISummarizer
+from .transcript_store import (
+    TranscriptRecord,
+    TranscriptStore,
+    build_debug_chunks_dir,
+    iter_debug_chunk_dirs,
+    iter_runtime_screenshot_dirs,
+    read_jsonl_records,
+    resolve_debug_audio_path,
+    resolve_screenshot_path,
+    resolve_transcript_path,
+)
+from .core.security import (
+    clear_oidc_state_cookie as security_clear_oidc_state_cookie,
+    clear_session_cookie as security_clear_session_cookie,
+    external_url_for as security_external_url_for,
+    read_oidc_state_cookie as security_read_oidc_state_cookie,
+    runtime_access_allowed as security_runtime_access_allowed,
+    serialize_user as security_serialize_user,
+    set_oidc_state_cookie as security_set_oidc_state_cookie,
+    set_session_cookie as security_set_session_cookie,
+    signed_payload as security_signed_payload,
+    unsigned_payload as security_unsigned_payload,
+)
+from .core.logging import emit_container_log, is_debug_logging_enabled
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="whistx", version="2.0.0")
+MAX_DIARIZATION_SPEAKERS = 12
+
+
+@dataclass(slots=True)
+class ChunkMessage:
+    seq: int
+    offset_ms: int
+    duration_ms: int
+    mime_type: str
+    audio_bytes: bytes
+    speech_ratio: float = 1.0
+    active_ms: int = 0
+    silence_ms: int = 0
+    screenshot_mime_type: str | None = None
+    screenshot_bytes: bytes | None = None
+
+
+@dataclass(slots=True)
+class FailedPreparedChunk:
+    seq: int
+    offset_ms: int
+    duration_ms: int
+    audio_bytes: bytes
+    speech_ratio: float
+    active_ms: int
+    silence_ms: int
+
+
+@dataclass(slots=True)
+class LiveSession:
+    session_id: str
+    access_token: str
+    language: str | None
+    audio_source: str
+    base_prompt: str
+    shared_vocabulary: str
+    temperature: float
+    context_prompt_enabled: bool
+    context_max_chars: int
+    context_recent_lines: int
+    context_term_limit: int
+    context_history: list[str]
+    transcript_history: list[str]
+    context_terms: list[str]
+    last_emitted_text: str
+    last_emitted_ts_end: int
+    collect_audio_for_diarization: bool
+    diarization_num_speakers: int
+    diarization_min_speakers: int
+    diarization_max_speakers: int
+    audio_chunks: list[AudioChunk]
+    store: TranscriptStore
+    queue: asyncio.Queue[ChunkMessage | None]
+    transcriber: SessionTranscriber
+    overlap_tail_pcm: bytes
+    last_chunk_seq: int
+    last_chunk_offset_ms: int
+    failed_prepared_chunks: list[FailedPreparedChunk]
+    asr_input_tokens: int
+    asr_output_tokens: int
+    asr_total_tokens: int
+    asr_estimated_tokens: int
+
+
+class SummarizeRequest(BaseModel):
+    text: str = Field(min_length=1)
+    language: str | None = None
+    prompt: str | None = None
+
+
+class ProofreadRequest(BaseModel):
+    text: str = Field(min_length=1)
+    language: str | None = None
+    mode: str | None = None
+
+
+TRANSCRIBER_FACTORY: Callable[[], SessionTranscriber] | None = None
+AUDIO_PREPROCESSOR: AudioPreprocessor | None = None
+SUMMARIZER: OpenAISummarizer | None = None
+PROOFREADER: OpenAISummarizer | None = None
+DIARIZER: PyannoteSpeakerDiarizer | None = None
+ACTIVE_SOCKETS: set[WebSocket] = set()
+LANGFUSE_OBSERVER = None
+CLEANUP_TASK: asyncio.Task | None = None
+OIDC_STATE_COOKIE_NAME = "whistx_oidc_state"
+KEYCLOAK_PROVIDER = "keycloak"
+KEYCLOAK_DISCOVERY_CACHE: dict[str, Any] | None = None
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300
+LOGIN_RATE_LIMIT_ATTEMPTS = 5
+LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    global TRANSCRIBER_FACTORY, AUDIO_PREPROCESSOR, SUMMARIZER, PROOFREADER, DIARIZER, LANGFUSE_OBSERVER, CLEANUP_TASK
+
+    _validate_runtime_configuration()
+    init_db()
+    _run_cleanup_once("startup")
+    CLEANUP_TASK = asyncio.create_task(_periodic_cleanup_loop())
+    logger.info(
+        "startup config: history_dir=%s keycloak=%s self_signup=%s require_verified_email=%s",
+        settings.history_dir,
+        _keycloak_login_enabled(),
+        settings.enable_self_signup,
+        settings.keycloak_require_email_verified,
+    )
+    emit_container_log(
+        __name__,
+        "info",
+        "startup config: history_dir=%s keycloak=%s self_signup=%s require_verified_email=%s",
+        settings.history_dir,
+        _keycloak_login_enabled(),
+        settings.enable_self_signup,
+        settings.keycloak_require_email_verified,
+    )
+    LANGFUSE_OBSERVER = make_langfuse_observer(
+        public_key=settings.langfuse_public_key,
+        secret_key=settings.langfuse_secret_key,
+        host=settings.langfuse_host,
+        environment=settings.langfuse_environment,
+        release=settings.langfuse_release,
+        enabled=settings.langfuse_enabled,
+    )
+
+    TRANSCRIBER_FACTORY = _build_transcriber_factory()
+    AUDIO_PREPROCESSOR = AudioPreprocessor(
+        ffmpeg_bin=settings.ffmpeg_bin,
+        sample_rate=settings.asr_preprocess_sample_rate,
+        overlap_ms=settings.asr_overlap_ms,
+        enabled=settings.asr_preprocess_enabled,
+    )
+    try:
+        SUMMARIZER = OpenAISummarizer(
+            api_key=settings.summary_api_key,
+            base_url=settings.summary_base_url,
+            model=settings.summary_model,
+            temperature=settings.summary_temperature,
+            summary_system_prompt=settings.summary_system_prompt,
+            summary_prompt_template=settings.summary_prompt_template,
+            proofread_system_prompt=settings.proofread_system_prompt,
+            proofread_prompt_template=settings.proofread_prompt_template,
+            timeout_seconds=settings.summary_api_timeout_seconds,
+            observer=LANGFUSE_OBSERVER,
+        )
+    except Exception as exc:  # noqa: BLE001
+        SUMMARIZER = None
+        logger.warning("summary disabled: %s", exc)
+
+    try:
+        PROOFREADER = OpenAISummarizer(
+            api_key=settings.proofread_api_key,
+            base_url=settings.proofread_base_url,
+            model=settings.proofread_model,
+            temperature=settings.proofread_temperature,
+            summary_system_prompt=settings.summary_system_prompt,
+            summary_prompt_template=settings.summary_prompt_template,
+            proofread_system_prompt=settings.proofread_system_prompt,
+            proofread_prompt_template=settings.proofread_prompt_template,
+            timeout_seconds=settings.proofread_api_timeout_seconds,
+            observer=LANGFUSE_OBSERVER,
+        )
+    except Exception as exc:  # noqa: BLE001
+        PROOFREADER = None
+        logger.warning("proofread disabled: %s", exc)
+
+    if settings.diarization_enabled:
+        try:
+            DIARIZER = PyannoteSpeakerDiarizer(
+                hf_token=settings.diarization_hf_token,
+                model=settings.diarization_model,
+                ffmpeg_bin=settings.ffmpeg_bin,
+                device=settings.diarization_device,
+                sample_rate=settings.diarization_sample_rate,
+                num_speakers=settings.diarization_num_speakers,
+                min_speakers=settings.diarization_min_speakers,
+                max_speakers=settings.diarization_max_speakers,
+            )
+            DIARIZER.preflight()
+        except Exception as exc:  # noqa: BLE001
+            DIARIZER = None
+            logger.warning("diarization disabled: %s", exc)
+    else:
+        DIARIZER = None
+
+    logger.info("whistx started (model=%s, ws=%s)", settings.asr_model, settings.ws_path)
+    emit_container_log(__name__, "info", "whistx started (model=%s, ws=%s)", settings.asr_model, settings.ws_path)
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    global CLEANUP_TASK
+    if CLEANUP_TASK is not None:
+        CLEANUP_TASK.cancel()
+        try:
+            await CLEANUP_TASK
+        except asyncio.CancelledError:
+            pass
+        CLEANUP_TASK = None
+    if LANGFUSE_OBSERVER is not None:
+        LANGFUSE_OBSERVER.flush()
+        LANGFUSE_OBSERVER.shutdown()
+
+
+def _run_cleanup_once(reason: str) -> None:
+    try:
+        with db_session() as db:
+            cleanup_expired_runtime_data(db)
+    except Exception:
+        logger.warning("runtime artifact cleanup failed during %s", reason, exc_info=True)
+
+
+async def _periodic_cleanup_loop() -> None:
+    try:
+        while True:
+            await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+            await asyncio.to_thread(_run_cleanup_once, "periodic cleanup")
+    except asyncio.CancelledError:
+        raise
+
+
+@app.get("/api/health")
+async def health() -> JSONResponse:
+    return JSONResponse(
+        {
+            "status": "ok",
+            "model": settings.asr_model,
+            "asrReady": TRANSCRIBER_FACTORY is not None,
+            "summaryModel": settings.summary_model if SUMMARIZER else None,
+            "proofreadModel": settings.proofread_model if PROOFREADER else None,
+            "diarizationEnabled": DIARIZER is not None,
+            "diarizationModel": settings.diarization_model if DIARIZER else None,
+            "diarizationDefaultNumSpeakers": settings.diarization_num_speakers,
+            "diarizationDefaultMinSpeakers": settings.diarization_min_speakers,
+            "diarizationDefaultMaxSpeakers": settings.diarization_max_speakers,
+            "diarizationSpeakerCap": MAX_DIARIZATION_SPEAKERS,
+            "banners": list(settings.ui_banners),
+            "uiBrandTitle": settings.app_brand_title,
+            "uiBrandTagline": settings.app_brand_tagline,
+            "uiPromptTemplates": list(settings.ui_prompt_templates),
+            "selfSignupEnabled": settings.enable_self_signup,
+            "keycloakEnabled": _keycloak_login_enabled(),
+            "keycloakButtonLabel": settings.keycloak_button_label,
+            "wsPath": settings.ws_path,
+            "activeConnections": len(ACTIVE_SOCKETS),
+        }
+    )
+
+
+def _validate_runtime_configuration() -> None:
+    if settings.app_session_secret.strip() == "change-me":
+        logger.warning("APP_SESSION_SECRET is using the default placeholder; set a strong secret before running in shared environments")
+    if settings.keycloak_enabled and not _keycloak_login_enabled():
+        logger.warning("KEYCLOAK_ENABLED is set but issuer/client_id is incomplete; keycloak login will be disabled")
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if forwarded:
+        return forwarded
+    real_ip = (request.headers.get("x-real-ip") or "").strip()
+    if real_ip:
+        return real_ip
+    return request.client.host if request.client and request.client.host else "unknown"
+
+
+def _login_rate_limit_keys(request: Request, email: str) -> tuple[str, str]:
+    normalized = email.strip().lower()
+    return f"{_client_ip(request)}::{normalized}", f"email::{normalized}"
+
+
+def _prune_login_attempts(key: str, now: float | None = None) -> list[float]:
+    current = time.monotonic() if now is None else now
+    attempts = [stamp for stamp in LOGIN_ATTEMPTS.get(key, []) if current - stamp < LOGIN_RATE_LIMIT_WINDOW_SECONDS]
+    if attempts:
+        LOGIN_ATTEMPTS[key] = attempts
+    else:
+        LOGIN_ATTEMPTS.pop(key, None)
+    return attempts
+
+
+def _record_failed_login(key: str) -> None:
+    attempts = _prune_login_attempts(key)
+    attempts.append(time.monotonic())
+    LOGIN_ATTEMPTS[key] = attempts
+
+
+def _clear_failed_login(key: str) -> None:
+    LOGIN_ATTEMPTS.pop(key, None)
+
+
+def _login_retry_after_seconds(key: str) -> int | None:
+    attempts = _prune_login_attempts(key)
+    if len(attempts) < LOGIN_RATE_LIMIT_ATTEMPTS:
+        return None
+    oldest = min(attempts)
+    retry_after = LOGIN_RATE_LIMIT_WINDOW_SECONDS - (time.monotonic() - oldest)
+    return max(1, int(retry_after))
+
+
+def _login_retry_after_seconds_for_keys(keys: tuple[str, str]) -> int | None:
+    retry_after_values = [value for value in (_login_retry_after_seconds(key) for key in keys) if value is not None]
+    if not retry_after_values:
+        return None
+    return max(retry_after_values)
+
+
+def _map_keycloak_auth_error(exc: Exception) -> str:
+    return auth_service_map_keycloak_auth_error(exc)
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    user = _get_optional_user(request, db)
+    bootstrap_admin_required = not has_admin_account(db)
+    return JSONResponse(
+        {
+            "authenticated": user is not None,
+            "user": _serialize_user(user) if user is not None else None,
+            "selfSignupEnabled": settings.enable_self_signup,
+            "bootstrapAdminRequired": bootstrap_admin_required,
+            "pendingApprovalCount": len(list_pending_users(db)) if user is not None and user.is_admin else 0,
+            "keycloakEnabled": _keycloak_login_enabled(),
+            "keycloakButtonLabel": settings.keycloak_button_label,
+        }
+    )
+
+
+@app.post("/api/auth/login")
+async def auth_login(
+    payload: LoginRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    rate_limit_keys = _login_rate_limit_keys(request, payload.email)
+    retry_after = _login_retry_after_seconds_for_keys(rate_limit_keys)
+    if retry_after is not None:
+        return JSONResponse(status_code=429, content={"error": "too_many_login_attempts", "retryAfterSec": retry_after})
+
+    user = get_user_by_email(db, payload.email)
+    if user is None or not verify_password(user.password_hash, payload.password):
+        for key in rate_limit_keys:
+            _record_failed_login(key)
+        db.rollback()
+        return JSONResponse(status_code=401, content={"error": "invalid_credentials"})
+    if not user.is_active:
+        db.rollback()
+        return JSONResponse(status_code=403, content={"error": "approval_required"})
+    for key in rate_limit_keys:
+        _clear_failed_login(key)
+    user.last_login_at = datetime.now(timezone.utc)
+
+    session = create_user_session(
+        db,
+        user=user,
+        user_agent=request.headers.get("user-agent"),
+        ip_address=request.client.host if request.client else None,
+    )
+    db.commit()
+
+    response = JSONResponse({"ok": True, "user": _serialize_user(user)})
+    _set_session_cookie(response, request, session.id)
+    return response
+
+
+@app.post("/api/auth/bootstrap-admin")
+async def auth_bootstrap_admin(
+    payload: BootstrapAdminRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    if has_admin_account(db):
+        return JSONResponse(status_code=409, content={"error": "admin_already_exists"})
+
+    email = payload.email.strip().lower()
+    existing = db.scalar(select(User).where(User.email == email))
+    if existing is not None:
+        return JSONResponse(status_code=409, content={"error": "email_already_exists"})
+
+    try:
+        user = create_user(
+            db,
+            email=email,
+            password=payload.password,
+            display_name=payload.display_name,
+            is_admin=True,
+            is_active=True,
+        )
+        user.approved_by_user_id = user.id
+        user.last_login_at = datetime.now(timezone.utc)
+        session = create_user_session(
+            db,
+            user=user,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+        db.commit()
+    except ValueError:
+        db.rollback()
+        return JSONResponse(status_code=400, content={"error": "password_too_short"})
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse(status_code=409, content={"error": "email_already_exists"})
+
+    response = JSONResponse({"ok": True, "user": _serialize_user(user)})
+    _set_session_cookie(response, request, session.id)
+    return response
+
+
+@app.get("/api/auth/keycloak/login")
+async def auth_keycloak_login(request: Request) -> Response:
+    if not _keycloak_login_enabled():
+        return JSONResponse(status_code=404, content={"error": "keycloak_disabled"})
+
+    discovery = await asyncio.to_thread(_get_keycloak_discovery)
+    state = secrets.token_urlsafe(24)
+    code_verifier = secrets.token_urlsafe(48)
+    code_challenge = _pkce_code_challenge(code_verifier)
+    redirect_uri = security_external_url_for(request, "auth_keycloak_callback")
+    authorization_url = _build_keycloak_authorization_url(
+        discovery=discovery,
+        redirect_uri=redirect_uri,
+        state=state,
+        code_challenge=code_challenge,
+    )
+
+    response = Response(status_code=302)
+    response.headers["Location"] = authorization_url
+    _set_oidc_state_cookie(
+        response,
+        request,
+        {"state": state, "code_verifier": code_verifier, "redirect_uri": redirect_uri},
+    )
+    return response
+
+
+@app.get("/api/auth/keycloak/callback")
+async def auth_keycloak_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    if not _keycloak_login_enabled():
+        return HTMLResponse(status_code=404, content="not found")
+
+    state_payload = _read_oidc_state_cookie(request)
+    _response = Response(status_code=302)
+    _clear_oidc_state_cookie(_response, request)
+
+    state = request.query_params.get("state") or ""
+    code = request.query_params.get("code") or ""
+    if not state_payload or not code or state_payload.get("state") != state:
+        _response.headers["Location"] = "/?authError=keycloak_state"
+        return _response
+
+    try:
+        discovery = await asyncio.to_thread(_get_keycloak_discovery)
+        token_payload = await asyncio.to_thread(
+            _exchange_keycloak_code,
+            discovery,
+            code,
+            str(state_payload.get("redirect_uri") or ""),
+            str(state_payload.get("code_verifier") or ""),
+        )
+        userinfo = await asyncio.to_thread(_fetch_keycloak_userinfo, discovery, str(token_payload.get("access_token") or ""))
+        user = _upsert_keycloak_user(db, userinfo)
+        user.last_login_at = datetime.now(timezone.utc)
+        session = create_user_session(
+            db,
+            user=user,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=request.client.host if request.client else None,
+        )
+        db.commit()
+    except PermissionError:
+        db.rollback()
+        _response.headers["Location"] = "/?authError=approval_required"
+        return _response
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning("keycloak login failed: %s", exc)
+        _response.headers["Location"] = f"/?authError={_map_keycloak_auth_error(exc)}"
+        return _response
+
+    _set_session_cookie(_response, request, session.id)
+    _response.headers["Location"] = "/"
+    return _response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    delete_user_session(db, request.cookies.get(SESSION_COOKIE_NAME))
+    db.commit()
+    response = JSONResponse({"ok": True})
+    _clear_session_cookie(response, request)
+    return response
+
+
+@app.get("/api/admin/pending-users")
+async def admin_pending_users(
+    user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    items = [
+        {
+            "id": item.id,
+            "email": item.email,
+            "displayName": item.display_name,
+            "createdAt": item.created_at.isoformat(),
+        }
+        for item in list_pending_users(db)
+    ]
+    return JSONResponse({"items": items})
+
+
+@app.post("/api/admin/pending-users/{user_id}/approve")
+async def admin_approve_pending_user(
+    user_id: int,
+    user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    pending_user = db.get(User, user_id)
+    if pending_user is None or pending_user.is_active or pending_user.approved_at is not None:
+        return JSONResponse(status_code=404, content={"error": "pending_user_not_found"})
+
+    approve_user(db, user=pending_user, admin=user)
+    db.commit()
+    return JSONResponse({"ok": True, "user": _serialize_user(pending_user)})
+
+
+@app.get("/api/admin/users")
+async def admin_users(
+    user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    items = [
+        {
+            "id": item.id,
+            "email": item.email,
+            "displayName": item.display_name,
+            "isAdmin": bool(item.is_admin),
+            "isActive": bool(item.is_active),
+            "createdAt": item.created_at.isoformat(),
+            "lastLoginAt": item.last_login_at.isoformat() if item.last_login_at else None,
+            "approvedAt": item.approved_at.isoformat() if item.approved_at else None,
+        }
+        for item in list_all_users(db)
+    ]
+    return JSONResponse({"items": items})
+
+
+@app.post("/api/admin/users/{user_id}/role")
+async def admin_update_user_role(
+    user_id: int,
+    request: Request,
+    user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid_json"})
+
+    role = str(payload.get("role") or "").strip().lower()
+    if role not in {"admin", "member"}:
+        return JSONResponse(status_code=400, content={"error": "invalid_role"})
+
+    target = db.get(User, user_id)
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "user_not_found"})
+
+    make_admin = role == "admin"
+    if not make_admin and target.is_admin and count_admin_users(db) <= 1:
+        return JSONResponse(status_code=409, content={"error": "last_admin_forbidden"})
+
+    target.is_admin = make_admin
+    db.commit()
+    return JSONResponse({"ok": True, "user": _serialize_user(target)})
+
+
+@app.post("/api/auth/register")
+async def auth_register(
+    payload: RegisterRequest,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    if not has_admin_account(db):
+        return JSONResponse(status_code=409, content={"error": "bootstrap_admin_required"})
+
+    if not settings.enable_self_signup:
+        return JSONResponse(status_code=403, content={"error": "self_signup_disabled"})
+
+    email = payload.email.strip().lower()
+    if len(payload.password) < 8:
+        return JSONResponse(status_code=400, content={"error": "password_too_short"})
+
+    existing = db.scalar(select(User).where(User.email == email))
+    if existing is not None:
+        return JSONResponse(status_code=409, content={"error": "email_already_exists"})
+
+    try:
+        user = create_user(
+            db,
+            email=email,
+            password=payload.password,
+            display_name=payload.display_name,
+            is_admin=False,
+            is_active=False,
+        )
+        db.commit()
+    except ValueError:
+        db.rollback()
+        return JSONResponse(status_code=400, content={"error": "password_too_short"})
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse(status_code=409, content={"error": "email_already_exists"})
+
+    return JSONResponse({"ok": True, "pending": True, "user": _serialize_user(user)})
+
+
+@app.post("/api/history")
+async def create_history(
+    payload: HistorySaveRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    try:
+        history = save_history(
+            db,
+            user=user,
+            runtime_session_id=payload.runtimeSessionId.strip(),
+            runtime_session_token=payload.runtimeSessionToken,
+            title=payload.title,
+            summary_text=payload.summaryText,
+            proofread_text=payload.proofreadText,
+        )
+        db.commit()
+    except HistoryError as exc:
+        db.rollback()
+        return JSONResponse(status_code=exc.status_code, content={"error": exc.code})
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse(status_code=409, content={"error": "history_already_saved"})
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "history": {
+                "id": history.id,
+                "title": history.title,
+                "savedAt": history_service.serialize_app_datetime(history.saved_at),
+                "segmentCount": history.segment_count,
+            },
+        }
+    )
+
+
+@app.get("/api/history")
+async def get_history_list(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    q: str | None = Query(default=None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    items = list_histories(db, user=user, limit=limit, offset=offset, query=q)
+    total = count_histories(db, user=user, query=q)
+    return JSONResponse(
+        {
+            "items": [build_history_list_item(item) for item in items],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+
+
+@app.get("/api/history/{history_id}")
+async def get_history_detail(
+    history_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    if history is None:
+        return JSONResponse(status_code=404, content={"error": "history_not_found"})
+    return JSONResponse(build_history_detail_payload(history))
+
+
+@app.get("/api/history/{history_id}/download.txt", response_model=None)
+async def download_history_txt(
+    history_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    path = get_history_file_path(history, history.txt_path) if history is not None else None
+    if history is None or path is None or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+    return FileResponse(str(path), media_type="text/plain", filename=f"{history.id}.txt")
+
+
+@app.get("/api/history/{history_id}/download.jsonl", response_model=None)
+async def download_history_jsonl(
+    history_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    path = get_history_file_path(history, history.jsonl_path) if history is not None else None
+    if history is None or path is None or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+    return FileResponse(str(path), media_type="application/x-ndjson", filename=f"{history.id}.jsonl")
+
+
+@app.get("/api/history/{history_id}/download.zip", response_model=None)
+async def download_history_zip(
+    history_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    path = get_history_file_path(history, history.zip_path) if history is not None else None
+    if history is None or path is None or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+    return FileResponse(str(path), media_type="application/zip", filename=f"{history.id}.zip")
+
+
+@app.get("/api/history/{history_id}/screenshots/{filename}", response_model=None)
+async def get_history_screenshot(
+    history_id: str,
+    filename: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    history = get_history_for_user(db, user=user, history_id=history_id)
+    if history is None:
+        return HTMLResponse(status_code=404, content="not found")
+    path = resolve_history_screenshot_path(history, filename)
+    if path is None or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+
+    suffix = path.suffix.lower()
+    media_type = "application/octet-stream"
+    if suffix == ".webp":
+        media_type = "image/webp"
+    elif suffix in {".jpg", ".jpeg"}:
+        media_type = "image/jpeg"
+    elif suffix == ".png":
+        media_type = "image/png"
+    return FileResponse(str(path), media_type=media_type)
+
+
+@app.post("/api/summarize")
+async def summarize(payload: SummarizeRequest) -> JSONResponse:
+    if SUMMARIZER is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "summary_not_configured",
+                "detail": "SUMMARY_API_KEY (or ASR_API_KEY / OPENAI_API_KEY) is missing",
+            },
+        )
+
+    raw_text = payload.text.strip()
+    if not raw_text:
+        return JSONResponse(status_code=400, content={"error": "empty_text"})
+
+    language = _as_str(payload.language) or settings.default_language
+    prompt = _as_str(payload.prompt)
+    trace_context = LANGFUSE_OBSERVER.create_trace_context(
+        name="api.summarize",
+        input={"language": language, "chars": len(raw_text), "customPrompt": bool(prompt)},
+    ) if LANGFUSE_OBSERVER is not None else None
+
+    try:
+        result = await asyncio.to_thread(
+            SUMMARIZER.summarize_long,
+            text=raw_text,
+            language=language,
+            max_chars=settings.summary_input_max_chars,
+            custom_template=prompt,
+            trace_context=trace_context,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Summary failed")
+        return JSONResponse(status_code=502, content={"error": "summary_failed", "detail": str(exc)})
+
+    return JSONResponse(
+        {
+            "summary": result.text,
+            "model": result.model,
+            "inputChars": len(raw_text),
+            "chunkCount": result.chunk_count,
+            "reduced": result.reduced,
+        }
+    )
+
+
+@app.post("/api/proofread")
+async def proofread(payload: ProofreadRequest) -> JSONResponse:
+    if PROOFREADER is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "proofread_not_configured",
+                "detail": "PROOFREAD_API_KEY / SUMMARY_API_KEY / ASR_API_KEY (or OPENAI_API_KEY) is missing",
+            },
+        )
+
+    raw_text = payload.text.strip()
+    if not raw_text:
+        return JSONResponse(status_code=400, content={"error": "empty_text"})
+
+    language = _as_str(payload.language) or settings.default_language
+    mode = _normalize_proofread_mode(_as_str(payload.mode))
+    glossary_text = str(load_shared_glossary().get("text") or "").strip()
+    logger.info("Proofread requested: chars=%d language=%s", len(raw_text), language)
+    trace_context = LANGFUSE_OBSERVER.create_trace_context(
+        name="api.proofread",
+        input={"language": language, "chars": len(raw_text), "mode": mode},
+    ) if LANGFUSE_OBSERVER is not None else None
+
+    try:
+        result = await asyncio.to_thread(
+            PROOFREADER.proofread_long,
+            text=raw_text,
+            language=language,
+            max_chars=settings.proofread_input_max_chars,
+            mode=mode,
+            glossary_text=glossary_text,
+            trace_context=trace_context,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Proofread failed")
+        return JSONResponse(status_code=502, content={"error": "proofread_failed", "detail": str(exc)})
+
+    corrected_text = apply_shared_glossary_replacements(result.text, glossary_text)
+    return JSONResponse(
+        {
+            "corrected": corrected_text,
+            "model": result.model,
+            "inputChars": len(raw_text),
+            "chunkCount": result.chunk_count,
+            "reduced": result.reduced,
+            "mode": mode,
+        }
+    )
+
+
+@app.post("/api/proofread/stream")
+async def proofread_stream(payload: ProofreadRequest) -> Response:
+    if PROOFREADER is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "proofread_not_configured",
+                "detail": "PROOFREAD_API_KEY / SUMMARY_API_KEY / ASR_API_KEY (or OPENAI_API_KEY) is missing",
+            },
+        )
+
+    raw_text = payload.text.strip()
+    if not raw_text:
+        return JSONResponse(status_code=400, content={"error": "empty_text"})
+
+    language = _as_str(payload.language) or settings.default_language
+    mode = _normalize_proofread_mode(_as_str(payload.mode))
+    glossary_text = str(load_shared_glossary().get("text") or "").strip()
+    trace_context = LANGFUSE_OBSERVER.create_trace_context(
+        name="api.proofread.stream",
+        input={"language": language, "chars": len(raw_text), "mode": mode},
+    ) if LANGFUSE_OBSERVER is not None else None
+
+    def event_stream():
+        assembled_parts: list[str] = []
+        try:
+            for event in PROOFREADER.proofread_stream_long(
+                text=raw_text,
+                language=language,
+                max_chars=settings.proofread_input_max_chars,
+                mode=mode,
+                glossary_text=glossary_text,
+                trace_context=trace_context,
+            ):
+                if str(event.get("type") or "") == "delta":
+                    assembled_parts.append(str(event.get("delta") or ""))
+                yield _format_sse(event)
+            original_text = "".join(assembled_parts).strip()
+            corrected_text = apply_shared_glossary_replacements(original_text, glossary_text)
+            if corrected_text and corrected_text != original_text:
+                yield _format_sse({"type": "final_text", "text": corrected_text})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Proofread stream failed")
+            yield _format_sse({"type": "error", "detail": str(exc)})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.websocket(settings.ws_path)
+async def ws_transcribe(ws: WebSocket) -> None:
+    await ws.accept()
+    ACTIVE_SOCKETS.add(ws)
+    await _broadcast_conn_count()
+
+    session: LiveSession | None = None
+    worker_task: asyncio.Task[None] | None = None
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                await _safe_send(ws, {"type": "error", "message": "invalid_json"})
+                continue
+
+            if not isinstance(data, dict):
+                await _safe_send(ws, {"type": "error", "message": "invalid_payload"})
+                continue
+
+            msg_type = str(data.get("type", "")).strip().lower()
+
+            if msg_type == "start":
+                if session is not None:
+                    await _safe_send(ws, {"type": "error", "message": "already_started"})
+                    continue
+
+                try:
+                    session = _create_session(data)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Session creation failed")
+                    await _safe_send(
+                        ws,
+                        {
+                            "type": "error",
+                            "message": "session_create_failed",
+                            "detail": str(exc),
+                        },
+                    )
+                    continue
+                worker_task = asyncio.create_task(_session_worker(ws, session))
+                logger.info(
+                    "ws session ready: session=%s source=%s language=%s diarization=%s",
+                    session.session_id,
+                    session.audio_source,
+                    session.language or "auto",
+                    session.collect_audio_for_diarization,
+                )
+                emit_container_log(
+                    __name__,
+                    "info",
+                    "ws session ready: session=%s source=%s language=%s diarization=%s",
+                    session.session_id,
+                    session.audio_source,
+                    session.language or "auto",
+                    session.collect_audio_for_diarization,
+                )
+
+                await _safe_send(
+                    ws,
+                    {
+                        "type": "info",
+                        "message": "ready",
+                        "state": "ready",
+                        "sessionId": session.session_id,
+                        "sessionToken": session.access_token,
+                        "backend": f"openai:{settings.asr_model}",
+                        "diarizationEnabled": session.collect_audio_for_diarization,
+                        "diarizationNumSpeakers": session.diarization_num_speakers,
+                        "diarizationMinSpeakers": session.diarization_min_speakers,
+                        "diarizationMaxSpeakers": session.diarization_max_speakers,
+                    },
+                )
+                await _broadcast_conn_count()
+                continue
+
+            if msg_type == "chunk":
+                if session is None:
+                    await _safe_send(ws, {"type": "error", "message": "not_started"})
+                    continue
+
+                chunk = _parse_chunk_message(data)
+                if chunk is None:
+                    await _safe_send(ws, {"type": "error", "message": "invalid_chunk"})
+                    continue
+
+                ordering_error = _validate_chunk_order(session, chunk)
+                if ordering_error is not None:
+                    await _safe_send(ws, ordering_error)
+                    continue
+
+                if len(chunk.audio_bytes) > settings.max_chunk_bytes:
+                    await _safe_send(
+                        ws,
+                        {
+                            "type": "error",
+                            "message": "chunk_too_large",
+                            "maxBytes": settings.max_chunk_bytes,
+                        },
+                    )
+                    continue
+
+                try:
+                    session.queue.put_nowait(chunk)
+                    session.last_chunk_seq = chunk.seq
+                    session.last_chunk_offset_ms = chunk.offset_ms
+                    logger.debug(
+                        "ws chunk queued: session=%s seq=%s duration_ms=%s queue=%s",
+                        session.session_id,
+                        chunk.seq,
+                        chunk.duration_ms,
+                        session.queue.qsize(),
+                    )
+                    emit_container_log(
+                        __name__,
+                        "debug",
+                        "ws chunk queued: session=%s seq=%s duration_ms=%s queue=%s",
+                        session.session_id,
+                        chunk.seq,
+                        chunk.duration_ms,
+                        session.queue.qsize(),
+                    )
+                except asyncio.QueueFull:
+                    logger.warning(
+                        "ws server busy: session=%s seq=%s queue=%s",
+                        session.session_id,
+                        chunk.seq,
+                        session.queue.qsize(),
+                    )
+                    emit_container_log(
+                        __name__,
+                        "warning",
+                        "ws server busy: session=%s seq=%s queue=%s",
+                        session.session_id,
+                        chunk.seq,
+                        session.queue.qsize(),
+                    )
+                    await _safe_send(
+                        ws,
+                        {
+                            "type": "error",
+                            "message": "server_busy",
+                            "detail": "queue_full",
+                        },
+                    )
+                continue
+
+            if msg_type == "telemetry":
+                if session is None:
+                    await _safe_send(ws, {"type": "error", "message": "not_started"})
+                    continue
+                event_name = _as_str(data.get("event")) or "unknown"
+                detail = data.get("detail")
+                if event_name in {"degraded_capture_enabled", "server_busy_acknowledged", "transcription_failed_acknowledged"}:
+                    logger.warning(
+                        "client telemetry: session=%s event=%s detail=%s",
+                        session.session_id,
+                        event_name,
+                        json.dumps(detail, ensure_ascii=False, sort_keys=True),
+                    )
+                    emit_container_log(
+                        __name__,
+                        "warning",
+                        "client telemetry: session=%s event=%s detail=%s",
+                        session.session_id,
+                        event_name,
+                        json.dumps(detail, ensure_ascii=False, sort_keys=True),
+                    )
+                else:
+                    logger.debug(
+                        "client telemetry: session=%s event=%s detail=%s",
+                        session.session_id,
+                        event_name,
+                        json.dumps(detail, ensure_ascii=False, sort_keys=True),
+                    )
+                    emit_container_log(
+                        __name__,
+                        "debug",
+                        "client telemetry: session=%s event=%s detail=%s",
+                        session.session_id,
+                        event_name,
+                        json.dumps(detail, ensure_ascii=False, sort_keys=True),
+                    )
+                continue
+
+            if msg_type == "stop":
+                logger.info("ws stop received: session=%s", session.session_id if session is not None else "unknown")
+                emit_container_log(__name__, "info", "ws stop received: session=%s", session.session_id if session is not None else "unknown")
+                await _safe_send(ws, {"type": "info", "message": "stopping"})
+                break
+
+            if msg_type == "ping":
+                await _safe_send(ws, {"type": "pong", "ts": data.get("ts")})
+                continue
+
+            await _safe_send(ws, {"type": "error", "message": "unsupported_message"})
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if session is not None:
+            await session.queue.put(None)
+
+        if worker_task is not None:
+            try:
+                await asyncio.wait_for(worker_task, timeout=60)
+            except asyncio.TimeoutError:
+                worker_task.cancel()
+
+        if session is not None:
+            await _run_diarization_for_session(ws, session)
+            _mark_session_finalized(session)
+
+        ACTIVE_SOCKETS.discard(ws)
+        await _broadcast_conn_count()
+
+
+async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
+    emitted_segments = 0
+    emitted_chars = 0
+    if not hasattr(session, "failed_prepared_chunks"):
+        session.failed_prepared_chunks = []
+    trace_context = LANGFUSE_OBSERVER.create_trace_context(
+        name="asr.session",
+        input={
+            "sessionId": session.session_id,
+            "language": session.language or "",
+            "audioSource": session.audio_source,
+            "model": settings.asr_model,
+            "diarizationEnabled": session.collect_audio_for_diarization,
+        },
+    ) if LANGFUSE_OBSERVER is not None else None
+    try:
+        while True:
+            item = await session.queue.get()
+            if item is None:
+                break
+
+            if session.collect_audio_for_diarization:
+                try:
+                    chunk_path = session.store.save_audio_chunk(
+                        seq=item.seq,
+                        mime_type=item.mime_type,
+                        audio_bytes=item.audio_bytes,
+                    )
+                    session.audio_chunks.append(
+                        AudioChunk(
+                            seq=item.seq,
+                            path=chunk_path,
+                            offset_ms=item.offset_ms,
+                            duration_ms=item.duration_ms,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Chunk save failed for diarization: session=%s seq=%s err=%s",
+                        session.session_id,
+                        item.seq,
+                        exc,
+                    )
+            _save_debug_audio_chunk(session, item)
+
+            try:
+                prepared = _prepare_audio_for_asr(session=session, item=item)
+                buffered_count = len(session.failed_prepared_chunks)
+                effective_audio_bytes = prepared.audio_bytes
+                effective_seq = item.seq
+                effective_offset_ms = item.offset_ms
+                effective_duration_ms = item.duration_ms
+                if session.failed_prepared_chunks:
+                    buffered = list(session.failed_prepared_chunks)
+                    effective_audio_bytes = _merge_wav_chunks(
+                        [entry.audio_bytes for entry in buffered] + [prepared.audio_bytes]
+                    )
+                    effective_seq = buffered[0].seq
+                    effective_offset_ms = buffered[0].offset_ms
+                    effective_duration_ms = sum(entry.duration_ms for entry in buffered) + item.duration_ms
+                    logger.info(
+                        "Merging failed chunks before retry: session=%s buffered=%d first_seq=%s current_seq=%s",
+                        session.session_id,
+                        buffered_count,
+                        effective_seq,
+                        item.seq,
+                    )
+                logger.info(
+                    "Prepared audio: session=%s seq=%s rms=%.4f peak=%.4f speech_ratio=%.4f overlap_ms=%d",
+                    session.session_id,
+                    item.seq,
+                    prepared.rms,
+                    prepared.peak,
+                    prepared.speech_ratio,
+                    prepared.overlap_ms_used,
+                )
+                if settings.asr_vad_drop_enabled and prepared.speech_ratio < settings.asr_vad_speech_ratio_min:
+                    logger.info(
+                        "Skipping low-speech chunk: session=%s seq=%s speech_ratio=%.4f threshold=%.4f",
+                        session.session_id,
+                        item.seq,
+                        prepared.speech_ratio,
+                        settings.asr_vad_speech_ratio_min,
+                    )
+                    await _safe_send(
+                        ws,
+                        {
+                            "type": "ack",
+                            "seq": item.seq,
+                            "empty": True,
+                            "skipped": True,
+                            "reason": "low_speech_ratio",
+                            "speechRatio": prepared.speech_ratio,
+                            "rms": prepared.rms,
+                            "peak": prepared.peak,
+                        },
+                    )
+                    continue
+                prompt = _build_prompt(session)
+                result = await asyncio.to_thread(
+                    session.transcriber.transcribe_chunk,
+                    effective_audio_bytes,
+                    mime_type=prepared.mime_type,
+                    language=session.language,
+                    prompt=prompt,
+                    temperature=session.temperature,
+                    trace_context=trace_context,
+                )
+                _accumulate_asr_usage(session, result)
+                result = await _retry_weird_transcription_if_needed(
+                    session=session,
+                    prepared=prepared,
+                    trace_context=trace_context,
+                    audio_bytes=effective_audio_bytes,
+                    previous_text=session.last_emitted_text,
+                    result=result,
+                )
+                session.failed_prepared_chunks.clear()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Transcription failed: session=%s seq=%s", session.session_id, item.seq)
+                if len(session.failed_prepared_chunks) >= 2:
+                    session.failed_prepared_chunks = session.failed_prepared_chunks[-1:]
+                session.failed_prepared_chunks.append(
+                    FailedPreparedChunk(
+                        seq=item.seq,
+                        offset_ms=item.offset_ms,
+                        duration_ms=item.duration_ms,
+                        audio_bytes=prepared.audio_bytes if "prepared" in locals() else b"",
+                        speech_ratio=item.speech_ratio,
+                        active_ms=item.active_ms,
+                        silence_ms=item.silence_ms,
+                    )
+                )
+                await _safe_send(
+                    ws,
+                    {
+                        "type": "error",
+                        "message": "transcription_failed",
+                        "seq": item.seq,
+                        "buffered": True,
+                        "bufferedCount": len(session.failed_prepared_chunks),
+                        "detail": str(exc),
+                    },
+                )
+                continue
+
+            text = result.text.strip()
+            if result.suspicious:
+                logger.debug(
+                    "Suspicious ASR chunk: session=%s seq=%s no_speech=%s avg_logprob=%s compression_ratio=%s",
+                    session.session_id,
+                    effective_seq if "effective_seq" in locals() else item.seq,
+                    result.max_no_speech_prob,
+                    result.avg_logprob,
+                    result.compression_ratio,
+                )
+            text = _sanitize_transcript_text(text, language=session.language)
+            text = _trim_overlap_prefix(text, session.last_emitted_text)
+            text = _sanitize_transcript_text(text, language=session.language)
+            if bool(getattr(settings, "asr_light_proofread_enabled", True)):
+                text = _light_proofread(text, language=session.language)
+            if not text:
+                await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
+                continue
+            if _should_drop_boundary_fragment(
+                text,
+                session.last_emitted_text,
+                source_mode=session.audio_source,
+                suspicious=bool(result.suspicious),
+            ):
+                await _safe_send(
+                    ws,
+                    {"type": "ack", "seq": item.seq, "empty": True, "skipped": True, "reason": "boundary_fragment"},
+                )
+                continue
+
+            current_start_hint = max(0, effective_offset_ms - prepared.overlap_ms_used) + (result.start_ms or 0)
+            if _is_near_duplicate(
+                text,
+                session.last_emitted_text,
+                current_start_ms=current_start_hint,
+                previous_end_ms=session.last_emitted_ts_end,
+            ):
+                await _safe_send(
+                    ws,
+                    {"type": "ack", "seq": item.seq, "duplicate": True},
+                )
+                continue
+
+            ts_base_offset = max(0, effective_offset_ms - prepared.overlap_ms_used)
+            ts_start = ts_base_offset + (result.start_ms or 0)
+            if result.end_ms is not None:
+                ts_end = ts_base_offset + result.end_ms
+            else:
+                ts_end = effective_offset_ms + max(effective_duration_ms, 600)
+
+            ts_start, ts_end = _coerce_monotonic_bounds(
+                ts_start=ts_start,
+                ts_end=ts_end,
+                previous_end_ms=session.last_emitted_ts_end,
+            )
+
+            record = TranscriptRecord(
+                type="final",
+                segmentId=f"{effective_seq:06d}",
+                seq=effective_seq,
+                text=text,
+                tsStart=ts_start,
+                tsEnd=ts_end,
+                chunkOffsetMs=effective_offset_ms,
+                chunkDurationMs=effective_duration_ms,
+                language=session.language,
+                createdAt=datetime.now(timezone.utc).isoformat(),
+                screenshotPath=_store_screenshot_for_chunk(session, item),
+                rawAudioPath=(
+                    _store_debug_raw_audio_for_final(session, item)
+                    or _resolve_existing_debug_audio_url(session, prefix="raw", seq=item.seq)
+                ),
+                audioPath=(
+                    _store_debug_audio_for_final(session, effective_seq, effective_audio_bytes)
+                    or _resolve_existing_debug_audio_url(session, prefix="asr", seq=effective_seq)
+                ),
+            )
+            session.store.append_final(record)
+            session.last_emitted_text = text
+            session.last_emitted_ts_end = ts_end
+            session.transcript_history.append(text)
+            _append_context(session, text)
+            emitted_segments += 1
+            emitted_chars += len(text)
+
+            await _safe_send(
+                ws,
+                {
+                    "type": "final",
+                    "segmentId": record.segmentId,
+                    "seq": record.seq,
+                    "text": record.text,
+                    "tsStart": record.tsStart,
+                    "tsEnd": record.tsEnd,
+                    "speaker": record.speaker,
+                    "screenshotPath": record.screenshotPath,
+                    "rawAudioPath": record.rawAudioPath,
+                    "audioPath": record.audioPath,
+                },
+            )
+            logger.debug(
+                "ws final sent: session=%s seq=%s chars=%s ts_start=%s ts_end=%s",
+                session.session_id,
+                record.seq,
+                len(record.text),
+                record.tsStart,
+                record.tsEnd,
+            )
+            emit_container_log(
+                __name__,
+                "debug",
+                "ws final sent: session=%s seq=%s chars=%s ts_start=%s ts_end=%s",
+                session.session_id,
+                record.seq,
+                len(record.text),
+                record.tsStart,
+                record.tsEnd,
+            )
+
+        if LANGFUSE_OBSERVER is not None and trace_context is not None:
+            with LANGFUSE_OBSERVER.generation(
+                name="asr.session.result",
+                model=settings.asr_model,
+                output={
+                    "segmentCount": emitted_segments,
+                    "charCount": emitted_chars,
+                    "estimatedTokens": session.asr_estimated_tokens,
+                    "finalTranscript": _clip_trace_text("\n".join(session.transcript_history)),
+                },
+                metadata={"usageSource": "api" if session.asr_total_tokens > 0 else "estimated"},
+                model_parameters={"estimatedTokens": session.asr_estimated_tokens},
+                trace_context=trace_context,
+            ):
+                pass
+    finally:
+        try:
+            await asyncio.to_thread(session.transcriber.close)
+        except Exception:  # noqa: BLE001
+            logger.debug("session transcriber close failed: session=%s", session.session_id, exc_info=True)
+
+
+
+def _create_session(payload: dict[str, Any]) -> LiveSession:
+    if TRANSCRIBER_FACTORY is None:
+        raise RuntimeError("transcriber_not_ready")
+
+    base_session_id = TranscriptStore.sanitize_or_generate(_as_str(payload.get("sessionId")))
+    runtime_session_id = TranscriptStore.make_runtime_session_id(base_session_id)
+    access_token = secrets.token_urlsafe(18)
+
+    language = _normalize_asr_language(_as_str(payload.get("language")))
+    audio_source = _normalize_audio_source(_as_str(payload.get("audioSource")))
+    prompt = _as_str(payload.get("prompt")) or settings.default_prompt
+    shared_vocabulary = _as_str(payload.get("sharedVocabulary"))
+    temperature = _as_float(payload.get("temperature"), settings.default_temperature)
+    diarization_requested = _as_bool(payload.get("diarizationEnabled"), True)
+    diarization_num_speakers, diarization_min_speakers, diarization_max_speakers = (
+        _parse_diarization_speaker_params(payload)
+    )
+
+    session = LiveSession(
+        session_id=runtime_session_id,
+        access_token=access_token,
+        language=language,
+        audio_source=audio_source,
+        base_prompt=prompt,
+        shared_vocabulary=shared_vocabulary,
+        temperature=temperature,
+        context_prompt_enabled=settings.context_prompt_enabled,
+        context_max_chars=settings.context_max_chars,
+        context_recent_lines=settings.context_recent_lines,
+        context_term_limit=settings.context_term_limit,
+        context_history=[],
+        transcript_history=[],
+        context_terms=[],
+        last_emitted_text="",
+        last_emitted_ts_end=0,
+        collect_audio_for_diarization=DIARIZER is not None and diarization_requested,
+        diarization_num_speakers=diarization_num_speakers,
+        diarization_min_speakers=diarization_min_speakers,
+        diarization_max_speakers=diarization_max_speakers,
+        audio_chunks=[],
+        store=TranscriptStore(settings.transcripts_dir, runtime_session_id),
+        queue=asyncio.Queue(maxsize=settings.max_queue_size),
+        transcriber=TRANSCRIBER_FACTORY(),
+        overlap_tail_pcm=b"",
+        last_chunk_seq=-1,
+        last_chunk_offset_ms=-1,
+        failed_prepared_chunks=[],
+        asr_input_tokens=0,
+        asr_output_tokens=0,
+        asr_total_tokens=0,
+        asr_estimated_tokens=0,
+    )
+    session.store.write_metadata(
+        {
+            "sessionId": runtime_session_id,
+            "accessToken": access_token,
+            "language": language,
+            "audioSource": audio_source,
+            "diarizationEnabled": session.collect_audio_for_diarization,
+            "diarizationNumSpeakers": diarization_num_speakers,
+            "diarizationMinSpeakers": diarization_min_speakers,
+            "diarizationMaxSpeakers": diarization_max_speakers,
+            "finalized": False,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    return session
+
+
+def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
+    if _use_realtime_asr(settings.asr_model):
+        raise RuntimeError(
+            "Realtime ASR models are not supported in the current build. Use a Whisper-compatible ASR_MODEL."
+        )
+
+    return lambda: OpenAIWhisperTranscriber(
+        api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
+        model=settings.asr_model,
+        observer=LANGFUSE_OBSERVER,
+    )
+
+
+def _use_realtime_asr(model: str) -> bool:
+    lowered = (model or "").strip().lower()
+    return "voxtral" in lowered and "realtime" in lowered
+
+
+def _prepare_audio_for_asr(*, session: LiveSession, item: ChunkMessage):
+    if AUDIO_PREPROCESSOR is None:
+        raise RuntimeError("audio_preprocessor_not_ready")
+    prepared = AUDIO_PREPROCESSOR.prepare(
+        audio_bytes=item.audio_bytes,
+        mime_type=item.mime_type,
+        previous_tail_pcm=session.overlap_tail_pcm,
+        chunk_duration_ms=item.duration_ms,
+        source_mode=session.audio_source,
+        speech_ratio=item.speech_ratio,
+        active_ms=item.active_ms,
+        silence_ms=item.silence_ms,
+    )
+    session.overlap_tail_pcm = prepared.tail_pcm
+    return prepared
+
+
+def _build_prompt(session: LiveSession) -> str | None:
+    parts: list[str] = []
+    shared_vocabulary = str(getattr(session, "shared_vocabulary", "") or "").strip()
+    language = (session.language or "").lower()
+    operator_prompt = str(session.base_prompt or "").strip()
+    recent_history = list(session.context_history or [])
+    recent_terms = list(session.context_terms or [])
+
+    if shared_vocabulary:
+        if language.startswith("en"):
+            parts.append("Shared glossary:\n" + shared_vocabulary)
+        else:
+            parts.append("共有用語辞典:\n" + shared_vocabulary)
+    if operator_prompt:
+        if language.startswith("en"):
+            parts.append("Operator prompt:\n" + operator_prompt)
+        else:
+            parts.append("利用者プロンプト:\n" + operator_prompt)
+
+    if session.context_prompt_enabled and (recent_history or recent_terms):
+        if language.startswith("en"):
+            header = "Recent transcript context:"
+            terms_header = "Key terms:"
+        elif not session.language:
+            header = "Recent transcript context. Keep the same spoken language as the audio:"
+            terms_header = "Key terms from recent transcript:"
+        else:
+            header = "直前の文字起こし文脈:"
+            terms_header = "直前の重要語:"
+        if recent_history:
+            parts.append(f"{header}\n" + "\n".join(recent_history))
+        if recent_terms:
+            parts.append(f"{terms_header}\n" + ", ".join(recent_terms))
+
+    merged = "\n\n".join(part for part in parts if part).strip()
+    if session.context_max_chars > 0 and len(merged) > session.context_max_chars:
+        merged = merged[-session.context_max_chars :].lstrip()
+    return merged or None
+
+
+def _append_context(session: LiveSession, text: str) -> None:
+    if not session.context_prompt_enabled:
+        return
+    if session.context_max_chars <= 0:
+        return
+
+    cleaned = " ".join(text.split()).strip()
+    cleaned = _sanitize_transcript_text(cleaned, language=session.language)
+    if not cleaned:
+        return
+
+    session.context_history.append(cleaned)
+    session.context_history = session.context_history[-session.context_recent_lines :]
+
+    merged_terms = _merge_context_terms(
+        existing=session.context_terms,
+        new_terms=_extract_context_terms(cleaned),
+        limit=session.context_term_limit,
+    )
+    session.context_terms = _trim_context_terms_to_budget(
+        terms=merged_terms,
+        max_chars=session.context_max_chars,
+        history=session.context_history,
+    )
+
+
+CONTEXT_LATIN_TERM_RE = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9.+/_-]{1,31}\b")
+CONTEXT_KATAKANA_TERM_RE = re.compile(r"[ァ-ヶー]{3,}")
+CONTEXT_CJK_TERM_RE = re.compile(r"[\u4e00-\u9fff]{2,12}")
+
+
+def _extract_context_terms(text: str) -> list[str]:
+    tokens: list[str] = []
+    for pattern in (CONTEXT_LATIN_TERM_RE, CONTEXT_KATAKANA_TERM_RE, CONTEXT_CJK_TERM_RE):
+        for match in pattern.finditer(text):
+            token = match.group(0).strip(".,:;()[]{}<>\"'")
+            if len(token) < 2:
+                continue
+            if token.isdigit():
+                continue
+            if token.lower() in {"recent", "transcript", "context"}:
+                continue
+            tokens.append(token)
+
+    return _rank_context_terms(tokens)
+
+
+def _rank_context_terms(tokens: list[str]) -> list[str]:
+    ranked = sorted(
+        set(tokens),
+        key=lambda item: (
+            0 if re.search(r"[A-Z0-9]", item) else 1,
+            -len(item),
+            item.lower(),
+        ),
+    )
+    return ranked
+
+
+def _merge_context_terms(*, existing: list[str], new_terms: list[str], limit: int) -> list[str]:
+    merged = list(existing)
+    for term in new_terms:
+        merged = [item for item in merged if item != term]
+        merged.append(term)
+    return merged[-limit:]
+
+
+def _trim_context_terms_to_budget(
+    *,
+    terms: list[str],
+    max_chars: int,
+    history: list[str],
+) -> list[str]:
+    if max_chars <= 0:
+        return terms
+
+    history_text = "\n".join(history)
+    budget = max(160, max_chars // 2) - len(history_text)
+    if budget <= 0:
+        return []
+
+    kept: list[str] = []
+    used = 0
+    for term in reversed(terms):
+        add = len(term) + (2 if kept else 0)
+        if used + add > budget:
+            continue
+        kept.append(term)
+        used += add
+    kept.reverse()
+    return kept
+
+
+REPEAT_COLLAPSE_RE = re.compile(r"(.{2,24}?)\1{2,}")
+REPEAT_DETECT_RE = re.compile(r"(.{2,24}?)\1{4,}")
+PHRASE_TOKEN_RE = re.compile(r"[^。！？!?]+[。！？!?]?")
+FILLER_REPEAT_RE = re.compile(r"(えーと|えっと|えー|あのー|あの|そのー|その)(?:[\s、,。]*\1)+")
+MULTISPACE_NUMBER_RE = re.compile(r"(?<=\d)\s+(?=\d)")
+JP_CHAR_CLASS = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
+JP_SPACE_BEFORE_RE = re.compile(rf"(?<=[{JP_CHAR_CLASS}])\s+(?=[{JP_CHAR_CLASS}])")
+JP_PUNCT_SPACE_RE = re.compile(rf"\s+([、。，．・：；！？）］】」』])|([（［【「『])\s+")
+OVERLAP_COMPARE_DROP_RE = re.compile(r"[\s、。，．・：；！？!?,.:;()\[\]{}<>\"'「」『』]+")
+MIN_OVERLAP_MATCH_CHARS = 12
+MAX_OVERLAP_MATCH_CHARS = 96
+MIN_OVERLAP_MATCH_RATIO = 0.5
+FUZZY_OVERLAP_MIN_RATIO = 0.82
+LEADING_CONNECTOR_MARKERS = ("次に", "また", "なお", "では", "そして")
+BROKEN_BOUNDARY_RE = re.compile(r"(.)\1{2,}")
+
+
+def _sanitize_transcript_text(text: str, *, language: str | None = None) -> str:
+    value = " ".join((text or "").split()).strip()
+    if not value:
+        return ""
+
+    value = _normalize_transcript_spacing(value, language=language)
+
+    # 連続反復を縮約し、意味の薄い暴走出力を抑える。
+    for _ in range(3):
+        collapsed = REPEAT_COLLAPSE_RE.sub(lambda m: m.group(1), value)
+        if collapsed == value:
+            break
+        value = collapsed
+
+    value = _collapse_long_repeated_char_loops(value)
+    value = _collapse_repeated_phrase_loops(value)
+
+    if _is_repetition_noise(value):
+        return ""
+    return value
+
+
+def _light_proofread(text: str, *, language: str | None = None) -> str:
+    value = (text or "").strip()
+    if not value:
+        return ""
+
+    value = FILLER_REPEAT_RE.sub(lambda m: m.group(1), value)
+    value = value.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    value = value.replace('"', "”").replace("'", "’")
+    value = MULTISPACE_NUMBER_RE.sub("", value)
+    return _sanitize_transcript_text(value, language=language)
+
+
+def _should_drop_boundary_fragment(
+    current: str,
+    previous: str,
+    *,
+    source_mode: str | None = None,
+    suspicious: bool = False,
+) -> bool:
+    clean = (current or "").strip()
+    normalized = _normalize_compare_text(clean)
+    if not clean or not normalized:
+        return False
+
+    if "\ufffd" in clean and len(normalized) <= 32:
+        return True
+
+    overlap_prefix = _has_previous_suffix_overlap(current, previous, min_chars=5)
+    repeated_tail = bool(BROKEN_BOUNDARY_RE.search(normalized))
+    is_display = (source_mode or "").strip().lower() == "display"
+
+    if suspicious and len(normalized) <= 28 and overlap_prefix:
+        return True
+    if is_display and len(normalized) <= 24 and overlap_prefix and repeated_tail:
+        return True
+    return False
+
+
+def _has_previous_suffix_overlap(current: str, previous: str, *, min_chars: int = 5) -> bool:
+    a = _normalize_compare_text(current)
+    b = _normalize_compare_text(previous)
+    if not a or not b:
+        return False
+
+    max_overlap = min(len(a), len(b), 16)
+    if max_overlap < min_chars:
+        return False
+
+    for overlap_len in range(max_overlap, min_chars - 1, -1):
+        if b.endswith(a[:overlap_len]):
+            return True
+    return False
+
+
+def _accumulate_asr_usage(session: LiveSession, result: ASRChunkResult) -> None:
+    usage = result.usage_details or {}
+    session.asr_input_tokens += max(0, int(usage.get("input", 0) or 0))
+    session.asr_output_tokens += max(0, int(usage.get("output", 0) or 0))
+    session.asr_total_tokens += max(0, int(usage.get("total", 0) or 0))
+    session.asr_estimated_tokens += max(0, int(result.estimated_tokens or 0))
+
+
+def _should_retry_weird_transcription(
+    text: str,
+    previous_text: str,
+    *,
+    source_mode: str | None = None,
+    suspicious: bool = False,
+) -> bool:
+    clean = (text or "").strip()
+    normalized = _normalize_compare_text(clean)
+    if not clean or not normalized:
+        return False
+    if _should_drop_boundary_fragment(clean, previous_text, source_mode=source_mode, suspicious=suspicious):
+        return True
+    if suspicious and len(normalized) <= 40:
+        return True
+    if "\ufffd" in clean:
+        return True
+    return False
+
+
+async def _retry_weird_transcription_if_needed(
+    *,
+    session: LiveSession,
+    prepared,
+    trace_context: dict[str, str] | None,
+    audio_bytes: bytes,
+    previous_text: str,
+    result: ASRChunkResult,
+) -> ASRChunkResult:
+    if not bool(getattr(settings, "asr_rescue_retry_enabled", True)):
+        return result
+    if not _should_retry_weird_transcription(
+        result.text,
+        previous_text,
+        source_mode=session.audio_source,
+        suspicious=bool(result.suspicious),
+    ):
+        return result
+
+    retry_temperature = float(getattr(settings, "asr_rescue_retry_temperature", 0.25) or 0.25)
+    retry_prompt = _build_rescue_prompt(session)
+    logger.info(
+        "Retrying weird transcription: session=%s chars=%d suspicious=%s source=%s",
+        session.session_id,
+        len((result.text or "").strip()),
+        bool(result.suspicious),
+        session.audio_source,
+    )
+    rescue_result = await asyncio.to_thread(
+        session.transcriber.transcribe_chunk,
+        audio_bytes,
+        mime_type=prepared.mime_type,
+        language=session.language,
+        prompt=retry_prompt,
+        temperature=retry_temperature,
+        trace_context=trace_context,
+    )
+    _accumulate_asr_usage(session, rescue_result)
+    if _prefer_rescue_transcription_result(
+        original=result,
+        retry=rescue_result,
+        previous_text=previous_text,
+        source_mode=session.audio_source,
+    ):
+        logger.info("Using rescued transcription: session=%s chars=%d", session.session_id, len((rescue_result.text or "").strip()))
+        return rescue_result
+    return result
+
+
+def _build_rescue_prompt(session: LiveSession) -> str | None:
+    parts: list[str] = []
+    shared_vocabulary = str(getattr(session, "shared_vocabulary", "") or "").strip()
+    base_prompt = str(getattr(session, "base_prompt", "") or "").strip()
+    if shared_vocabulary:
+        parts.append(shared_vocabulary)
+    if base_prompt:
+        parts.append(base_prompt)
+    parts.append("断片的な音声でも無理に補完せず、聞こえた範囲だけをそのまま文字起こししてください。")
+    prompt = "\n".join(part for part in parts if part).strip()
+    return prompt or None
+
+
+def _prefer_rescue_transcription_result(
+    *,
+    original: ASRChunkResult,
+    retry: ASRChunkResult,
+    previous_text: str,
+    source_mode: str | None = None,
+) -> bool:
+    original_score = _transcription_weirdness_score(
+        original.text,
+        previous_text,
+        source_mode=source_mode,
+        suspicious=bool(original.suspicious),
+    )
+    retry_score = _transcription_weirdness_score(
+        retry.text,
+        previous_text,
+        source_mode=source_mode,
+        suspicious=bool(retry.suspicious),
+    )
+    if retry_score != original_score:
+        return retry_score < original_score
+    return len(_normalize_compare_text(retry.text)) > len(_normalize_compare_text(original.text))
+
+
+def _transcription_weirdness_score(
+    text: str,
+    previous_text: str,
+    *,
+    source_mode: str | None = None,
+    suspicious: bool = False,
+) -> int:
+    clean = (text or "").strip()
+    normalized = _normalize_compare_text(clean)
+    score = 0
+    if not clean:
+        return 100
+    if suspicious:
+        score += 4
+    if "\ufffd" in clean:
+        score += 8
+    if _should_drop_boundary_fragment(clean, previous_text, source_mode=source_mode, suspicious=suspicious):
+        score += 10
+    if _is_repetition_noise(clean):
+        score += 6
+    if len(normalized) <= 12:
+        score += 2
+    return score
+
+
+def _trim_overlap_prefix(current: str, previous: str) -> str:
+    current = (current or "").strip()
+    previous = (previous or "").strip()
+    if not current or not previous:
+        return current
+
+    previous_normalized, _ = _normalize_overlap_compare_text(previous)
+    current_normalized, current_index_map = _normalize_overlap_compare_text(current)
+    if not previous_normalized or not current_normalized:
+        return current
+
+    max_overlap = min(len(previous_normalized), len(current_normalized), MAX_OVERLAP_MATCH_CHARS)
+    min_required_overlap = max(
+        MIN_OVERLAP_MATCH_CHARS,
+        int(min(len(previous_normalized), len(current_normalized)) * MIN_OVERLAP_MATCH_RATIO),
+    )
+    if max_overlap < min_required_overlap:
+        return current
+
+    best_overlap = 0
+    for overlap_len in range(max_overlap, min_required_overlap - 1, -1):
+        if previous_normalized[-overlap_len:] == current_normalized[:overlap_len]:
+            best_overlap = overlap_len
+            break
+
+    if best_overlap <= 0:
+        best_overlap = _find_fuzzy_overlap(previous_normalized, current_normalized)
+        if best_overlap <= 0:
+            return current
+
+    cut_index = current_index_map[best_overlap - 1]
+    trimmed = current[cut_index:].lstrip()
+    trimmed = trimmed.lstrip("、。，．・：；！？!?,.:;）］】」』")
+    prefix = current[:cut_index].rstrip()
+    for marker in LEADING_CONNECTOR_MARKERS:
+        if prefix.endswith(marker) and not trimmed.startswith(marker):
+            trimmed = marker + trimmed
+            break
+    return trimmed or current
+
+
+def _coerce_monotonic_bounds(*, ts_start: int, ts_end: int, previous_end_ms: int) -> tuple[int, int]:
+    start = max(0, int(ts_start))
+    end = max(start, int(ts_end))
+    previous_end = max(0, int(previous_end_ms))
+    if start < previous_end:
+        start = previous_end
+    if end < start:
+        end = start
+    return start, end
+
+def _normalize_transcript_spacing(text: str, *, language: str | None) -> str:
+    lowered = (language or "").strip().lower()
+    if lowered and not lowered.startswith("ja"):
+        return text
+
+    value = JP_SPACE_BEFORE_RE.sub("", text)
+
+    def _punct_repl(match: re.Match[str]) -> str:
+        if match.group(1):
+            return match.group(1)
+        return match.group(2)
+
+    value = JP_PUNCT_SPACE_RE.sub(_punct_repl, value)
+    return value
+
+
+def _normalize_overlap_compare_text(text: str) -> tuple[str, list[int]]:
+    normalized_chars: list[str] = []
+    index_map: list[int] = []
+    for index, char in enumerate((text or "").strip()):
+        if OVERLAP_COMPARE_DROP_RE.fullmatch(char):
+            continue
+        normalized_chars.append(char)
+        index_map.append(index + 1)
+    return "".join(normalized_chars), index_map
+
+
+def _normalize_compare_text(text: str) -> str:
+    return re.sub(r"\s+", "", (text or "").strip())
+
+
+def _find_fuzzy_overlap(previous_normalized: str, current_normalized: str) -> int:
+    max_overlap = min(len(previous_normalized), len(current_normalized), MAX_OVERLAP_MATCH_CHARS)
+    min_required_overlap = max(
+        MIN_OVERLAP_MATCH_CHARS,
+        int(min(len(previous_normalized), len(current_normalized)) * MIN_OVERLAP_MATCH_RATIO),
+    )
+    if max_overlap < min_required_overlap:
+        return 0
+
+    for overlap_len in range(max_overlap, min_required_overlap - 1, -1):
+        left = previous_normalized[-overlap_len:]
+        right = current_normalized[:overlap_len]
+        if difflib.SequenceMatcher(None, left, right).ratio() >= FUZZY_OVERLAP_MIN_RATIO:
+            return overlap_len
+    return 0
+
+
+def _is_repetition_noise(text: str) -> bool:
+    normalized = _normalize_compare_text(text)
+    if len(normalized) < 32:
+        return False
+
+    matched = REPEAT_DETECT_RE.search(normalized)
+    if not matched:
+        return False
+
+    run_len = len(matched.group(0))
+    # 1箇所の反復だけで大半を占める場合はノイズ扱い。
+    return run_len >= max(36, int(len(normalized) * 0.45))
+
+
+def _collapse_repeated_phrase_loops(text: str) -> str:
+    tokens = [token.strip() for token in PHRASE_TOKEN_RE.findall(text or "") if token.strip()]
+    if len(tokens) < 4:
+        return text
+
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        collapsed = False
+        max_unit = min(3, (len(tokens) - i) // 2)
+        for unit_size in range(max_unit, 0, -1):
+            unit = tokens[i : i + unit_size]
+            if len(unit) < unit_size:
+                continue
+
+            repeats = 1
+            cursor = i + unit_size
+            while cursor + unit_size <= len(tokens) and tokens[cursor : cursor + unit_size] == unit:
+                repeats += 1
+                cursor += unit_size
+
+            if repeats >= 3:
+                out.extend(unit[: unit_size])
+                i = cursor
+                collapsed = True
+                break
+
+        if not collapsed:
+            out.append(tokens[i])
+            i += 1
+
+    collapsed_text = " ".join(out).strip()
+    return collapsed_text or text
+
+
+def _collapse_long_repeated_char_loops(text: str) -> str:
+    value = (text or "").strip()
+    if len(value) < 48:
+        return value
+
+    out: list[str] = []
+    i = 0
+    text_len = len(value)
+    while i < text_len:
+        collapsed = False
+        max_unit = min(64, (text_len - i) // 3)
+        for unit_size in range(max_unit, 8, -1):
+            unit = value[i : i + unit_size]
+            if len(unit) < unit_size or unit.strip() != unit:
+                continue
+
+            repeats = 1
+            cursor = i + unit_size
+            while cursor + unit_size <= text_len and value[cursor : cursor + unit_size] == unit:
+                repeats += 1
+                cursor += unit_size
+
+            if repeats >= 3:
+                out.append(unit)
+                i = cursor
+                collapsed = True
+                break
+
+        if not collapsed:
+            out.append(value[i])
+            i += 1
+
+    collapsed_text = "".join(out).strip()
+    return collapsed_text or value
+
+
+def _is_near_duplicate(
+    current: str,
+    previous: str,
+    *,
+    current_start_ms: int | None = None,
+    previous_end_ms: int | None = None,
+) -> bool:
+    a = _normalize_compare_text(current)
+    b = _normalize_compare_text(previous)
+    if not a or not b:
+        return False
+
+    shorter = min(len(a), len(b))
+    longer = max(len(a), len(b))
+    gap_ms: int | None = None
+    if current_start_ms is not None and previous_end_ms is not None:
+        gap_ms = max(0, int(current_start_ms) - int(previous_end_ms))
+    if a == b:
+        return gap_ms is None or gap_ms <= 2_000
+    if shorter >= 24 and shorter / longer >= 0.92 and (a in b or b in a):
+        return gap_ms is None or gap_ms <= 2_000
+
+    ratio_threshold = 0.9 if gap_ms is not None and gap_ms <= 2_000 else 0.97
+    return shorter >= 24 and difflib.SequenceMatcher(None, a, b).ratio() >= ratio_threshold
+
+
+async def _run_diarization_for_session(ws: WebSocket, session: LiveSession) -> None:
+    if DIARIZER is None:
+        session.store.cleanup_chunks()
+        return
+    if not session.collect_audio_for_diarization:
+        session.store.cleanup_chunks()
+        return
+    if not session.audio_chunks:
+        session.store.cleanup_chunks()
+        return
+
+    await _safe_send(ws, {"type": "info", "message": "diarization_started"})
+
+    try:
+        patch_map = await asyncio.to_thread(_apply_diarization_labels, session)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Diarization failed: session=%s", session.session_id)
+        await _safe_send(
+            ws,
+            {
+                "type": "error",
+                "message": "diarization_failed",
+                "detail": str(exc),
+            },
+        )
+        patch_map = {}
+
+    if patch_map:
+        payload = [{"seq": seq, "speaker": speaker} for seq, speaker in sorted(patch_map.items())]
+        await _safe_send(
+            ws,
+            {
+                "type": "speaker_patch",
+                "segments": payload,
+            },
+        )
+
+    await _safe_send(ws, {"type": "info", "message": "diarization_done"})
+    if not settings.diarization_keep_chunks:
+        session.store.cleanup_chunks()
+
+
+def _apply_diarization_labels(session: LiveSession) -> dict[int, str]:
+    if DIARIZER is None:
+        return {}
+
+    turns = DIARIZER.diarize(
+        session_id=session.session_id,
+        chunks=session.audio_chunks,
+        work_dir=settings.diarization_work_dir,
+        num_speakers=session.diarization_num_speakers,
+        min_speakers=session.diarization_min_speakers,
+        max_speakers=session.diarization_max_speakers,
+    )
+    if not turns:
+        return {}
+
+    records = read_jsonl_records(session.store.jsonl_path)
+    if not records:
+        return {}
+
+    patch_map: dict[int, str] = {}
+    updated = False
+
+    for rec in records:
+        if rec.get("type") != "final":
+            continue
+        start_ms = _as_int(rec.get("tsStart"), 0)
+        end_ms = _as_int(rec.get("tsEnd"), start_ms)
+        if end_ms < start_ms:
+            end_ms = start_ms
+
+        speaker = _pick_speaker(turns, start_ms, end_ms)
+        if not speaker:
+            continue
+
+        current = str(rec.get("speaker", "")).strip()
+        if current == speaker:
+            continue
+
+        rec["speaker"] = speaker
+        seq = _as_int(rec.get("seq"), -1)
+        if seq >= 0:
+            patch_map[seq] = speaker
+        updated = True
+
+    if updated:
+        session.store.rewrite_records(records)
+        logger.info(
+            "Diarization applied: session=%s speakers=%d segments=%d requested_num=%d requested_min=%d requested_max=%d",
+            session.session_id,
+            len({t.speaker for t in turns}),
+            len(patch_map),
+            session.diarization_num_speakers,
+            session.diarization_min_speakers,
+            session.diarization_max_speakers,
+        )
+
+    return patch_map
+
+
+def _pick_speaker(turns: list[SpeakerTurn], start_ms: int, end_ms: int) -> str | None:
+    if not turns:
+        return None
+
+    s = max(0, start_ms)
+    e = max(s + 1, end_ms)
+    overlap_by_speaker: dict[str, int] = {}
+
+    for turn in turns:
+        if turn.end_ms <= s:
+            continue
+        if turn.start_ms >= e:
+            break
+
+        overlap = min(e, turn.end_ms) - max(s, turn.start_ms)
+        if overlap <= 0:
+            continue
+        overlap_by_speaker[turn.speaker] = overlap_by_speaker.get(turn.speaker, 0) + overlap
+
+    if overlap_by_speaker:
+        return max(overlap_by_speaker.items(), key=lambda item: item[1])[0]
+
+    center = (s + e) // 2
+    nearest: SpeakerTurn | None = None
+    nearest_distance: int | None = None
+
+    for turn in turns:
+        turn_center = (turn.start_ms + turn.end_ms) // 2
+        distance = abs(turn_center - center)
+        if nearest is None or nearest_distance is None or distance < nearest_distance:
+            nearest = turn
+            nearest_distance = distance
+
+    if nearest is None or nearest_distance is None or nearest_distance > 3_000:
+        return None
+    return nearest.speaker
+
+
+
+def _parse_chunk_message(payload: dict[str, Any]) -> ChunkMessage | None:
+    audio_b64 = _as_str(payload.get("audio"))
+    if not audio_b64:
+        return None
+
+    try:
+        audio_bytes = base64.b64decode(audio_b64, validate=True)
+    except Exception:  # noqa: BLE001
+        return None
+
+    screenshot_b64 = _as_str(payload.get("screenshot"))
+    screenshot_bytes: bytes | None = None
+    if screenshot_b64:
+        try:
+            screenshot_bytes = base64.b64decode(screenshot_b64, validate=True)
+        except Exception:  # noqa: BLE001
+            screenshot_bytes = None
+
+    mime_type = _as_str(payload.get("mimeType")) or "audio/webm"
+    screenshot_mime_type = _as_str(payload.get("screenshotMimeType")) or None
+    seq = _as_int(payload.get("seq"), 0)
+    offset_ms = max(0, _as_int(payload.get("offsetMs"), 0))
+    duration_ms = max(200, _as_int(payload.get("durationMs"), 2000))
+    speech_ratio = max(0.0, min(1.0, _as_float(payload.get("speechRatio"), 1.0)))
+    active_ms = max(0, _as_int(payload.get("activeMs"), duration_ms))
+    silence_ms = max(0, _as_int(payload.get("silenceMs"), 0))
+
+    return ChunkMessage(
+        seq=seq,
+        offset_ms=offset_ms,
+        duration_ms=duration_ms,
+        mime_type=mime_type,
+        audio_bytes=audio_bytes,
+        speech_ratio=speech_ratio,
+        active_ms=active_ms,
+        silence_ms=silence_ms,
+        screenshot_mime_type=screenshot_mime_type,
+        screenshot_bytes=screenshot_bytes,
+    )
+
+
+def _validate_chunk_order(session: LiveSession, chunk: ChunkMessage) -> dict[str, Any] | None:
+    if chunk.seq < 0:
+        return {
+            "type": "error",
+            "message": "invalid_chunk_sequence",
+            "detail": "seq_must_be_non_negative",
+            "seq": chunk.seq,
+        }
+
+    if session.last_chunk_seq >= 0 and chunk.seq <= session.last_chunk_seq:
+        return {
+            "type": "error",
+            "message": "invalid_chunk_sequence",
+            "detail": "seq_must_strictly_increase",
+            "seq": chunk.seq,
+            "previousSeq": session.last_chunk_seq,
+        }
+
+    if session.last_chunk_offset_ms >= 0 and chunk.offset_ms < session.last_chunk_offset_ms:
+        return {
+            "type": "error",
+            "message": "invalid_chunk_offset",
+            "detail": "offset_ms_must_be_monotonic",
+            "offsetMs": chunk.offset_ms,
+            "previousOffsetMs": session.last_chunk_offset_ms,
+        }
+
+    return None
+
+
+def _store_screenshot_for_chunk(session: LiveSession, item: ChunkMessage) -> str | None:
+    if not item.screenshot_bytes or not item.screenshot_mime_type:
+        return None
+    try:
+        filename = session.store.save_screenshot(
+            seq=item.seq,
+            mime_type=item.screenshot_mime_type,
+            image_bytes=item.screenshot_bytes,
+        )
+        return f"/api/transcripts/{session.session_id}/screenshots/{filename}?token={session.access_token}"
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "Screenshot save failed: session=%s seq=%s",
+            session.session_id,
+            item.seq,
+            exc_info=True,
+        )
+        return None
+
+
+def _save_debug_audio_chunk(session: LiveSession, item: ChunkMessage) -> None:
+    if not is_debug_logging_enabled():
+        return
+    if not item.audio_bytes:
+        return
+    try:
+        ext = _debug_audio_ext_from_mime(item.mime_type)
+        debug_dir = build_debug_chunks_dir(settings.debug_chunks_dir, session.session_id)
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        path = debug_dir / f"raw-{item.seq:06d}{ext}"
+        path.write_bytes(item.audio_bytes)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Debug chunk save failed: session=%s seq=%s err=%s",
+            session.session_id,
+            item.seq,
+            exc,
+        )
+
+
+def _store_debug_raw_audio_for_final(session: LiveSession, item: ChunkMessage) -> str | None:
+    if not is_debug_logging_enabled():
+        return None
+    if not item.audio_bytes:
+        return None
+    try:
+        ext = _debug_audio_ext_from_mime(item.mime_type)
+        debug_dir = build_debug_chunks_dir(settings.debug_chunks_dir, session.session_id)
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"raw-{item.seq:06d}{ext}"
+        path = debug_dir / filename
+        if not path.exists():
+            path.write_bytes(item.audio_bytes)
+        return f"/api/transcripts/{session.session_id}/audio/{filename}?token={session.access_token}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Debug raw audio save failed: session=%s seq=%s err=%s",
+            session.session_id,
+            item.seq,
+            exc,
+        )
+        return None
+
+
+def _store_debug_audio_for_final(session: LiveSession, seq: int, audio_bytes: bytes) -> str | None:
+    if not is_debug_logging_enabled():
+        return None
+    if not audio_bytes:
+        return None
+    try:
+        debug_dir = build_debug_chunks_dir(settings.debug_chunks_dir, session.session_id)
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"asr-{seq:06d}.wav"
+        (debug_dir / filename).write_bytes(audio_bytes)
+        return f"/api/transcripts/{session.session_id}/audio/{filename}?token={session.access_token}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Debug ASR audio save failed: session=%s seq=%s err=%s",
+            session.session_id,
+            seq,
+            exc,
+        )
+        return None
+
+
+def _debug_audio_ext_from_mime(mime_type: str) -> str:
+    lowered = (mime_type or "").lower()
+    if "wav" in lowered:
+        return ".wav"
+    if "webm" in lowered:
+        return ".webm"
+    if "ogg" in lowered or "opus" in lowered:
+        return ".ogg"
+    if "mp4" in lowered or "m4a" in lowered:
+        return ".m4a"
+    if "mpeg" in lowered or "mp3" in lowered:
+        return ".mp3"
+    return ".bin"
+
+
+def _resolve_existing_debug_audio_url(session: LiveSession, *, prefix: str, seq: int) -> str | None:
+    if not is_debug_logging_enabled():
+        return None
+    for debug_dir in iter_debug_chunk_dirs(settings.debug_chunks_dir, session.session_id):
+        if not debug_dir.exists():
+            continue
+        matches = sorted(debug_dir.glob(f"{prefix}-{seq:06d}.*"))
+        if matches:
+            return f"/api/transcripts/{session.session_id}/audio/{matches[0].name}?token={session.access_token}"
+    return None
+
+
+def _clamp_diarization_speakers(value: int) -> int:
+    return max(0, min(MAX_DIARIZATION_SPEAKERS, value))
+
+
+def _parse_diarization_speaker_params(payload: dict[str, Any]) -> tuple[int, int, int]:
+    num = _clamp_diarization_speakers(
+        _as_int(payload.get("diarizationNumSpeakers"), settings.diarization_num_speakers)
+    )
+    min_speakers = _clamp_diarization_speakers(
+        _as_int(payload.get("diarizationMinSpeakers"), settings.diarization_min_speakers)
+    )
+    max_speakers = _clamp_diarization_speakers(
+        _as_int(payload.get("diarizationMaxSpeakers"), settings.diarization_max_speakers)
+    )
+
+    if num > 0:
+        return (num, 0, 0)
+
+    if min_speakers > 0 and max_speakers > 0 and min_speakers > max_speakers:
+        min_speakers, max_speakers = max_speakers, min_speakers
+
+    return (0, min_speakers, max_speakers)
+
+
+def _as_str(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _merge_wav_chunks(chunks: list[bytes]) -> bytes:
+    frames: list[bytes] = []
+    sample_rate = settings.asr_preprocess_sample_rate
+    for chunk in chunks:
+        if not chunk:
+            continue
+        with wave.open(BytesIO(chunk), "rb") as wav_in:
+            sample_rate = wav_in.getframerate() or sample_rate
+            frames.append(wav_in.readframes(wav_in.getnframes()))
+
+    with BytesIO() as buffer:
+        with wave.open(buffer, "wb") as wav_out:
+            wav_out.setnchannels(1)
+            wav_out.setsampwidth(2)
+            wav_out.setframerate(sample_rate)
+            for frame in frames:
+                wav_out.writeframes(frame)
+        return buffer.getvalue()
+
+
+def _normalize_asr_language(value: str) -> str | None:
+    lowered = (value or "").strip().lower()
+    if not lowered or lowered == "auto":
+        return None
+    return lowered
+
+
+def _normalize_audio_source(value: str) -> str:
+    lowered = (value or "").strip().lower()
+    if lowered in {"display", "both"}:
+        return lowered
+    return "mic"
+
+
+def _normalize_proofread_mode(value: str) -> str:
+    lowered = (value or "").strip().lower()
+    if lowered in {"translate_ja", "translate_en"}:
+        return lowered
+    return "proofread"
+
+
+def _clip_trace_text(text: str, limit: int = 8000) -> str:
+    clean = str(text or "").strip()
+    if len(clean) <= limit:
+        return clean
+    return clean[:limit] + "...(truncated)"
+
+
+@contextmanager
+def _noop_span():
+    yield None
+
+
+async def _broadcast_conn_count() -> None:
+    payload = {"type": "conn", "count": len(ACTIVE_SOCKETS)}
+    dead: list[WebSocket] = []
+
+    for sock in list(ACTIVE_SOCKETS):
+        ok = await _safe_send(sock, payload)
+        if not ok:
+            dead.append(sock)
+
+    for sock in dead:
+        ACTIVE_SOCKETS.discard(sock)
+
+
+async def _safe_send(ws: WebSocket, payload: dict[str, Any]) -> bool:
+    try:
+        await ws.send_json(payload)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _format_sse(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _runtime_access_allowed(session_id: str, token: str | None) -> bool:
+    return security_runtime_access_allowed(transcripts_dir=settings.transcripts_dir, session_id=session_id, token=token)
+
+
+def _keycloak_login_enabled() -> bool:
+    return bool(settings.keycloak_enabled and settings.keycloak_issuer and settings.keycloak_client_id)
+
+
+def _pkce_code_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
+
+
+def _signed_payload(value: dict[str, Any]) -> str:
+    return security_signed_payload(value)
+
+
+def _unsigned_payload(value: str | None) -> dict[str, Any] | None:
+    return security_unsigned_payload(value)
+
+
+def _set_oidc_state_cookie(response: Response, request: Request, payload: dict[str, Any]) -> None:
+    security_set_oidc_state_cookie(response=response, request=request, cookie_name=OIDC_STATE_COOKIE_NAME, payload=payload)
+
+
+def _read_oidc_state_cookie(request: Request) -> dict[str, Any] | None:
+    return security_read_oidc_state_cookie(request=request, cookie_name=OIDC_STATE_COOKIE_NAME)
+
+
+def _clear_oidc_state_cookie(response: Response, request: Request) -> None:
+    security_clear_oidc_state_cookie(response=response, request=request, cookie_name=OIDC_STATE_COOKIE_NAME)
+
+
+def _fetch_json(url: str, *, method: str = "GET", data: bytes | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    request = UrlRequest(url, method=method, data=data, headers=headers or {})
+    with urlopen(request, timeout=10) as response:  # noqa: S310
+        payload = response.read().decode("utf-8")
+    return json.loads(payload)
+
+
+def _get_keycloak_discovery() -> dict[str, Any]:
+    global KEYCLOAK_DISCOVERY_CACHE
+    if KEYCLOAK_DISCOVERY_CACHE is not None:
+        return KEYCLOAK_DISCOVERY_CACHE
+    issuer = str(settings.keycloak_issuer or "").rstrip("/")
+    discovery_url = f"{issuer}/.well-known/openid-configuration"
+    KEYCLOAK_DISCOVERY_CACHE = _fetch_json(discovery_url)
+    return KEYCLOAK_DISCOVERY_CACHE
+
+
+def _build_keycloak_authorization_url(
+    *,
+    discovery: dict[str, Any],
+    redirect_uri: str,
+    state: str,
+    code_challenge: str,
+) -> str:
+    params = {
+        "client_id": settings.keycloak_client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": settings.keycloak_scope,
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    return f"{discovery['authorization_endpoint']}?{urlencode(params)}"
+
+
+def _exchange_keycloak_code(
+    discovery: dict[str, Any],
+    code: str,
+    redirect_uri: str,
+    code_verifier: str,
+) -> dict[str, Any]:
+    data = {
+        "grant_type": "authorization_code",
+        "client_id": settings.keycloak_client_id,
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier,
+    }
+    if settings.keycloak_client_secret:
+        data["client_secret"] = settings.keycloak_client_secret
+    encoded = urlencode(data).encode("utf-8")
+    return _fetch_json(
+        str(discovery["token_endpoint"]),
+        method="POST",
+        data=encoded,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+
+
+def _fetch_keycloak_userinfo(discovery: dict[str, Any], access_token: str) -> dict[str, Any]:
+    return _fetch_json(
+        str(discovery["userinfo_endpoint"]),
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+
+def _upsert_keycloak_user(db: Session, userinfo: dict[str, Any]) -> User:
+    return auth_service_upsert_keycloak_user(db, userinfo)
+
+
+def _mark_session_finalized(session: LiveSession) -> None:
+    metadata = session.store.read_metadata()
+    metadata["finalized"] = True
+    metadata["finalizedAt"] = datetime.now(timezone.utc).isoformat()
+    session.store.write_metadata(metadata)
+
+
+def _serialize_user(user: User | None) -> dict[str, Any] | None:
+    return security_serialize_user(user)
+
+def _get_optional_user(request: Request, db: Session) -> User | None:
+    return auth_service_get_optional_user_from_request(request, db)
+
+
+def _set_session_cookie(response: Response, request: Request, session_id: str) -> None:
+    security_set_session_cookie(response=response, request=request, cookie_name=SESSION_COOKIE_NAME, session_id=session_id)
+
+
+def _clear_session_cookie(response: Response, request: Request) -> None:
+    security_clear_session_cookie(response=response, request=request, cookie_name=SESSION_COOKIE_NAME)
+
+
+@app.get("/api/transcript/{session_id}.txt", response_model=None)
+async def get_txt(session_id: str, token: str | None = Query(default=None)) -> Response:
+    if not _runtime_access_allowed(session_id, token):
+        return HTMLResponse(status_code=404, content="not found")
+    path = resolve_transcript_path(settings.transcripts_dir, session_id, "txt")
+    if not path or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+    return FileResponse(str(path), media_type="text/plain")
+
+
+@app.get("/api/transcript/{session_id}.jsonl", response_model=None)
+async def get_jsonl(session_id: str, token: str | None = Query(default=None)) -> Response:
+    if not _runtime_access_allowed(session_id, token):
+        return HTMLResponse(status_code=404, content="not found")
+    path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
+    if not path or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+    return FileResponse(str(path), media_type="application/x-ndjson")
+
+
+@app.get("/api/transcript/{session_id}.zip", response_model=None)
+async def get_zip(session_id: str, token: str | None = Query(default=None)) -> Response:
+    if not _runtime_access_allowed(session_id, token):
+        return HTMLResponse(status_code=404, content="not found")
+    txt_path = resolve_transcript_path(settings.transcripts_dir, session_id, "txt")
+    jsonl_path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
+    if not txt_path or not jsonl_path or not txt_path.exists() or not jsonl_path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.write(txt_path, arcname=f"{session_id}.txt")
+        archive.write(jsonl_path, arcname=f"{session_id}.jsonl")
+
+        seen_screenshots: set[str] = set()
+        for screenshots_dir in iter_runtime_screenshot_dirs(settings.transcripts_dir, session_id):
+            if not screenshots_dir.exists():
+                continue
+            for screenshot_path in sorted(screenshots_dir.iterdir()):
+                if not screenshot_path.is_file():
+                    continue
+                if screenshot_path.name in seen_screenshots:
+                    continue
+                seen_screenshots.add(screenshot_path.name)
+                archive.write(
+                    screenshot_path,
+                    arcname=f"{session_id}/screenshots/{screenshot_path.name}",
+                )
+
+    buffer.seek(0)
+    headers = {"Content-Disposition": f'attachment; filename="{session_id}.zip"'}
+    return Response(content=buffer.getvalue(), media_type="application/zip", headers=headers)
+
+
+@app.get("/api/transcripts/{session_id}/screenshots/{filename}", response_model=None)
+async def get_screenshot(session_id: str, filename: str, token: str | None = Query(default=None)) -> Response:
+    if not _runtime_access_allowed(session_id, token):
+        return HTMLResponse(status_code=404, content="not found")
+    path = resolve_screenshot_path(settings.transcripts_dir, session_id, filename)
+    if not path or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+
+    suffix = path.suffix.lower()
+    media_type = "application/octet-stream"
+    if suffix == ".webp":
+        media_type = "image/webp"
+    elif suffix in {".jpg", ".jpeg"}:
+        media_type = "image/jpeg"
+    elif suffix == ".png":
+        media_type = "image/png"
+
+    return FileResponse(str(path), media_type=media_type)
+
+
+@app.get("/api/transcripts/{session_id}/audio/{filename}", response_model=None)
+async def get_debug_audio(session_id: str, filename: str, token: str | None = Query(default=None)) -> Response:
+    if not _runtime_access_allowed(session_id, token):
+        return HTMLResponse(status_code=404, content="not found")
+    path = resolve_debug_audio_path(settings.debug_chunks_dir, session_id, filename)
+    if not path or not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+
+    suffix = path.suffix.lower()
+    media_type = "application/octet-stream"
+    if suffix == ".wav":
+        media_type = "audio/wav"
+    elif suffix == ".webm":
+        media_type = "audio/webm"
+    elif suffix == ".ogg":
+        media_type = "audio/ogg"
+    elif suffix in {".mp4", ".m4a"}:
+        media_type = "audio/mp4"
+    elif suffix == ".mp3":
+        media_type = "audio/mpeg"
+
+    return FileResponse(str(path), media_type=media_type)
+
+
+@app.get("/admin", response_model=None)
+async def admin_page(
+    user: User = Depends(get_current_admin),
+) -> Response:
+    del user
+    path = Path("web") / "admin.html"
+    if not path.exists():
+        return HTMLResponse(status_code=404, content="not found")
+    return FileResponse(str(path), media_type="text/html")
+
+
+WEB_DIR = Path("web")
+if WEB_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="static")

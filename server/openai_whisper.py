@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 from contextlib import contextmanager
 from typing import Any
 
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
 
 from .asr import ASRChunkResult
+from .config import settings
+from .core.logging import emit_container_log
 from .langfuse_observer import LangfuseObserver
 
 
@@ -19,13 +22,16 @@ class OpenAIWhisperTranscriber:
         if not api_key:
             raise RuntimeError("ASR_API_KEY (or OPENAI_API_KEY) is not set")
 
-        kwargs: dict[str, Any] = {"api_key": api_key}
+        kwargs: dict[str, Any] = {"api_key": api_key, "timeout": settings.asr_api_timeout_seconds}
         if base_url:
             kwargs["base_url"] = base_url
 
         self.client = OpenAI(**kwargs)
         self.model = model
         self.observer = observer
+        self.retry_max_attempts = max(1, int(getattr(settings, "asr_retry_max_attempts", 1)))
+        self.retry_base_delay_ms = max(0, int(getattr(settings, "asr_retry_base_delay_ms", 0)))
+        self.multi_pass_enabled = bool(getattr(settings, "asr_multi_pass_enabled", True))
 
     def transcribe_chunk(
         self,
@@ -38,8 +44,8 @@ class OpenAIWhisperTranscriber:
         trace_context: dict[str, str] | None = None,
     ) -> ASRChunkResult:
         suffix = _ext_from_mime(mime_type)
-        file_obj = io.BytesIO(audio_bytes)
-        file_obj.name = f"chunk{suffix}"
+        response: Any | None = None
+        attempt = 0
 
         with (self.observer.generation(
             name="asr.transcription",
@@ -54,24 +60,87 @@ class OpenAIWhisperTranscriber:
             model_parameters={"temperature": temperature},
             trace_context=trace_context,
         ) if self.observer else _noop_generation()) as generation:
-            logger.info(
-                "ASR POST /v1/audio/transcriptions: model=%s mime=%s bytes=%d language=%s prompt=%s",
-                self.model,
-                mime_type,
-                len(audio_bytes),
-                language or "",
-                bool(prompt),
-            )
-            response = self.client.audio.transcriptions.create(
-                model=self.model,
-                file=file_obj,
-                language=language or None,
-                prompt=prompt or None,
-                temperature=temperature,
-                response_format="verbose_json",
-            )
+            def _perform_request(request_temperature: float) -> Any:
+                local_attempt = 0
+                while True:
+                    local_attempt += 1
+                    file_obj = io.BytesIO(audio_bytes)
+                    file_obj.name = f"chunk{suffix}"
+                    emit_container_log(
+                        __name__,
+                        "info",
+                        "ASR POST /v1/audio/transcriptions: model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d temp=%.2f",
+                        self.model,
+                        mime_type,
+                        len(audio_bytes),
+                        language or "",
+                        bool(prompt),
+                        local_attempt,
+                        self.retry_max_attempts,
+                        request_temperature,
+                    )
+                    logger.info(
+                        "ASR POST /v1/audio/transcriptions: model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d temp=%.2f",
+                        self.model,
+                        mime_type,
+                        len(audio_bytes),
+                        language or "",
+                        bool(prompt),
+                        local_attempt,
+                        self.retry_max_attempts,
+                        request_temperature,
+                    )
+                    try:
+                        return self.client.audio.transcriptions.create(
+                            model=self.model,
+                            file=file_obj,
+                            language=language or None,
+                            prompt=prompt or None,
+                            temperature=request_temperature,
+                            response_format="verbose_json",
+                        ), local_attempt
+                    except Exception as exc:  # noqa: BLE001
+                        if not _should_retry_openai_error(exc) or local_attempt >= self.retry_max_attempts:
+                            raise
 
+                        delay_seconds = _retry_delay_seconds(self.retry_base_delay_ms, local_attempt)
+                        logger.warning(
+                            "ASR retryable error: model=%s attempt=%d/%d delay_ms=%d err=%s",
+                            self.model,
+                            local_attempt,
+                            self.retry_max_attempts,
+                            int(round(delay_seconds * 1000)),
+                            exc,
+                        )
+                        if delay_seconds > 0:
+                            time.sleep(delay_seconds)
+
+            while True:
+                try:
+                    response, used_attempts = _perform_request(temperature)
+                    attempt += used_attempts
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    raise
+
+            assert response is not None
             text = _extract_text(response).strip()
+            metrics = _extract_confidence_metrics(response)
+            if self.multi_pass_enabled and _should_run_multi_pass(text, metrics):
+                retry_temperature = max(0.2, float(temperature))
+                retry_response, retry_attempts = _perform_request(retry_temperature)
+                attempt += retry_attempts
+                retry_text = _extract_text(retry_response).strip()
+                retry_metrics = _extract_confidence_metrics(retry_response)
+                if _prefer_multi_pass_result(
+                    original_text=text,
+                    original_metrics=metrics,
+                    retry_text=retry_text,
+                    retry_metrics=retry_metrics,
+                ):
+                    response = retry_response
+                    text = retry_text
+                    metrics = retry_metrics
             usage_details = _extract_usage_details(response)
             estimated_tokens = _estimate_token_count(text)
             effective_usage_details = usage_details or (
@@ -79,16 +148,42 @@ class OpenAIWhisperTranscriber:
                 if estimated_tokens > 0
                 else None
             )
-            if _should_drop_as_silence(response, text):
+            if _should_drop_as_silence(response, text, metrics):
                 text = ""
-            logger.info(
-                "ASR POST /v1/audio/transcriptions done: model=%s chars=%d",
+            emit_container_log(
+                __name__,
+                "info",
+                "ASR POST /v1/audio/transcriptions done: model=%s chars=%d attempts=%d suspicious=%s no_speech=%.3f avg_logprob=%s compression_ratio=%s",
                 self.model,
                 len(text),
+                attempt,
+                metrics["suspicious"],
+                metrics["max_no_speech_prob"] or 0.0,
+                metrics["avg_logprob"],
+                metrics["compression_ratio"],
+            )
+            logger.info(
+                "ASR POST /v1/audio/transcriptions done: model=%s chars=%d attempts=%d suspicious=%s no_speech=%.3f avg_logprob=%s compression_ratio=%s",
+                self.model,
+                len(text),
+                attempt,
+                metrics["suspicious"],
+                metrics["max_no_speech_prob"] or 0.0,
+                metrics["avg_logprob"],
+                metrics["compression_ratio"],
             )
             if generation is not None:
                 generation.update(
-                    output={"text": text, "chars": len(text), "estimatedTokens": estimated_tokens},
+                    output={
+                        "text": text,
+                        "chars": len(text),
+                        "estimatedTokens": estimated_tokens,
+                        "retryCount": max(0, attempt - 1),
+                        "suspicious": metrics["suspicious"],
+                        "maxNoSpeechProb": metrics["max_no_speech_prob"],
+                        "avgLogprob": metrics["avg_logprob"],
+                        "compressionRatio": metrics["compression_ratio"],
+                    },
                     usage_details=effective_usage_details,
                 )
 
@@ -99,6 +194,10 @@ class OpenAIWhisperTranscriber:
             end_ms=end_ms,
             usage_details=effective_usage_details,
             estimated_tokens=estimated_tokens,
+            max_no_speech_prob=metrics["max_no_speech_prob"],
+            avg_logprob=metrics["avg_logprob"],
+            compression_ratio=metrics["compression_ratio"],
+            suspicious=bool(metrics["suspicious"]),
         )
 
     def close(self) -> None:
@@ -191,6 +290,94 @@ def _estimate_token_count(text: str) -> int:
     return max(1, int(round(ascii_tokens + non_ascii_tokens)))
 
 
+def _extract_confidence_metrics(response: Any) -> dict[str, Any]:
+    segments = _read_field(response, "segments")
+    no_speech_probs: list[float] = []
+    avg_logprobs: list[float] = []
+    compression_ratios: list[float] = []
+
+    if isinstance(segments, list):
+        for seg in segments:
+            no_speech = _as_float(_read_field(seg, "no_speech_prob"))
+            avg_logprob = _as_float(_read_field(seg, "avg_logprob"))
+            compression_ratio = _as_float(_read_field(seg, "compression_ratio"))
+            if no_speech is not None:
+                no_speech_probs.append(no_speech)
+            if avg_logprob is not None:
+                avg_logprobs.append(avg_logprob)
+            if compression_ratio is not None:
+                compression_ratios.append(compression_ratio)
+
+    max_no_speech_prob = max(no_speech_probs) if no_speech_probs else None
+    avg_logprob_value = min(avg_logprobs) if avg_logprobs else None
+    compression_ratio_value = max(compression_ratios) if compression_ratios else None
+
+    suspicion_score = 0
+    if max_no_speech_prob is not None and max_no_speech_prob >= 0.8:
+        suspicion_score += 2
+    elif max_no_speech_prob is not None and max_no_speech_prob >= 0.6:
+        suspicion_score += 1
+    if avg_logprob_value is not None and avg_logprob_value <= -1.0:
+        suspicion_score += 1
+    if compression_ratio_value is not None and compression_ratio_value >= 2.4:
+        suspicion_score += 1
+
+    return {
+        "max_no_speech_prob": max_no_speech_prob,
+        "avg_logprob": avg_logprob_value,
+        "compression_ratio": compression_ratio_value,
+        "suspicious": suspicion_score >= 2,
+    }
+
+
+def _should_run_multi_pass(text: str, metrics: dict[str, Any]) -> bool:
+    clean = (text or "").strip()
+    if not clean:
+        return False
+    max_no_speech = float(metrics.get("max_no_speech_prob") or 0.0)
+    avg_logprob = metrics.get("avg_logprob")
+    suspicious = bool(metrics.get("suspicious"))
+    return suspicious and len(_normalize_for_match(clean)) <= 48 and (
+        max_no_speech >= 0.4 or (avg_logprob is not None and float(avg_logprob) <= -0.8)
+    )
+
+
+def _prefer_multi_pass_result(
+    *,
+    original_text: str,
+    original_metrics: dict[str, Any],
+    retry_text: str,
+    retry_metrics: dict[str, Any],
+) -> bool:
+    candidate = (retry_text or "").strip()
+    if not candidate:
+        return False
+    if len(_normalize_for_match(candidate)) <= len(_normalize_for_match(original_text)):
+        return False
+    retry_no_speech = float(retry_metrics.get("max_no_speech_prob") or 0.0)
+    original_no_speech = float(original_metrics.get("max_no_speech_prob") or 0.0)
+    return retry_no_speech <= max(0.55, original_no_speech + 0.05)
+
+
+RETRYABLE_OPENAI_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)
+
+
+def _should_retry_openai_error(exc: Exception) -> bool:
+    if isinstance(exc, RETRYABLE_OPENAI_ERRORS):
+        return True
+    if isinstance(exc, APIStatusError):
+        status_code = getattr(exc, "status_code", None)
+        return isinstance(status_code, int) and status_code >= 500
+    return False
+
+
+def _retry_delay_seconds(base_delay_ms: int, attempt: int) -> float:
+    if base_delay_ms <= 0:
+        return 0.0
+    exponent = max(0, attempt - 1)
+    return (base_delay_ms * (2**exponent)) / 1000.0
+
+
 
 def _ext_from_mime(mime_type: str) -> str:
     lowered = (mime_type or "").lower()
@@ -244,7 +431,7 @@ def _normalize_for_match(text: str) -> str:
     return normalized.strip()
 
 
-def _should_drop_as_silence(response: Any, text: str) -> bool:
+def _should_drop_as_silence(response: Any, text: str, metrics: dict[str, Any] | None = None) -> bool:
     clean = text.strip()
     if not clean:
         return True
@@ -268,6 +455,9 @@ def _should_drop_as_silence(response: Any, text: str) -> bool:
 
     if any(pattern in clean for pattern in SILENCE_HALLUCINATION_PATTERNS):
         return max(no_speech_probs) >= 0.55 and len(normalized) <= 64
+
+    if metrics and metrics.get("suspicious") and (metrics.get("max_no_speech_prob") or 0.0) >= 0.7 and len(normalized) <= 24:
+        return True
 
     # 無音寄り判定が高く、かつ短文なら無音ハルシネーションの可能性が高い。
     return max(no_speech_probs) >= 0.85 and len(normalized) <= 32
