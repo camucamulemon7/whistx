@@ -227,6 +227,7 @@ const runtimeUi = {
 
 const state = {
   ws: null,
+  wsPath: "/ws/transcribe",
   stream: null,
   micStream: null,
   displayStream: null,
@@ -2415,9 +2416,15 @@ function formatMs(ms) {
   return `${min}:${sec}`;
 }
 
+function normalizeWsPath(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "/ws/transcribe";
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${location.host}/ws/transcribe`;
+  return `${proto}://${location.host}${normalizeWsPath(state.wsPath)}`;
 }
 
 function selectMimeType() {
@@ -4628,6 +4635,7 @@ async function loadCapabilities() {
   logClientEvent("capabilities.load.start");
   try {
     const health = await fetchCapabilities();
+    state.wsPath = normalizeWsPath(health.wsPath || state.wsPath);
     renderBanners(health.banners);
     applyBranding(health.uiBrandTitle, health.uiBrandTagline);
     if (Array.isArray(health.uiPromptTemplates) && health.uiPromptTemplates.length > 0) {

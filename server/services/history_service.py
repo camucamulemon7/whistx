@@ -499,25 +499,28 @@ def create_history_from_payload(db: Session, *, user: User, payload: Any) -> Tra
             summary_text=payload.summaryText,
             proofread_text=payload.proofreadText,
         )
-        db.commit()
         _storage().finalize_history_artifacts(pending.staged_artifacts)
+        db.commit()
         return pending.history
     except HistoryError:
         db.rollback()
-        if pending is not None:
-            shutil.rmtree(pending.staged_artifacts.temp_dir, ignore_errors=True)
+        _cleanup_pending_history_artifacts(pending)
         raise
     except IntegrityError as exc:
         db.rollback()
-        if pending is not None:
-            shutil.rmtree(pending.staged_artifacts.temp_dir, ignore_errors=True)
+        _cleanup_pending_history_artifacts(pending)
         raise HistoryError("history_already_saved", 409) from exc
     except Exception:
         db.rollback()
-        if pending is not None:
-            shutil.rmtree(pending.staged_artifacts.temp_dir, ignore_errors=True)
-            shutil.rmtree(pending.staged_artifacts.final_dir, ignore_errors=True)
+        _cleanup_pending_history_artifacts(pending)
         raise
+
+
+def _cleanup_pending_history_artifacts(pending: PendingHistorySave | None) -> None:
+    if pending is None:
+        return
+    shutil.rmtree(pending.staged_artifacts.temp_dir, ignore_errors=True)
+    shutil.rmtree(pending.staged_artifacts.final_dir, ignore_errors=True)
 
 
 def build_history_create_payload(history: TranscriptHistory) -> dict[str, Any]:

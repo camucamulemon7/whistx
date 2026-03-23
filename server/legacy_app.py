@@ -73,6 +73,7 @@ from .transcript_store import (
     TranscriptStore,
     build_debug_chunks_dir,
     iter_debug_chunk_dirs,
+    iter_runtime_screenshot_dirs,
     read_jsonl_records,
     resolve_debug_audio_path,
     resolve_screenshot_path,
@@ -81,6 +82,7 @@ from .transcript_store import (
 from .core.security import (
     clear_oidc_state_cookie as security_clear_oidc_state_cookie,
     clear_session_cookie as security_clear_session_cookie,
+    external_url_for as security_external_url_for,
     read_oidc_state_cookie as security_read_oidc_state_cookie,
     runtime_access_allowed as security_runtime_access_allowed,
     serialize_user as security_serialize_user,
@@ -343,6 +345,7 @@ async def health() -> JSONResponse:
             "selfSignupEnabled": settings.enable_self_signup,
             "keycloakEnabled": _keycloak_login_enabled(),
             "keycloakButtonLabel": settings.keycloak_button_label,
+            "wsPath": settings.ws_path,
             "activeConnections": len(ACTIVE_SOCKETS),
         }
     )
@@ -517,7 +520,7 @@ async def auth_keycloak_login(request: Request) -> Response:
     state = secrets.token_urlsafe(24)
     code_verifier = secrets.token_urlsafe(48)
     code_challenge = _pkce_code_challenge(code_verifier)
-    redirect_uri = str(request.url_for("auth_keycloak_callback"))
+    redirect_uri = security_external_url_for(request, "auth_keycloak_callback")
     authorization_url = _build_keycloak_authorization_url(
         discovery=discovery,
         redirect_uri=redirect_uri,
@@ -2810,14 +2813,20 @@ async def get_zip(session_id: str, token: str | None = Query(default=None)) -> R
         archive.write(txt_path, arcname=f"{session_id}.txt")
         archive.write(jsonl_path, arcname=f"{session_id}.jsonl")
 
-        screenshots_dir = settings.transcripts_dir / "_screenshots" / session_id
-        if screenshots_dir.exists():
+        seen_screenshots: set[str] = set()
+        for screenshots_dir in iter_runtime_screenshot_dirs(settings.transcripts_dir, session_id):
+            if not screenshots_dir.exists():
+                continue
             for screenshot_path in sorted(screenshots_dir.iterdir()):
-                if screenshot_path.is_file():
-                    archive.write(
-                        screenshot_path,
-                        arcname=f"{session_id}/screenshots/{screenshot_path.name}",
-                    )
+                if not screenshot_path.is_file():
+                    continue
+                if screenshot_path.name in seen_screenshots:
+                    continue
+                seen_screenshots.add(screenshot_path.name)
+                archive.write(
+                    screenshot_path,
+                    arcname=f"{session_id}/screenshots/{screenshot_path.name}",
+                )
 
     buffer.seek(0)
     headers = {"Content-Disposition": f'attachment; filename="{session_id}.zip"'}

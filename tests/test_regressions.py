@@ -7,7 +7,9 @@ import sys
 import tempfile
 import types
 import unittest
+import zipfile
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -49,10 +51,12 @@ from server import openai_whisper
 from server import summarizer as summarizer_module
 from server.asr import ASRChunkResult
 from server.app import LoginRequest
+from server.api.routes import auth as auth_routes
 from server.api.routes import summary as summary_routes
 from server.api.ws import transcribe as ws_routes
 from server.core.config.app import load_app_config
 from server.core.config.asr import load_asr_config
+from server.core import security
 from server.models import TranscriptHistory, TranscriptSegment, User
 from server.repositories import session_repository
 from server.services import auth_service, glossary_service, history_service
@@ -585,6 +589,112 @@ class RegressionTests(unittest.TestCase):
             self.assertTrue((history_dir / (history.txt_path or '')).exists())
             self.assertIsNotNone(zip_response)
 
+    def test_create_history_does_not_commit_before_artifacts_are_finalized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            transcripts_dir = root / 'transcripts'
+            history_dir = root / 'history'
+            debug_chunks_dir = root / 'debug_chunks'
+            runtime_dir = transcripts_dir / '2026' / '03' / '22'
+            runtime_dir.mkdir(parents=True)
+            history_dir.mkdir()
+            debug_chunks_dir.mkdir()
+
+            session_id = 'sess-finalize-order'
+            (runtime_dir / f'{session_id}.txt').write_text('hello\n', encoding='utf-8')
+            (runtime_dir / f'{session_id}.jsonl').write_text(
+                '{"type":"final","seq":0,"text":"hello","tsStart":0,"tsEnd":100}\n',
+                encoding='utf-8',
+            )
+            (runtime_dir / f'{session_id}.meta.json').write_text(
+                '{"finalized": true, "accessToken": "token"}',
+                encoding='utf-8',
+            )
+
+            user = User(id=1, email='user@example.com', password_hash='hash', is_active=True, is_admin=False)
+
+            class DummyDB:
+                def __init__(self) -> None:
+                    self.commit_calls = 0
+                    self.rollback_calls = 0
+
+                def scalar(self, *_args, **_kwargs):
+                    return None
+
+                def add(self, *_args, **_kwargs):
+                    return None
+
+                def flush(self):
+                    return None
+
+                def commit(self):
+                    self.commit_calls += 1
+                    return None
+
+                def rollback(self):
+                    self.rollback_calls += 1
+                    return None
+
+            db = DummyDB()
+            payload = SimpleNamespace(
+                runtimeSessionId=session_id,
+                runtimeSessionToken='token',
+                title='sample',
+                summaryText=None,
+                proofreadText=None,
+            )
+
+            with patch.object(
+                history_service,
+                'settings',
+                SimpleNamespace(
+                    transcripts_dir=transcripts_dir,
+                    history_dir=history_dir,
+                    debug_chunks_dir=debug_chunks_dir,
+                ),
+            ):
+                with patch.object(
+                    history_service.artifact_storage,
+                    'finalize_history_artifacts',
+                    side_effect=RuntimeError('finalize_failed'),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        history_service.create_history_from_payload(db, user=user, payload=payload)
+
+            self.assertEqual(db.commit_calls, 0)
+            self.assertEqual(db.rollback_calls, 1)
+            self.assertFalse(any(path.name.startswith('hist_') for path in history_dir.glob('**/*')))
+            self.assertFalse(any(path.name.startswith('.hist_') for path in history_dir.glob('**/*')))
+
+    def test_runtime_zip_includes_sharded_screenshots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            transcripts_dir = Path(tmpdir) / 'transcripts'
+            runtime_dir = transcripts_dir / '2026' / '03' / '22'
+            screenshots_dir = transcripts_dir / '_screenshots' / '2026' / '03' / '22' / 'sess-zip'
+            runtime_dir.mkdir(parents=True)
+            screenshots_dir.mkdir(parents=True)
+
+            (runtime_dir / 'sess-zip.txt').write_text('hello\n', encoding='utf-8')
+            (runtime_dir / 'sess-zip.jsonl').write_text(
+                '{"type":"final","seq":0,"text":"hello","tsStart":0,"tsEnd":100}\n',
+                encoding='utf-8',
+            )
+            (runtime_dir / 'sess-zip.meta.json').write_text(
+                '{"finalized": true, "accessToken": "token"}',
+                encoding='utf-8',
+            )
+            (screenshots_dir / '000001.webp').write_bytes(b'webp')
+
+            with patch.object(legacy_app, 'settings', SimpleNamespace(transcripts_dir=transcripts_dir)):
+                response = asyncio.run(legacy_app.get_zip('sess-zip', token='token'))
+
+            with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                names = sorted(archive.namelist())
+
+            self.assertIn('sess-zip.txt', names)
+            self.assertIn('sess-zip.jsonl', names)
+            self.assertIn('sess-zip/screenshots/000001.webp', names)
+
     def test_history_audio_response_supports_mp3(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             history_dir = Path(tmpdir)
@@ -956,6 +1066,11 @@ class RegressionTests(unittest.TestCase):
         self.assertIn('if (elapsedMs >= chunkHardMaxMs()) {', source)
         self.assertIn('shouldCutChunkOnSilence({ relaxed: elapsedMs >= state.chunkMs })', source)
 
+    def test_frontend_ws_url_uses_server_capability_path(self) -> None:
+        source = (ROOT / 'web' / 'src' / 'app.js').read_text(encoding='utf-8')
+        self.assertIn('state.wsPath = normalizeWsPath(health.wsPath || state.wsPath);', source)
+        self.assertIn('return `${proto}://${location.host}${normalizeWsPath(state.wsPath)}`;', source)
+
     def test_history_ui_shows_retention_countdown_and_no_header_toggle(self) -> None:
         app_source = (ROOT / 'web' / 'src' / 'app.js').read_text(encoding='utf-8')
         index_source = (ROOT / 'web' / 'index.html').read_text(encoding='utf-8')
@@ -1006,6 +1121,67 @@ class RegressionTests(unittest.TestCase):
         self.assertIn('import { canUseWorkspace as canUseWorkspaceForAuth, persistGuestMode, readGuestMode, serializeUserLabel } from "./auth/session.js";', source)
         self.assertIn('return canUseWorkspaceForAuth(state.auth);', source)
         self.assertIsNone(re.search(r'canUseWorkspaceForAuth\(\s*\)', source))
+
+    def test_keycloak_login_respects_forwarded_https_headers(self) -> None:
+        app = FastAPI()
+        app.include_router(auth_routes.router)
+
+        with patch.object(
+            legacy_app,
+            'settings',
+            SimpleNamespace(
+                keycloak_enabled=True,
+                keycloak_issuer='https://idp.example.com/realms/test',
+                keycloak_client_id='client-id',
+            ),
+        ):
+            with patch.object(legacy_app, '_get_keycloak_discovery', return_value={'authorization_endpoint': 'https://idp.example.com/auth'}):
+                with patch.object(
+                    legacy_app,
+                    '_build_keycloak_authorization_url',
+                    side_effect=lambda **kwargs: f"https://idp.example.com/auth?redirect_uri={kwargs['redirect_uri']}",
+                ):
+                    with TestClient(app) as client:
+                        response = client.get(
+                            '/api/auth/keycloak/login',
+                            follow_redirects=False,
+                            headers={
+                                'host': 'internal:8005',
+                                'x-forwarded-proto': 'https',
+                                'x-forwarded-host': 'app.example.com',
+                            },
+                        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('https://app.example.com/api/auth/keycloak/callback', response.headers['location'])
+        self.assertIn('Secure', response.headers.get('set-cookie', ''))
+
+    def test_session_cookie_helper_marks_forwarded_https_as_secure(self) -> None:
+        request = Request(
+            {
+                'type': 'http',
+                'method': 'GET',
+                'path': '/api/auth/login',
+                'headers': [
+                    (b'host', b'internal:8005'),
+                    (b'x-forwarded-proto', b'https'),
+                    (b'x-forwarded-host', b'app.example.com'),
+                ],
+                'client': ('127.0.0.1', 12345),
+                'query_string': b'',
+                'scheme': 'http',
+            }
+        )
+        response = summary_routes.JSONResponse({'ok': True})
+
+        security.set_session_cookie(
+            response=response,
+            request=request,
+            cookie_name='whistx_session',
+            session_id='session-1',
+        )
+
+        self.assertIn('Secure', response.headers.get('set-cookie', ''))
 
 
 if __name__ == '__main__':

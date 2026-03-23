@@ -67,13 +67,23 @@ def unsigned_payload(value: str | None) -> dict[str, Any] | None:
         return None
 
 
+def request_is_secure(request: Request) -> bool:
+    scheme = _request_external_scheme(request)
+    return scheme in {"https", "wss"}
+
+
+def external_url_for(request: Request, route_name: str, /, **path_params: Any) -> str:
+    url = request.url_for(route_name, **path_params)
+    return str(url.replace(scheme=_request_external_scheme(request), netloc=_request_external_host(request)))
+
+
 def set_oidc_state_cookie(*, response: Response, request: Request, cookie_name: str, payload: dict[str, Any]) -> None:
     response.set_cookie(
         key=cookie_name,
         value=signed_payload(payload),
         httponly=True,
         samesite="lax",
-        secure=request.url.scheme == "https",
+        secure=request_is_secure(request),
         max_age=10 * 60,
         path="/",
     )
@@ -87,7 +97,7 @@ def clear_oidc_state_cookie(*, response: Response, request: Request, cookie_name
     response.delete_cookie(
         key=cookie_name,
         path="/",
-        secure=request.url.scheme == "https",
+        secure=request_is_secure(request),
         httponly=True,
         samesite="lax",
     )
@@ -99,7 +109,7 @@ def set_session_cookie(*, response: Response, request: Request, cookie_name: str
         value=session_id,
         httponly=True,
         samesite="lax",
-        secure=request.url.scheme == "https",
+        secure=request_is_secure(request),
         max_age=settings.app_session_days * 24 * 60 * 60,
         path="/",
     )
@@ -109,7 +119,54 @@ def clear_session_cookie(*, response: Response, request: Request, cookie_name: s
     response.delete_cookie(
         key=cookie_name,
         path="/",
-        secure=request.url.scheme == "https",
+        secure=request_is_secure(request),
         httponly=True,
         samesite="lax",
     )
+
+
+def _request_external_scheme(request: Request) -> str:
+    x_forwarded_proto = _first_proxy_value(request.headers.get("x-forwarded-proto"))
+    if x_forwarded_proto:
+        return x_forwarded_proto.lower()
+    forwarded = _parse_forwarded_header(request.headers.get("forwarded"))
+    forwarded_proto = forwarded.get("proto")
+    if forwarded_proto:
+        return forwarded_proto.lower()
+    return request.url.scheme
+
+
+def _request_external_host(request: Request) -> str:
+    x_forwarded_host = _first_proxy_value(request.headers.get("x-forwarded-host"))
+    if x_forwarded_host:
+        return x_forwarded_host
+    forwarded = _parse_forwarded_header(request.headers.get("forwarded"))
+    forwarded_host = forwarded.get("host")
+    if forwarded_host:
+        return forwarded_host
+    host = (request.headers.get("host") or "").strip()
+    if host:
+        return host
+    return request.url.netloc
+
+
+def _first_proxy_value(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.split(",", 1)[0].strip()
+
+
+def _parse_forwarded_header(value: str | None) -> dict[str, str]:
+    raw = _first_proxy_value(value)
+    if not raw:
+        return {}
+    out: dict[str, str] = {}
+    for chunk in raw.split(";"):
+        key, sep, parsed = chunk.partition("=")
+        if not sep:
+            continue
+        clean_key = key.strip().lower()
+        clean_value = parsed.strip().strip('"')
+        if clean_key and clean_value:
+            out[clean_key] = clean_value
+    return out
