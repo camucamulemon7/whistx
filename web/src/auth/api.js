@@ -32,6 +32,14 @@ export function logoutRequest() {
   return fetchJson("/api/auth/logout", { method: "POST" });
 }
 
+export function updateDisplayNameRequest(displayName) {
+  return fetchJson("/api/auth/profile", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ display_name: displayName || null }),
+  });
+}
+
 export function fetchPendingUsers() {
   return fetchJson("/api/admin/pending-users");
 }

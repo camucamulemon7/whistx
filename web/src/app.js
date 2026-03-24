@@ -1,5 +1,5 @@
 import { fetchCapabilities } from "./capabilities/api.js";
-import { fetchAuthState, loginRequest, bootstrapAdminRequest, registerRequest, logoutRequest, fetchPendingUsers as fetchPendingUsersRequest, approvePendingUserRequest } from "./auth/api.js";
+import { fetchAuthState, loginRequest, bootstrapAdminRequest, registerRequest, logoutRequest, updateDisplayNameRequest, fetchPendingUsers as fetchPendingUsersRequest, approvePendingUserRequest } from "./auth/api.js";
 import { canUseWorkspace as canUseWorkspaceForAuth, persistGuestMode, readGuestMode, serializeUserLabel } from "./auth/session.js";
 import { deleteHistoryRequest, fetchHistoryList as fetchHistoryListRequest, fetchHistoryDetail, saveHistoryRequest } from "./history/api.js";
 import { fetchSharedGlossary as fetchSharedGlossaryRequest, saveSharedGlossary as saveSharedGlossaryRequest } from "./api/glossary.js";
@@ -74,6 +74,11 @@ const saveStateBadgeEl = $("#saveStateBadge");
 const helpBtn = $("#helpBtn");
 const loginBtn = $("#loginBtn");
 const logoutBtn = $("#logoutBtn");
+const authProfileEditBtn = $("#authProfileEditBtn");
+const authProfileEditorEl = $("#authProfileEditor");
+const authProfileDisplayNameEl = $("#authProfileDisplayName");
+const authProfileSaveBtn = $("#authProfileSaveBtn");
+const authProfileCancelBtn = $("#authProfileCancelBtn");
 const historyCollapseBtn = $("#historyCollapseBtn");
 const historyDrawerCloseEl = document.querySelector("#historyDrawerClose");
 const authUserLabelEl = document.querySelector("#authUserLabel");
@@ -347,6 +352,8 @@ const state = {
     authenticated: false,
     isGuest: false,
     user: null,
+    profileEditorOpen: false,
+    profileSaving: false,
     bootstrapAdminRequired: false,
     pendingApprovalCount: 0,
     keycloakEnabled: false,
@@ -2046,11 +2053,29 @@ function renderAuthState() {
   if (logoutBtn) {
     logoutBtn.hidden = !workspaceEnabled;
   }
+  if (authProfileEditBtn) {
+    authProfileEditBtn.hidden = !authenticated;
+    authProfileEditBtn.disabled = !!state.auth.profileSaving;
+    authProfileEditBtn.textContent = state.auth.profileEditorOpen ? "表示名編集を閉じる" : "表示名変更";
+  }
   if (authGuestViewEl) {
     authGuestViewEl.hidden = workspaceEnabled;
   }
   if (authUserViewEl) {
     authUserViewEl.hidden = !workspaceEnabled;
+  }
+  if (authProfileEditorEl) {
+    authProfileEditorEl.hidden = !authenticated || !state.auth.profileEditorOpen;
+  }
+  if (authProfileDisplayNameEl) {
+    authProfileDisplayNameEl.disabled = !authenticated || !!state.auth.profileSaving;
+  }
+  if (authProfileSaveBtn) {
+    authProfileSaveBtn.disabled = !authenticated || !!state.auth.profileSaving;
+    authProfileSaveBtn.textContent = state.auth.profileSaving ? "保存中..." : "保存";
+  }
+  if (authProfileCancelBtn) {
+    authProfileCancelBtn.disabled = !!state.auth.profileSaving;
   }
   if (authBootstrapSectionEl) {
     authBootstrapSectionEl.hidden = !bootstrapRequired;
@@ -2086,6 +2111,23 @@ function renderAuthState() {
   updateHistoryEmptyState();
   updateSaveControls();
   updateSharedVocabularyMeta();
+}
+
+function syncAuthProfileEditor() {
+  if (!authProfileDisplayNameEl) return;
+  authProfileDisplayNameEl.value = String(state.auth.user?.displayName || "");
+}
+
+function setAuthProfileEditorOpen(open) {
+  state.auth.profileEditorOpen = !!open;
+  if (state.auth.profileEditorOpen) {
+    syncAuthProfileEditor();
+  }
+  renderAuthState();
+  if (state.auth.profileEditorOpen) {
+    authProfileDisplayNameEl?.focus();
+    authProfileDisplayNameEl?.select();
+  }
 }
 
 function resetCurrentSaveState() {
@@ -4223,6 +4265,24 @@ if (logoutBtn) {
   });
 }
 
+if (authProfileEditBtn) {
+  authProfileEditBtn.addEventListener("click", () => {
+    setAuthProfileEditorOpen(!state.auth.profileEditorOpen);
+  });
+}
+
+if (authProfileSaveBtn) {
+  authProfileSaveBtn.addEventListener("click", () => {
+    saveDisplayName();
+  });
+}
+
+if (authProfileCancelBtn) {
+  authProfileCancelBtn.addEventListener("click", () => {
+    setAuthProfileEditorOpen(false);
+  });
+}
+
 if (adminQueueBtn) {
   adminQueueBtn.addEventListener("click", () => {
     window.location.href = "/admin";
@@ -4259,6 +4319,20 @@ if (bootstrapAdminBtnEl) {
     if (event.key === "Enter") {
       event.preventDefault();
       login();
+    }
+  });
+});
+
+[authProfileDisplayNameEl].forEach((element) => {
+  if (!element) return;
+  element.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      saveDisplayName();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setAuthProfileEditorOpen(false);
     }
   });
 });
@@ -4729,6 +4803,8 @@ async function loadAuthState() {
     if (!payload?.authenticated) {
       state.auth.bootstrapAdminRequired = !!payload?.bootstrapAdminRequired;
       state.selfSignupEnabled = !!payload?.selfSignupEnabled;
+      state.auth.profileEditorOpen = false;
+      state.auth.profileSaving = false;
       state.auth.historyRetentionDays = Math.max(1, Number(payload?.historyRetentionDays || 7));
       state.auth.keycloakEnabled = !!payload?.keycloakEnabled;
       state.auth.keycloakButtonLabel = String(payload?.keycloakButtonLabel || "Keycloakでログイン");
@@ -4749,6 +4825,8 @@ async function loadAuthState() {
     state.auth.authenticated = !!payload.authenticated;
     state.auth.isGuest = false;
     state.auth.user = payload.user || null;
+    state.auth.profileEditorOpen = false;
+    state.auth.profileSaving = false;
     state.selfSignupEnabled = !!payload.selfSignupEnabled;
     state.auth.historyRetentionDays = Math.max(1, Number(payload.historyRetentionDays || 7));
     state.auth.bootstrapAdminRequired = !!payload.bootstrapAdminRequired;
@@ -4821,6 +4899,8 @@ async function login() {
     state.auth.authenticated = true;
     state.auth.isGuest = false;
     state.auth.user = payload.user || null;
+    state.auth.profileEditorOpen = false;
+    state.auth.profileSaving = false;
     state.auth.bootstrapAdminRequired = false;
     state.auth.pendingApprovalCount = Number(payload.pendingApprovalCount || 0);
     persistGuestMode(false);
@@ -4857,6 +4937,8 @@ async function bootstrapAdmin() {
     state.auth.authenticated = true;
     state.auth.isGuest = false;
     state.auth.user = payload.user || null;
+    state.auth.profileEditorOpen = false;
+    state.auth.profileSaving = false;
     state.auth.bootstrapAdminRequired = false;
     state.auth.pendingApprovalCount = 0;
     persistGuestMode(false);
@@ -4894,6 +4976,29 @@ async function registerAccount() {
   }
 }
 
+async function saveDisplayName() {
+  if (!state.auth.authenticated) {
+    showToast("ログインが必要です", "error");
+    return;
+  }
+  const displayName = String(authProfileDisplayNameEl?.value || "").trim();
+  state.auth.profileSaving = true;
+  renderAuthState();
+  try {
+    const payload = await updateDisplayNameRequest(displayName);
+    state.auth.user = payload.user || state.auth.user;
+    state.auth.profileSaving = false;
+    state.auth.profileEditorOpen = false;
+    syncAuthProfileEditor();
+    renderAuthState();
+    showToast("表示名を更新しました", "success");
+  } catch {
+    state.auth.profileSaving = false;
+    renderAuthState();
+    showToast("表示名の更新に失敗しました", "error");
+  }
+}
+
 async function logout() {
   await logoutRequest().catch(() => null);
   if (state.recording || state.finalizingStop) {
@@ -4905,6 +5010,8 @@ async function logout() {
   state.auth.authenticated = false;
   state.auth.isGuest = false;
   state.auth.user = null;
+  state.auth.profileEditorOpen = false;
+  state.auth.profileSaving = false;
   state.auth.pendingApprovalCount = 0;
   clearHistoryState(state);
   state.log = [];
@@ -4927,6 +5034,8 @@ function loginAsGuest() {
   state.auth.authenticated = false;
   state.auth.isGuest = true;
   state.auth.user = null;
+  state.auth.profileEditorOpen = false;
+  state.auth.profileSaving = false;
   state.auth.pendingApprovalCount = 0;
   clearHistoryState(state);
   resetRuntimeSessionState();

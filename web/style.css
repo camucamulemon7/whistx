@@ -620,6 +620,7 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-4);
+  min-width: 0;
 }
 
 .brand-icon {
@@ -634,16 +635,19 @@ body {
   box-shadow: var(--shadow-md), 0 0 0 1px rgba(255, 255, 255, 0.1) inset;
 }
 
+.brand-text {
+  min-width: 0;
+}
+
 .brand-text h1 {
   font-size: var(--text-xl);
   font-weight: 700;
   letter-spacing: var(--tracking-tight);
   color: var(--text-primary);
   line-height: var(--leading-tight);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 200px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .brand-tagline {
@@ -3999,6 +4003,18 @@ body.is-modal-open {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.header-profile-editor {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) auto auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2);
+}
+
+.header-profile-input {
+  min-width: 0;
 }
 
 .settings-panel {

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..models import User
@@ -50,4 +50,22 @@ def list_pending_users(db: Session) -> list[User]:
 
 def list_all_users(db: Session) -> list[User]:
     stmt = select(User).order_by(User.created_at.desc(), User.id.desc())
+    return list(db.scalars(stmt).all())
+
+
+def search_users(db: Session, *, query: str) -> list[User]:
+    normalized = query.strip()
+    if not normalized:
+        return list_all_users(db)
+    pattern = f'%{normalized}%'
+    stmt = (
+        select(User)
+        .where(
+            or_(
+                User.email.ilike(pattern),
+                User.display_name.ilike(pattern),
+            )
+        )
+        .order_by(User.created_at.desc(), User.id.desc())
+    )
     return list(db.scalars(stmt).all())

@@ -71,7 +71,20 @@
               <span class="header-user-kicker">アカウント</span>
               <span id="authUserLabel" class="header-user-label">-</span>
             </div>
+            <button id="authProfileEditBtn" type="button" class="header-action-btn" hidden>表示名変更</button>
             <button id="logoutBtn" type="button" class="header-action-btn" hidden>ログアウト</button>
+            <div id="authProfileEditor" class="header-profile-editor glass-panel" hidden>
+              <input
+                id="authProfileDisplayName"
+                type="text"
+                class="side-panel-input header-profile-input"
+                placeholder="表示名"
+                maxlength="120"
+                autocomplete="name"
+              />
+              <button id="authProfileSaveBtn" type="button" class="btn-action">保存</button>
+              <button id="authProfileCancelBtn" type="button" class="btn-secondary">閉じる</button>
+            </div>
             <div class="theme-toggle-wrapper">
               <button id="themeToggle" type="button" class="theme-toggle-btn" aria-label="テーマを切り替え" title="テーマ切り替え">
                 <svg class="theme-icon sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

@@ -170,6 +170,34 @@ body {
   display: none;
 }
 
+.admin-search-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+
+.admin-search-label {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.admin-search-input {
+  min-height: 44px;
+  min-width: 0;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
+}
+
 .admin-chip {
   display: inline-flex;
   align-items: center;
@@ -358,8 +386,13 @@ body {
   .admin-link-btn,
   .admin-primary-btn,
   .admin-approve-btn,
-  .admin-role-select {
+  .admin-role-select,
+  .admin-search-input {
     width: 100%;
+  }
+
+  .admin-search-bar {
+    grid-template-columns: 1fr;
   }
 
   .admin-request {
