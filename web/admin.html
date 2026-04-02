@@ -65,6 +65,20 @@
             <span id="userCount" class="admin-chip">0</span>
           </div>
 
+          <form id="userSearchForm" class="admin-search-bar" role="search">
+            <label class="admin-search-label" for="userSearchInput">ユーザー検索</label>
+            <input
+              id="userSearchInput"
+              class="admin-search-input"
+              type="search"
+              name="q"
+              placeholder="表示名またはメールアドレスで検索"
+              autocomplete="off"
+            />
+            <button type="submit" class="admin-primary-btn">検索</button>
+            <button id="userSearchClearBtn" type="button" class="admin-link-btn">クリア</button>
+          </form>
+
           <div class="admin-table-wrap">
             <table class="admin-table">
               <thead>

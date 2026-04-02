@@ -51,15 +51,17 @@ from server import openai_whisper
 from server import summarizer as summarizer_module
 from server.asr import ASRChunkResult
 from server.app import LoginRequest
+from server.api.routes import admin as admin_routes
 from server.api.routes import auth as auth_routes
 from server.api.routes import summary as summary_routes
 from server.api.ws import transcribe as ws_routes
+from server.core import application as application_core
 from server.core.config.app import load_app_config
 from server.core.config.asr import load_asr_config
 from server.core import security
 from server.models import TranscriptHistory, TranscriptSegment, User
 from server.repositories import session_repository
-from server.services import auth_service, glossary_service, history_service
+from server.services import admin_service, auth_service, glossary_service, history_service
 from server.deps import get_current_user
 from server.transcript_store import read_jsonl_records
 
@@ -461,6 +463,42 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['summary'], 'hello')
 
+    def test_auth_profile_update_requires_login(self) -> None:
+        app = FastAPI()
+        app.include_router(auth_routes.router)
+        client = TestClient(app)
+
+        response = client.patch('/api/auth/profile', json={'display_name': 'Updated'})
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json(), {'detail': 'login_required'})
+
+    def test_auth_profile_update_allows_authenticated_user(self) -> None:
+        app = FastAPI()
+        app.include_router(auth_routes.router)
+        user = User(
+            id=1,
+            email='user@example.com',
+            password_hash='hash',
+            display_name='Before',
+            is_active=True,
+            is_admin=False,
+        )
+        app.dependency_overrides[get_current_user] = lambda: user
+        client = TestClient(app)
+
+        class DummyDB:
+            pass
+
+        app.dependency_overrides[auth_routes.get_db] = lambda: DummyDB()
+
+        with patch.object(auth_routes, 'update_display_name', side_effect=lambda **kwargs: kwargs['user']) as update_mock:
+            response = client.patch('/api/auth/profile', json={'display_name': 'Updated'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(update_mock.call_args.kwargs['display_name'], 'Updated')
+        self.assertEqual(response.json()['user']['displayName'], 'Before')
+
     def test_ws_transcribe_rejects_unauthenticated_connection(self) -> None:
         app = FastAPI()
         app.include_router(ws_routes.router)
@@ -505,6 +543,22 @@ class RegressionTests(unittest.TestCase):
         ):
             config = load_app_config()
         self.assertEqual(config.history_retention_days, 14)
+
+    def test_create_app_uses_lifespan_startup_and_shutdown(self) -> None:
+        events: list[str] = []
+
+        async def fake_startup() -> None:
+            events.append('startup')
+
+        async def fake_shutdown() -> None:
+            events.append('shutdown')
+
+        with patch.object(application_core.legacy, 'on_startup', side_effect=fake_startup):
+            with patch.object(application_core.legacy, 'on_shutdown', side_effect=fake_shutdown):
+                with TestClient(application_core.create_app()):
+                    self.assertEqual(events, ['startup'])
+
+        self.assertEqual(events, ['startup', 'shutdown'])
 
     def test_history_retention_default_is_seven_days(self) -> None:
         with patch.dict(
@@ -862,6 +916,55 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(payload['pendingApprovalCount'], 3)
         self.assertEqual(payload['historyRetentionDays'], 7)
 
+    def test_admin_users_route_forwards_search_query(self) -> None:
+        app = FastAPI()
+        app.include_router(admin_routes.router)
+        admin_user = User(id=1, email='admin@example.com', password_hash='hash', is_active=True, is_admin=True)
+        app.dependency_overrides[admin_routes.get_current_admin] = lambda: admin_user
+
+        class DummyDB:
+            pass
+
+        app.dependency_overrides[admin_routes.get_db] = lambda: DummyDB()
+        client = TestClient(app)
+
+        with patch.object(admin_routes, 'list_users_payload', return_value={'items': [], 'query': 'alice'}) as payload_mock:
+            response = client.get('/api/admin/users?q=alice')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['query'], 'alice')
+        self.assertEqual(payload_mock.call_args.kwargs['query'], 'alice')
+
+    def test_admin_service_filters_users_by_display_name_or_email(self) -> None:
+        users = [
+            User(
+                id=1,
+                email='alice@example.com',
+                password_hash='hash',
+                display_name='Alice Admin',
+                is_active=True,
+                is_admin=True,
+                created_at=datetime.now(timezone.utc),
+            ),
+            User(
+                id=2,
+                email='bob@example.com',
+                password_hash='hash',
+                display_name='Bob Member',
+                is_active=True,
+                is_admin=False,
+                created_at=datetime.now(timezone.utc),
+            ),
+        ]
+
+        with patch.object(admin_service.user_repository, 'search_users', return_value=[users[0]]) as search_mock:
+            payload = admin_service.list_users_payload(SimpleNamespace(), query='alice')
+
+        self.assertEqual(payload['query'], 'alice')
+        self.assertEqual(len(payload['items']), 1)
+        self.assertEqual(payload['items'][0]['email'], 'alice@example.com')
+        self.assertEqual(search_mock.call_args.kwargs['query'], 'alice')
+
     def test_trim_overlap_prefix_requires_substantial_match(self) -> None:
         previous = '本日の会議では新製品の価格改定について説明します'
         current = '価格改定について説明します。次に販売計画を確認します'
@@ -1121,6 +1224,33 @@ class RegressionTests(unittest.TestCase):
         self.assertIn('import { canUseWorkspace as canUseWorkspaceForAuth, persistGuestMode, readGuestMode, serializeUserLabel } from "./auth/session.js";', source)
         self.assertIn('return canUseWorkspaceForAuth(state.auth);', source)
         self.assertIsNone(re.search(r'canUseWorkspaceForAuth\(\s*\)', source))
+
+    def test_frontend_includes_display_name_editor(self) -> None:
+        app_source = (ROOT / 'web' / 'src' / 'app.js').read_text(encoding='utf-8')
+        index_source = (ROOT / 'web' / 'index.html').read_text(encoding='utf-8')
+        api_source = (ROOT / 'web' / 'src' / 'auth' / 'api.js').read_text(encoding='utf-8')
+        self.assertIn('const authProfileEditBtn = $("#authProfileEditBtn");', app_source)
+        self.assertIn('async function saveDisplayName()', app_source)
+        self.assertIn('id="authProfileDisplayName"', index_source)
+        self.assertIn('export function updateDisplayNameRequest(displayName)', api_source)
+
+    def test_frontend_brand_title_wraps_instead_of_truncating(self) -> None:
+        style_source = (ROOT / 'web' / 'style.css').read_text(encoding='utf-8')
+        match = re.search(r'\.brand-text h1 \{(?P<body>.*?)\n\}', style_source, re.DOTALL)
+        self.assertIsNotNone(match)
+        block = match.group('body')
+        self.assertIn('white-space: normal;', block)
+        self.assertIn('overflow-wrap: anywhere;', block)
+        self.assertNotIn('text-overflow: ellipsis;', block)
+        self.assertNotIn('max-width: 200px;', block)
+
+    def test_admin_frontend_includes_user_search(self) -> None:
+        html_source = (ROOT / 'web' / 'admin.html').read_text(encoding='utf-8')
+        js_source = (ROOT / 'web' / 'admin.js').read_text(encoding='utf-8')
+        self.assertIn('id="userSearchInput"', html_source)
+        self.assertIn('表示名またはメールアドレスで検索', html_source)
+        self.assertIn('const userSearchInputEl = document.querySelector("#userSearchInput");', js_source)
+        self.assertIn('/api/admin/users?q=${encodeURIComponent(userQuery)}', js_source)
 
     def test_keycloak_login_respects_forwarded_https_headers(self) -> None:
         app = FastAPI()

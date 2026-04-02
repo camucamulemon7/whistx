@@ -2447,8 +2447,6 @@ def _save_debug_audio_chunk(session: LiveSession, item: ChunkMessage) -> None:
 
 
 def _store_debug_raw_audio_for_final(session: LiveSession, item: ChunkMessage) -> str | None:
-    if not is_debug_logging_enabled():
-        return None
     if not item.audio_bytes:
         return None
     try:
@@ -2471,8 +2469,6 @@ def _store_debug_raw_audio_for_final(session: LiveSession, item: ChunkMessage) -
 
 
 def _store_debug_audio_for_final(session: LiveSession, seq: int, audio_bytes: bytes) -> str | None:
-    if not is_debug_logging_enabled():
-        return None
     if not audio_bytes:
         return None
     try:
@@ -2507,8 +2503,6 @@ def _debug_audio_ext_from_mime(mime_type: str) -> str:
 
 
 def _resolve_existing_debug_audio_url(session: LiveSession, *, prefix: str, seq: int) -> str | None:
-    if not is_debug_logging_enabled():
-        return None
     for debug_dir in iter_debug_chunk_dirs(settings.debug_chunks_dir, session.session_id):
         if not debug_dir.exists():
             continue

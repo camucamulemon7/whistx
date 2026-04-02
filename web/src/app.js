@@ -1,5 +1,5 @@
 import { fetchCapabilities } from "./capabilities/api.js";
-import { fetchAuthState, loginRequest, bootstrapAdminRequest, registerRequest, logoutRequest, fetchPendingUsers as fetchPendingUsersRequest, approvePendingUserRequest } from "./auth/api.js";
+import { fetchAuthState, loginRequest, bootstrapAdminRequest, registerRequest, logoutRequest, updateDisplayNameRequest, fetchPendingUsers as fetchPendingUsersRequest, approvePendingUserRequest } from "./auth/api.js";
 import { canUseWorkspace as canUseWorkspaceForAuth, persistGuestMode, readGuestMode, serializeUserLabel } from "./auth/session.js";
 import { deleteHistoryRequest, fetchHistoryList as fetchHistoryListRequest, fetchHistoryDetail, saveHistoryRequest } from "./history/api.js";
 import { fetchSharedGlossary as fetchSharedGlossaryRequest, saveSharedGlossary as saveSharedGlossaryRequest } from "./api/glossary.js";
@@ -39,6 +39,8 @@ const captureScreenshotsEnabledEl = $("#captureScreenshotsEnabled");
 const captureScreenshotsStateTextEl = $("#captureScreenshotsStateText");
 const screenshotDiffSkipEnabledEl = $("#screenshotDiffSkipEnabled");
 const screenshotDiffSkipStateTextEl = $("#screenshotDiffSkipStateText");
+const showTranscriptAudioEnabledEl = $("#showTranscriptAudioEnabled");
+const showTranscriptAudioStateTextEl = $("#showTranscriptAudioStateText");
 const autoGainEnabledEl = $("#autoGainEnabled");
 const autoGainStateTextEl = $("#autoGainStateText");
 const chunkSecondsEl = $("#chunkSeconds");
@@ -53,6 +55,8 @@ const promptTemplateButtonsEl = $("#promptTemplateButtons");
 const workspacePanelsEl = $("#workspacePanels");
 const panelResizerEls = Array.from(document.querySelectorAll("[data-resizer]"));
 const panelToggleEls = Array.from(document.querySelectorAll("[data-panel-toggle]"));
+const WORKSPACE_STACK_BREAKPOINT = 1280;
+const WORKSPACE_DUAL_AI_BREAKPOINT = 1439;
 const chunkHintEl = $("#chunkHint");
 const presetButtons = Array.from(document.querySelectorAll("[data-chunk-preset]"));
 const settingsAdvancedToggleEl = $("#settingsAdvancedToggle");
@@ -74,6 +78,11 @@ const saveStateBadgeEl = $("#saveStateBadge");
 const helpBtn = $("#helpBtn");
 const loginBtn = $("#loginBtn");
 const logoutBtn = $("#logoutBtn");
+const authProfileEditBtn = $("#authProfileEditBtn");
+const authProfileEditorEl = $("#authProfileEditor");
+const authProfileDisplayNameEl = $("#authProfileDisplayName");
+const authProfileSaveBtn = $("#authProfileSaveBtn");
+const authProfileCancelBtn = $("#authProfileCancelBtn");
 const historyCollapseBtn = $("#historyCollapseBtn");
 const historyDrawerCloseEl = document.querySelector("#historyDrawerClose");
 const authUserLabelEl = document.querySelector("#authUserLabel");
@@ -314,6 +323,7 @@ const state = {
   screenshotCanvas: null,
   captureScreenshotsEnabled: true,
   screenshotDiffSkipEnabled: true,
+  showTranscriptAudioEnabled: true,
   autoGainEnabled: true,
   screenshotDiffCanvas: null,
   previousScreenshotSignature: null,
@@ -347,6 +357,8 @@ const state = {
     authenticated: false,
     isGuest: false,
     user: null,
+    profileEditorOpen: false,
+    profileSaving: false,
     bootstrapAdminRequired: false,
     pendingApprovalCount: 0,
     keycloakEnabled: false,
@@ -484,7 +496,7 @@ function applyHistoryCollapsed(value, options = {}) {
     workspaceShellEl.classList.toggle("is-history-collapsed", isDesktop && state.historyCollapsed);
   }
   if (historyRailEl) {
-    historyRailEl.classList.toggle("is-collapsed", isDesktop && state.historyCollapsed);
+    historyRailEl.classList.toggle("is-collapsed", state.historyCollapsed);
   }
   if (persist) {
     try {
@@ -500,7 +512,7 @@ function updateHistoryControls() {
   const isMobile = window.innerWidth <= 1100;
   if (historyCollapseBtn) {
     historyCollapseBtn.hidden = isMobile;
-    historyCollapseBtn.classList.toggle("is-collapsed", !isMobile && state.historyCollapsed);
+    historyCollapseBtn.classList.toggle("is-collapsed", state.historyCollapsed);
     historyCollapseBtn.setAttribute("aria-label", state.historyCollapsed ? "履歴を展開" : "履歴をたたむ");
     historyCollapseBtn.title = state.historyCollapsed ? "展開" : "たたむ";
   }
@@ -531,13 +543,6 @@ function applyAdvancedSettingsOpen(open) {
 }
 
 function syncAiResponsiveState() {
-  if (window.innerWidth <= 1439) {
-    ["proofread", "summary"].forEach((key) => {
-      document.querySelector(`.${key}-panel`)?.classList.remove("is-collapsed");
-      document.querySelector(`[data-panel-toggle="${key}"]`)?.classList.remove("is-collapsed");
-    });
-    return;
-  }
   applyPanelCollapseState("proofread", !!state.panelCollapsed.proofread, { persist: false });
   applyPanelCollapseState("summary", !!state.panelCollapsed.summary, { persist: false });
 }
@@ -590,13 +595,16 @@ function applyWorkspaceRatios(left, center, right, options = {}) {
 
 function updateWorkspaceGridTemplate() {
   if (!workspacePanelsEl) return;
-  if (window.innerWidth <= 1100) {
+  if (window.innerWidth <= WORKSPACE_STACK_BREAKPOINT) {
     workspacePanelsEl.style.gridTemplateColumns = "1fr";
     return;
   }
-  if (window.innerWidth <= 1439) {
-    const left = state.panelCollapsed.transcript ? "92px" : `minmax(320px, ${state.panelLeftRatio + 0.2}fr)`;
-    const right = `minmax(280px, ${state.panelCenterRatio + state.panelRightRatio}fr)`;
+  if (window.innerWidth <= WORKSPACE_DUAL_AI_BREAKPOINT) {
+    const activeAiPanel = state.activeAiPanel === "summary" ? "summary" : "proofread";
+    const left = state.panelCollapsed.transcript ? "92px" : `minmax(280px, ${state.panelLeftRatio + 0.2}fr)`;
+    const right = state.panelCollapsed[activeAiPanel]
+      ? "88px"
+      : `minmax(240px, ${state.panelCenterRatio + state.panelRightRatio}fr)`;
     workspacePanelsEl.style.gridTemplateColumns = `${left} ${right}`;
     return;
   }
@@ -669,6 +677,33 @@ function applyScreenshotDiffSkipEnabled(value, options = {}) {
   if (persist) {
     try {
       localStorage.setItem("whistx_screenshot_diff_skip_enabled", enabled ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function applyShowTranscriptAudioEnabled(value, options = {}) {
+  const persist = options.persist !== false;
+  const enabled = !!value;
+  state.showTranscriptAudioEnabled = enabled;
+  if (showTranscriptAudioEnabledEl) {
+    showTranscriptAudioEnabledEl.checked = enabled;
+  }
+  if (showTranscriptAudioStateTextEl) {
+    showTranscriptAudioStateTextEl.textContent = enabled ? "ON" : "OFF";
+  }
+  document.body.classList.toggle("is-transcript-audio-hidden", !enabled);
+  if (!enabled) {
+    document.querySelectorAll(".log-inline-audio").forEach((element) => {
+      if (typeof element.pause === "function") {
+        element.pause();
+      }
+    });
+  }
+  if (persist) {
+    try {
+      localStorage.setItem("whistx_show_transcript_audio_enabled", enabled ? "1" : "0");
     } catch {
       // ignore
     }
@@ -2046,11 +2081,29 @@ function renderAuthState() {
   if (logoutBtn) {
     logoutBtn.hidden = !workspaceEnabled;
   }
+  if (authProfileEditBtn) {
+    authProfileEditBtn.hidden = !authenticated;
+    authProfileEditBtn.disabled = !!state.auth.profileSaving;
+    authProfileEditBtn.textContent = state.auth.profileEditorOpen ? "表示名編集を閉じる" : "表示名変更";
+  }
   if (authGuestViewEl) {
     authGuestViewEl.hidden = workspaceEnabled;
   }
   if (authUserViewEl) {
     authUserViewEl.hidden = !workspaceEnabled;
+  }
+  if (authProfileEditorEl) {
+    authProfileEditorEl.hidden = !authenticated || !state.auth.profileEditorOpen;
+  }
+  if (authProfileDisplayNameEl) {
+    authProfileDisplayNameEl.disabled = !authenticated || !!state.auth.profileSaving;
+  }
+  if (authProfileSaveBtn) {
+    authProfileSaveBtn.disabled = !authenticated || !!state.auth.profileSaving;
+    authProfileSaveBtn.textContent = state.auth.profileSaving ? "保存中..." : "保存";
+  }
+  if (authProfileCancelBtn) {
+    authProfileCancelBtn.disabled = !!state.auth.profileSaving;
   }
   if (authBootstrapSectionEl) {
     authBootstrapSectionEl.hidden = !bootstrapRequired;
@@ -2086,6 +2139,23 @@ function renderAuthState() {
   updateHistoryEmptyState();
   updateSaveControls();
   updateSharedVocabularyMeta();
+}
+
+function syncAuthProfileEditor() {
+  if (!authProfileDisplayNameEl) return;
+  authProfileDisplayNameEl.value = String(state.auth.user?.displayName || "");
+}
+
+function setAuthProfileEditorOpen(open) {
+  state.auth.profileEditorOpen = !!open;
+  if (state.auth.profileEditorOpen) {
+    syncAuthProfileEditor();
+  }
+  renderAuthState();
+  if (state.auth.profileEditorOpen) {
+    authProfileDisplayNameEl?.focus();
+    authProfileDisplayNameEl?.select();
+  }
 }
 
 function resetCurrentSaveState() {
@@ -2260,6 +2330,8 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", raw
   if (screenshotPath || rawAudioPath || audioPath) {
     mediaGroup = document.createElement("div");
     mediaGroup.className = "log-media-group";
+    mediaGroup.dataset.hasScreenshot = screenshotPath ? "true" : "false";
+    mediaGroup.dataset.hasAudio = (rawAudioPath || audioPath) ? "true" : "false";
   }
 
   if (screenshotPath && mediaGroup) {
@@ -4223,6 +4295,24 @@ if (logoutBtn) {
   });
 }
 
+if (authProfileEditBtn) {
+  authProfileEditBtn.addEventListener("click", () => {
+    setAuthProfileEditorOpen(!state.auth.profileEditorOpen);
+  });
+}
+
+if (authProfileSaveBtn) {
+  authProfileSaveBtn.addEventListener("click", () => {
+    saveDisplayName();
+  });
+}
+
+if (authProfileCancelBtn) {
+  authProfileCancelBtn.addEventListener("click", () => {
+    setAuthProfileEditorOpen(false);
+  });
+}
+
 if (adminQueueBtn) {
   adminQueueBtn.addEventListener("click", () => {
     window.location.href = "/admin";
@@ -4259,6 +4349,20 @@ if (bootstrapAdminBtnEl) {
     if (event.key === "Enter") {
       event.preventDefault();
       login();
+    }
+  });
+});
+
+[authProfileDisplayNameEl].forEach((element) => {
+  if (!element) return;
+  element.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      saveDisplayName();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setAuthProfileEditorOpen(false);
     }
   });
 });
@@ -4312,6 +4416,12 @@ if (captureScreenshotsEnabledEl) {
 if (screenshotDiffSkipEnabledEl) {
   screenshotDiffSkipEnabledEl.addEventListener("change", () => {
     applyScreenshotDiffSkipEnabled(screenshotDiffSkipEnabledEl.checked);
+  });
+}
+
+if (showTranscriptAudioEnabledEl) {
+  showTranscriptAudioEnabledEl.addEventListener("change", () => {
+    applyShowTranscriptAudioEnabled(showTranscriptAudioEnabledEl.checked);
   });
 }
 
@@ -4426,6 +4536,13 @@ try {
   applyScreenshotDiffSkipEnabled(savedScreenshotDiffSkip !== "0", { persist: false });
 } catch {
   applyScreenshotDiffSkipEnabled(true, { persist: false });
+}
+
+try {
+  const savedShowTranscriptAudio = readStoredValue("whistx_show_transcript_audio_enabled", null);
+  applyShowTranscriptAudioEnabled(savedShowTranscriptAudio !== "0", { persist: false });
+} catch {
+  applyShowTranscriptAudioEnabled(true, { persist: false });
 }
 
 copyBtn.addEventListener("click", () => {
@@ -4729,6 +4846,8 @@ async function loadAuthState() {
     if (!payload?.authenticated) {
       state.auth.bootstrapAdminRequired = !!payload?.bootstrapAdminRequired;
       state.selfSignupEnabled = !!payload?.selfSignupEnabled;
+      state.auth.profileEditorOpen = false;
+      state.auth.profileSaving = false;
       state.auth.historyRetentionDays = Math.max(1, Number(payload?.historyRetentionDays || 7));
       state.auth.keycloakEnabled = !!payload?.keycloakEnabled;
       state.auth.keycloakButtonLabel = String(payload?.keycloakButtonLabel || "Keycloakでログイン");
@@ -4749,6 +4868,8 @@ async function loadAuthState() {
     state.auth.authenticated = !!payload.authenticated;
     state.auth.isGuest = false;
     state.auth.user = payload.user || null;
+    state.auth.profileEditorOpen = false;
+    state.auth.profileSaving = false;
     state.selfSignupEnabled = !!payload.selfSignupEnabled;
     state.auth.historyRetentionDays = Math.max(1, Number(payload.historyRetentionDays || 7));
     state.auth.bootstrapAdminRequired = !!payload.bootstrapAdminRequired;
@@ -4821,6 +4942,8 @@ async function login() {
     state.auth.authenticated = true;
     state.auth.isGuest = false;
     state.auth.user = payload.user || null;
+    state.auth.profileEditorOpen = false;
+    state.auth.profileSaving = false;
     state.auth.bootstrapAdminRequired = false;
     state.auth.pendingApprovalCount = Number(payload.pendingApprovalCount || 0);
     persistGuestMode(false);
@@ -4857,6 +4980,8 @@ async function bootstrapAdmin() {
     state.auth.authenticated = true;
     state.auth.isGuest = false;
     state.auth.user = payload.user || null;
+    state.auth.profileEditorOpen = false;
+    state.auth.profileSaving = false;
     state.auth.bootstrapAdminRequired = false;
     state.auth.pendingApprovalCount = 0;
     persistGuestMode(false);
@@ -4894,6 +5019,29 @@ async function registerAccount() {
   }
 }
 
+async function saveDisplayName() {
+  if (!state.auth.authenticated) {
+    showToast("ログインが必要です", "error");
+    return;
+  }
+  const displayName = String(authProfileDisplayNameEl?.value || "").trim();
+  state.auth.profileSaving = true;
+  renderAuthState();
+  try {
+    const payload = await updateDisplayNameRequest(displayName);
+    state.auth.user = payload.user || state.auth.user;
+    state.auth.profileSaving = false;
+    state.auth.profileEditorOpen = false;
+    syncAuthProfileEditor();
+    renderAuthState();
+    showToast("表示名を更新しました", "success");
+  } catch {
+    state.auth.profileSaving = false;
+    renderAuthState();
+    showToast("表示名の更新に失敗しました", "error");
+  }
+}
+
 async function logout() {
   await logoutRequest().catch(() => null);
   if (state.recording || state.finalizingStop) {
@@ -4905,6 +5053,8 @@ async function logout() {
   state.auth.authenticated = false;
   state.auth.isGuest = false;
   state.auth.user = null;
+  state.auth.profileEditorOpen = false;
+  state.auth.profileSaving = false;
   state.auth.pendingApprovalCount = 0;
   clearHistoryState(state);
   state.log = [];
@@ -4927,6 +5077,8 @@ function loginAsGuest() {
   state.auth.authenticated = false;
   state.auth.isGuest = true;
   state.auth.user = null;
+  state.auth.profileEditorOpen = false;
+  state.auth.profileSaving = false;
   state.auth.pendingApprovalCount = 0;
   clearHistoryState(state);
   resetRuntimeSessionState();

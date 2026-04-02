@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
@@ -31,8 +31,12 @@ async def admin_approve_pending_user(
 
 
 @router.get('/api/admin/users')
-async def admin_users(user: User = Depends(get_current_admin), db: Session = Depends(get_db)) -> JSONResponse:
-    return JSONResponse(list_users_payload(db))
+async def admin_users(
+    q: str = Query(default=''),
+    user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    return JSONResponse(list_users_payload(db, query=q))
 
 
 @router.post('/api/admin/users/{user_id}/role')

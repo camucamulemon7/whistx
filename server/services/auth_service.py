@@ -211,6 +211,12 @@ def logout_user(request: Request, db: Session) -> None:
     db.commit()
 
 
+def update_display_name(*, user: User, display_name: str | None, db: Session) -> User:
+    user.display_name = (display_name or '').strip() or None
+    db.commit()
+    return user
+
+
 def upsert_keycloak_user(db: Session, userinfo: dict[str, Any]) -> User:
     subject = str(userinfo.get('sub') or '').strip()
     email = str(userinfo.get('email') or '').strip().lower()

@@ -10,7 +10,9 @@ from ... import legacy_app as legacy
 from ...core.logging import emit_container_log
 from ...core.security import clear_session_cookie, set_session_cookie, serialize_user
 from ...db import get_db
-from ...schemas import BootstrapAdminRequest, LoginRequest, RegisterRequest
+from ...deps import get_current_user
+from ...models import User
+from ...schemas import BootstrapAdminRequest, LoginRequest, RegisterRequest, UpdateDisplayNameRequest
 from ...services.auth_service import (
     AuthServiceError,
     build_auth_me_payload,
@@ -18,6 +20,7 @@ from ...services.auth_service import (
     login_user,
     logout_user,
     register_user,
+    update_display_name,
 )
 
 router = APIRouter()
@@ -85,3 +88,13 @@ async def auth_logout(request: Request, db: Session = Depends(get_db)) -> JSONRe
     response = JSONResponse({'ok': True})
     clear_session_cookie(response=response, request=request, cookie_name='whistx_session')
     return response
+
+
+@router.patch('/api/auth/profile')
+async def auth_update_profile(
+    payload: UpdateDisplayNameRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    updated_user = update_display_name(user=user, display_name=payload.display_name, db=db)
+    return JSONResponse({'ok': True, 'user': serialize_user(updated_user)})

@@ -8,6 +8,13 @@ const userTableBodyEl = document.querySelector("#userTableBody");
 const userCardsEl = document.querySelector("#userCards");
 const statusEl = document.querySelector("#adminStatus");
 const refreshBtnEl = document.querySelector("#adminRefreshBtn");
+const userSearchFormEl = document.querySelector("#userSearchForm");
+const userSearchInputEl = document.querySelector("#userSearchInput");
+const userSearchClearBtnEl = document.querySelector("#userSearchClearBtn");
+
+const state = {
+  userQuery: "",
+};
 
 function normalizeTheme(value) {
   return value === "dark" ? "dark" : "light";
@@ -73,6 +80,10 @@ async function updateUserRole(userId, role) {
     body: JSON.stringify({ role }),
   });
   await loadAdminData();
+}
+
+function currentUserQuery() {
+  return String(state.userQuery || "").trim();
 }
 
 function bindApproveButtons(root) {
@@ -199,18 +210,48 @@ function renderUsers(items) {
 
 async function loadAdminData() {
   statusEl.textContent = "読み込み中...";
+  const userQuery = currentUserQuery();
+  const usersPath = userQuery ? `/api/admin/users?q=${encodeURIComponent(userQuery)}` : "/api/admin/users";
   const [pending, users] = await Promise.all([
     fetchJson("/api/admin/pending-users"),
-    fetchJson("/api/admin/users"),
+    fetchJson(usersPath),
   ]);
   const pendingItems = Array.isArray(pending.items) ? pending.items : [];
   const userItems = Array.isArray(users.items) ? users.items : [];
   renderPending(pendingItems);
   renderUsers(userItems);
-  statusEl.textContent = `承認待ち ${pendingItems.length} 件 / ユーザー ${userItems.length} 件`;
+  statusEl.textContent = userQuery
+    ? `承認待ち ${pendingItems.length} 件 / 検索結果 ${userItems.length} 件`
+    : `承認待ち ${pendingItems.length} 件 / ユーザー ${userItems.length} 件`;
 }
 
 refreshBtnEl?.addEventListener("click", () => {
+  loadAdminData().catch((error) => {
+    statusEl.textContent = error?.message || "読み込みに失敗しました";
+  });
+});
+
+userSearchFormEl?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  state.userQuery = userSearchInputEl?.value || "";
+  loadAdminData().catch((error) => {
+    statusEl.textContent = error?.message || "読み込みに失敗しました";
+  });
+});
+
+userSearchInputEl?.addEventListener("search", () => {
+  state.userQuery = userSearchInputEl.value || "";
+  loadAdminData().catch((error) => {
+    statusEl.textContent = error?.message || "読み込みに失敗しました";
+  });
+});
+
+userSearchClearBtnEl?.addEventListener("click", () => {
+  state.userQuery = "";
+  if (userSearchInputEl) {
+    userSearchInputEl.value = "";
+    userSearchInputEl.focus();
+  }
   loadAdminData().catch((error) => {
     statusEl.textContent = error?.message || "読み込みに失敗しました";
   });

@@ -71,7 +71,20 @@
               <span class="header-user-kicker">アカウント</span>
               <span id="authUserLabel" class="header-user-label">-</span>
             </div>
+            <button id="authProfileEditBtn" type="button" class="header-action-btn" hidden>表示名変更</button>
             <button id="logoutBtn" type="button" class="header-action-btn" hidden>ログアウト</button>
+            <div id="authProfileEditor" class="header-profile-editor glass-panel" hidden>
+              <input
+                id="authProfileDisplayName"
+                type="text"
+                class="side-panel-input header-profile-input"
+                placeholder="表示名"
+                maxlength="120"
+                autocomplete="name"
+              />
+              <button id="authProfileSaveBtn" type="button" class="btn-action">保存</button>
+              <button id="authProfileCancelBtn" type="button" class="btn-secondary">閉じる</button>
+            </div>
             <div class="theme-toggle-wrapper">
               <button id="themeToggle" type="button" class="theme-toggle-btn" aria-label="テーマを切り替え" title="テーマ切り替え">
                 <svg class="theme-icon sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -561,6 +574,15 @@
           </label>
         </div>
         <p class="chunk-description">前回送信画像とほぼ同じ場合はサムネイル送信を省略します</p>
+        <div class="setting-group setting-group-toggle side-panel-toggle">
+          <span class="setting-label">音声プレーヤー表示</span>
+          <label for="showTranscriptAudioEnabled" class="toggle-control">
+            <input id="showTranscriptAudioEnabled" type="checkbox" checked />
+            <span class="toggle-track" aria-hidden="true"></span>
+            <span id="showTranscriptAudioStateText" class="toggle-text">ON</span>
+          </label>
+        </div>
+        <p class="chunk-description">文字起こしごとの元音声・加工後音声プレーヤーを表示します</p>
       </div>
 
       <div class="side-panel-section">

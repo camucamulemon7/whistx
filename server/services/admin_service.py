@@ -40,7 +40,7 @@ def approve_pending_user(db: Session, *, pending_user_id: int, admin: User) -> d
     return {'ok': True, 'user': serialize_user(pending_user)}
 
 
-def list_users_payload(db: Session) -> dict[str, Any]:
+def list_users_payload(db: Session, *, query: str = '') -> dict[str, Any]:
     items = [
         {
             'id': item.id,
@@ -52,9 +52,9 @@ def list_users_payload(db: Session) -> dict[str, Any]:
             'lastLoginAt': item.last_login_at.isoformat() if item.last_login_at else None,
             'approvedAt': item.approved_at.isoformat() if item.approved_at else None,
         }
-        for item in user_repository.list_all_users(db)
+        for item in user_repository.search_users(db, query=query)
     ]
-    return {'items': items}
+    return {'items': items, 'query': query.strip()}
 
 
 def update_user_role(db: Session, *, user_id: int, role: str) -> dict[str, Any]:

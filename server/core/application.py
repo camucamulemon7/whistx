@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import logging
 import time
 from pathlib import Path
+from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def create_app() -> FastAPI:
     configure_application_logging(legacy.settings.app_log_level)
-    app = FastAPI(title="whistx", version="2.0.0")
+    app = FastAPI(title="whistx", version="2.0.0", lifespan=_app_lifespan)
 
     @app.middleware("http")
     async def log_http_requests(request: Request, call_next):
@@ -48,8 +50,6 @@ def create_app() -> FastAPI:
         )
         return response
 
-    app.add_event_handler("startup", legacy.on_startup)
-    app.add_event_handler("shutdown", legacy.on_shutdown)
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(admin.router)
@@ -63,3 +63,12 @@ def create_app() -> FastAPI:
     if web_dir.exists():
         app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="static")
     return app
+
+
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    await legacy.on_startup()
+    try:
+        yield
+    finally:
+        await legacy.on_shutdown()
