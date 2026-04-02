@@ -1732,6 +1732,7 @@ body.is-resizing-panels {
   display: flex;
   flex-direction: column;
   min-height: 380px;
+  min-width: 0;
 }
 
 .transcript-panel.is-collapsed,
@@ -1773,6 +1774,7 @@ body.is-resizing-panels {
 .transcript-panel.is-collapsed .downloads-bar,
 .proofread-panel.is-collapsed .proofread-content,
 .summary-panel.is-collapsed .summary-content,
+.proofread-panel.is-collapsed .ai-result-tabs,
 .proofread-panel.is-collapsed .compact-select,
 .proofread-panel.is-collapsed #copyProofreadBtn,
 .proofread-panel.is-collapsed #proofreadBtn,
@@ -2110,6 +2112,15 @@ body.is-resizing-panels {
   justify-content: flex-end;
   gap: var(--space-2);
   width: 100%;
+}
+
+body.is-transcript-audio-hidden .log-audio-actions,
+body.is-transcript-audio-hidden .log-inline-audio {
+  display: none;
+}
+
+body.is-transcript-audio-hidden .log-media-group[data-has-audio="true"][data-has-screenshot="false"] {
+  display: none;
 }
 
 .log-screenshot {
@@ -4231,7 +4242,7 @@ body.is-history-drawer-open {
 
 @media (max-width: 1439px) {
   .workspace-panels {
-    grid-template-columns: minmax(320px, 1.2fr) minmax(280px, 1fr);
+    grid-template-columns: minmax(280px, 1.2fr) minmax(240px, 1fr);
     gap: var(--space-4);
   }
 
@@ -4259,10 +4270,17 @@ body.is-history-drawer-open {
     grid-column: 1;
     min-height: 0;
   }
+}
 
-  .proofread-panel .panel-collapse-btn,
-  .summary-panel .panel-collapse-btn {
-    display: none;
+@media (max-width: 1280px) {
+  .workspace-panels {
+    grid-template-columns: 1fr;
+  }
+
+  .transcript-panel,
+  .proofread-panel.is-ai-active,
+  .summary-panel.is-ai-active {
+    grid-column: auto;
   }
 }
 
@@ -4305,6 +4323,7 @@ body.is-history-drawer-open {
     left: 0;
     z-index: var(--z-modal);
     width: min(420px, calc(100vw - 24px));
+    min-width: 0;
     height: 100vh;
     max-height: none;
     transform: translateX(-110%);
@@ -4316,6 +4335,12 @@ body.is-history-drawer-open {
 
   .history-rail.is-open {
     transform: translateX(0);
+  }
+
+  .history-rail.is-collapsed {
+    width: 92px;
+    padding-left: var(--space-3);
+    padding-right: var(--space-3);
   }
 
   .history-collapse-btn {

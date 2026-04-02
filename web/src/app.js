@@ -39,6 +39,8 @@ const captureScreenshotsEnabledEl = $("#captureScreenshotsEnabled");
 const captureScreenshotsStateTextEl = $("#captureScreenshotsStateText");
 const screenshotDiffSkipEnabledEl = $("#screenshotDiffSkipEnabled");
 const screenshotDiffSkipStateTextEl = $("#screenshotDiffSkipStateText");
+const showTranscriptAudioEnabledEl = $("#showTranscriptAudioEnabled");
+const showTranscriptAudioStateTextEl = $("#showTranscriptAudioStateText");
 const autoGainEnabledEl = $("#autoGainEnabled");
 const autoGainStateTextEl = $("#autoGainStateText");
 const chunkSecondsEl = $("#chunkSeconds");
@@ -53,6 +55,8 @@ const promptTemplateButtonsEl = $("#promptTemplateButtons");
 const workspacePanelsEl = $("#workspacePanels");
 const panelResizerEls = Array.from(document.querySelectorAll("[data-resizer]"));
 const panelToggleEls = Array.from(document.querySelectorAll("[data-panel-toggle]"));
+const WORKSPACE_STACK_BREAKPOINT = 1280;
+const WORKSPACE_DUAL_AI_BREAKPOINT = 1439;
 const chunkHintEl = $("#chunkHint");
 const presetButtons = Array.from(document.querySelectorAll("[data-chunk-preset]"));
 const settingsAdvancedToggleEl = $("#settingsAdvancedToggle");
@@ -319,6 +323,7 @@ const state = {
   screenshotCanvas: null,
   captureScreenshotsEnabled: true,
   screenshotDiffSkipEnabled: true,
+  showTranscriptAudioEnabled: true,
   autoGainEnabled: true,
   screenshotDiffCanvas: null,
   previousScreenshotSignature: null,
@@ -491,7 +496,7 @@ function applyHistoryCollapsed(value, options = {}) {
     workspaceShellEl.classList.toggle("is-history-collapsed", isDesktop && state.historyCollapsed);
   }
   if (historyRailEl) {
-    historyRailEl.classList.toggle("is-collapsed", isDesktop && state.historyCollapsed);
+    historyRailEl.classList.toggle("is-collapsed", state.historyCollapsed);
   }
   if (persist) {
     try {
@@ -507,7 +512,7 @@ function updateHistoryControls() {
   const isMobile = window.innerWidth <= 1100;
   if (historyCollapseBtn) {
     historyCollapseBtn.hidden = isMobile;
-    historyCollapseBtn.classList.toggle("is-collapsed", !isMobile && state.historyCollapsed);
+    historyCollapseBtn.classList.toggle("is-collapsed", state.historyCollapsed);
     historyCollapseBtn.setAttribute("aria-label", state.historyCollapsed ? "履歴を展開" : "履歴をたたむ");
     historyCollapseBtn.title = state.historyCollapsed ? "展開" : "たたむ";
   }
@@ -538,13 +543,6 @@ function applyAdvancedSettingsOpen(open) {
 }
 
 function syncAiResponsiveState() {
-  if (window.innerWidth <= 1439) {
-    ["proofread", "summary"].forEach((key) => {
-      document.querySelector(`.${key}-panel`)?.classList.remove("is-collapsed");
-      document.querySelector(`[data-panel-toggle="${key}"]`)?.classList.remove("is-collapsed");
-    });
-    return;
-  }
   applyPanelCollapseState("proofread", !!state.panelCollapsed.proofread, { persist: false });
   applyPanelCollapseState("summary", !!state.panelCollapsed.summary, { persist: false });
 }
@@ -597,13 +595,16 @@ function applyWorkspaceRatios(left, center, right, options = {}) {
 
 function updateWorkspaceGridTemplate() {
   if (!workspacePanelsEl) return;
-  if (window.innerWidth <= 1100) {
+  if (window.innerWidth <= WORKSPACE_STACK_BREAKPOINT) {
     workspacePanelsEl.style.gridTemplateColumns = "1fr";
     return;
   }
-  if (window.innerWidth <= 1439) {
-    const left = state.panelCollapsed.transcript ? "92px" : `minmax(320px, ${state.panelLeftRatio + 0.2}fr)`;
-    const right = `minmax(280px, ${state.panelCenterRatio + state.panelRightRatio}fr)`;
+  if (window.innerWidth <= WORKSPACE_DUAL_AI_BREAKPOINT) {
+    const activeAiPanel = state.activeAiPanel === "summary" ? "summary" : "proofread";
+    const left = state.panelCollapsed.transcript ? "92px" : `minmax(280px, ${state.panelLeftRatio + 0.2}fr)`;
+    const right = state.panelCollapsed[activeAiPanel]
+      ? "88px"
+      : `minmax(240px, ${state.panelCenterRatio + state.panelRightRatio}fr)`;
     workspacePanelsEl.style.gridTemplateColumns = `${left} ${right}`;
     return;
   }
@@ -676,6 +677,33 @@ function applyScreenshotDiffSkipEnabled(value, options = {}) {
   if (persist) {
     try {
       localStorage.setItem("whistx_screenshot_diff_skip_enabled", enabled ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function applyShowTranscriptAudioEnabled(value, options = {}) {
+  const persist = options.persist !== false;
+  const enabled = !!value;
+  state.showTranscriptAudioEnabled = enabled;
+  if (showTranscriptAudioEnabledEl) {
+    showTranscriptAudioEnabledEl.checked = enabled;
+  }
+  if (showTranscriptAudioStateTextEl) {
+    showTranscriptAudioStateTextEl.textContent = enabled ? "ON" : "OFF";
+  }
+  document.body.classList.toggle("is-transcript-audio-hidden", !enabled);
+  if (!enabled) {
+    document.querySelectorAll(".log-inline-audio").forEach((element) => {
+      if (typeof element.pause === "function") {
+        element.pause();
+      }
+    });
+  }
+  if (persist) {
+    try {
+      localStorage.setItem("whistx_show_transcript_audio_enabled", enabled ? "1" : "0");
     } catch {
       // ignore
     }
@@ -2302,6 +2330,8 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", raw
   if (screenshotPath || rawAudioPath || audioPath) {
     mediaGroup = document.createElement("div");
     mediaGroup.className = "log-media-group";
+    mediaGroup.dataset.hasScreenshot = screenshotPath ? "true" : "false";
+    mediaGroup.dataset.hasAudio = (rawAudioPath || audioPath) ? "true" : "false";
   }
 
   if (screenshotPath && mediaGroup) {
@@ -4389,6 +4419,12 @@ if (screenshotDiffSkipEnabledEl) {
   });
 }
 
+if (showTranscriptAudioEnabledEl) {
+  showTranscriptAudioEnabledEl.addEventListener("change", () => {
+    applyShowTranscriptAudioEnabled(showTranscriptAudioEnabledEl.checked);
+  });
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.sidebarOpen) {
     applySidebarOpen(false);
@@ -4500,6 +4536,13 @@ try {
   applyScreenshotDiffSkipEnabled(savedScreenshotDiffSkip !== "0", { persist: false });
 } catch {
   applyScreenshotDiffSkipEnabled(true, { persist: false });
+}
+
+try {
+  const savedShowTranscriptAudio = readStoredValue("whistx_show_transcript_audio_enabled", null);
+  applyShowTranscriptAudioEnabled(savedShowTranscriptAudio !== "0", { persist: false });
+} catch {
+  applyShowTranscriptAudioEnabled(true, { persist: false });
 }
 
 copyBtn.addEventListener("click", () => {
