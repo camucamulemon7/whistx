@@ -1076,7 +1076,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
                         "state": "ready",
                         "sessionId": session.session_id,
                         "sessionToken": session.access_token,
-                        "backend": f"openai:{settings.asr_model}",
+                        "backend": f"openai-compatible:{settings.asr_model}",
                         "diarizationEnabled": session.collect_audio_for_diarization,
                         "diarizationNumSpeakers": session.diarization_num_speakers,
                         "diarizationMinSpeakers": session.diarization_min_speakers,
@@ -1333,6 +1333,7 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
                     language=session.language,
                     prompt=prompt,
                     temperature=session.temperature,
+                    chunk_hints=_build_chunk_hints(prepared),
                     trace_context=trace_context,
                 )
                 _accumulate_asr_usage(session, result)
@@ -1587,7 +1588,7 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
 def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
     if _use_realtime_asr(settings.asr_model):
         raise RuntimeError(
-            "Realtime ASR models are not supported in the current build. Use a Whisper-compatible ASR_MODEL."
+            "Realtime ASR models are not supported in the current build. Use an OpenAI-compatible transcription ASR_MODEL."
         )
 
     return lambda: OpenAIWhisperTranscriber(
@@ -1658,6 +1659,14 @@ def _build_prompt(session: LiveSession) -> str | None:
     if session.context_max_chars > 0 and len(merged) > session.context_max_chars:
         merged = merged[-session.context_max_chars :].lstrip()
     return merged or None
+
+
+def _build_chunk_hints(prepared: Any) -> dict[str, float]:
+    return {
+        "speech_ratio": float(getattr(prepared, "speech_ratio", 0.0) or 0.0),
+        "rms": float(getattr(prepared, "rms", 0.0) or 0.0),
+        "peak": float(getattr(prepared, "peak", 0.0) or 0.0),
+    }
 
 
 def _append_context(session: LiveSession, text: str) -> None:
@@ -1894,7 +1903,7 @@ async def _retry_weird_transcription_if_needed(
         return result
 
     retry_temperature = float(getattr(settings, "asr_rescue_retry_temperature", 0.25) or 0.25)
-    retry_prompt = _build_rescue_prompt(session)
+    retry_prompt = _build_rescue_prompt(session) if bool(getattr(settings, "asr_send_prompt", True)) else None
     logger.info(
         "Retrying weird transcription: session=%s chars=%d suspicious=%s source=%s",
         session.session_id,
@@ -1908,7 +1917,8 @@ async def _retry_weird_transcription_if_needed(
         mime_type=prepared.mime_type,
         language=session.language,
         prompt=retry_prompt,
-        temperature=retry_temperature,
+        temperature=retry_temperature if bool(getattr(settings, "asr_send_temperature", True)) else session.temperature,
+        chunk_hints=_build_chunk_hints(prepared),
         trace_context=trace_context,
     )
     _accumulate_asr_usage(session, rescue_result)

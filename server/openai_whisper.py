@@ -29,6 +29,14 @@ class OpenAIWhisperTranscriber:
         self.client = OpenAI(**kwargs)
         self.model = model
         self.observer = observer
+        self.backend_profile = str(getattr(settings, "asr_backend_profile", "whisper") or "whisper")
+        self.response_format = _normalize_response_format(getattr(settings, "asr_transcription_response_format", None))
+        self.send_language = bool(getattr(settings, "asr_send_language", True))
+        self.send_prompt = bool(getattr(settings, "asr_send_prompt", True))
+        self.send_temperature = bool(getattr(settings, "asr_send_temperature", True))
+        self.expect_segments = bool(getattr(settings, "asr_expect_segments", True))
+        self.expect_no_speech_prob = bool(getattr(settings, "asr_expect_no_speech_prob", True))
+        self.enable_silence_drop = bool(getattr(settings, "asr_enable_silence_drop", True))
         self.retry_max_attempts = max(1, int(getattr(settings, "asr_retry_max_attempts", 1)))
         self.retry_base_delay_ms = max(0, int(getattr(settings, "asr_retry_base_delay_ms", 0)))
         self.multi_pass_enabled = bool(getattr(settings, "asr_multi_pass_enabled", True))
@@ -41,11 +49,22 @@ class OpenAIWhisperTranscriber:
         language: str | None,
         prompt: str | None,
         temperature: float,
+        chunk_hints: dict[str, float] | None = None,
         trace_context: dict[str, str] | None = None,
     ) -> ASRChunkResult:
         suffix = _ext_from_mime(mime_type)
         response: Any | None = None
         attempt = 0
+        effective_chunk_hints = dict(chunk_hints or {})
+        request_preview = self._build_request_kwargs(
+            file=io.BytesIO(audio_bytes),
+            language=language,
+            prompt=prompt,
+            temperature=temperature,
+        )
+        request_response_format = request_preview.get("response_format")
+        request_keys = [key for key in request_preview.keys() if key != "file"]
+        file_name = f"chunk{suffix}"
 
         with (self.observer.generation(
             name="asr.transcription",
@@ -56,8 +75,12 @@ class OpenAIWhisperTranscriber:
                 "prompt": bool(prompt),
                 "audioBytes": len(audio_bytes),
             },
-            metadata={"endpoint": "audio.transcriptions", "responseFormat": "verbose_json"},
-            model_parameters={"temperature": temperature},
+            metadata={
+                "endpoint": "audio.transcriptions",
+                "profile": self.backend_profile,
+                "responseFormat": request_response_format,
+            },
+            model_parameters={"temperature": temperature if self.send_temperature else None},
             trace_context=trace_context,
         ) if self.observer else _noop_generation()) as generation:
             def _perform_request(request_temperature: float) -> Any:
@@ -65,11 +88,21 @@ class OpenAIWhisperTranscriber:
                 while True:
                     local_attempt += 1
                     file_obj = io.BytesIO(audio_bytes)
-                    file_obj.name = f"chunk{suffix}"
+                    file_obj.name = file_name
+                    request_kwargs = self._build_request_kwargs(
+                        file=file_obj,
+                        language=language,
+                        prompt=prompt,
+                        temperature=request_temperature,
+                    )
+                    request_keys = [key for key in request_kwargs.keys() if key != "file"]
+                    response_format = request_kwargs.get("response_format")
+                    should_retry = False
                     emit_container_log(
                         __name__,
                         "info",
-                        "ASR POST /v1/audio/transcriptions: model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d temp=%.2f",
+                        "ASR POST /v1/audio/transcriptions: profile=%s model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d temp=%s response_format=%s",
+                        self.backend_profile,
                         self.model,
                         mime_type,
                         len(audio_bytes),
@@ -77,10 +110,12 @@ class OpenAIWhisperTranscriber:
                         bool(prompt),
                         local_attempt,
                         self.retry_max_attempts,
-                        request_temperature,
+                        f"{request_temperature:.2f}" if self.send_temperature else "disabled",
+                        response_format or "",
                     )
                     logger.info(
-                        "ASR POST /v1/audio/transcriptions: model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d temp=%.2f",
+                        "ASR POST /v1/audio/transcriptions: profile=%s model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d temp=%s response_format=%s",
+                        self.backend_profile,
                         self.model,
                         mime_type,
                         len(audio_bytes),
@@ -88,24 +123,30 @@ class OpenAIWhisperTranscriber:
                         bool(prompt),
                         local_attempt,
                         self.retry_max_attempts,
-                        request_temperature,
+                        f"{request_temperature:.2f}" if self.send_temperature else "disabled",
+                        response_format or "",
                     )
                     try:
-                        return self.client.audio.transcriptions.create(
-                            model=self.model,
-                            file=file_obj,
-                            language=language or None,
-                            prompt=prompt or None,
-                            temperature=request_temperature,
-                            response_format="verbose_json",
-                        ), local_attempt
+                        return self.client.audio.transcriptions.create(**request_kwargs), local_attempt
                     except Exception as exc:  # noqa: BLE001
-                        if not _should_retry_openai_error(exc) or local_attempt >= self.retry_max_attempts:
+                        should_retry = _should_retry_openai_error(exc) and local_attempt < self.retry_max_attempts
+                        _log_transcription_error(
+                            exc,
+                            backend_profile=self.backend_profile,
+                            model=self.model,
+                            mime_type=mime_type,
+                            audio_bytes_len=len(audio_bytes),
+                            request_keys=request_keys,
+                            response_format=response_format,
+                            should_retry=should_retry,
+                        )
+                        if not should_retry:
                             raise
 
                         delay_seconds = _retry_delay_seconds(self.retry_base_delay_ms, local_attempt)
                         logger.warning(
-                            "ASR retryable error: model=%s attempt=%d/%d delay_ms=%d err=%s",
+                            "ASR retryable error: profile=%s model=%s attempt=%d/%d delay_ms=%d err=%s",
+                            self.backend_profile,
                             self.model,
                             local_attempt,
                             self.retry_max_attempts,
@@ -124,14 +165,28 @@ class OpenAIWhisperTranscriber:
                     raise
 
             assert response is not None
-            text = _extract_text(response).strip()
-            metrics = _extract_confidence_metrics(response)
-            if self.multi_pass_enabled and _should_run_multi_pass(text, metrics):
+            parsed = _parse_transcription_response(response)
+            text = parsed["text"].strip()
+            metrics = _extract_confidence_metrics(
+                response,
+                text=text,
+                expect_no_speech_prob=self.expect_no_speech_prob,
+            )
+            if self.multi_pass_enabled and _should_run_multi_pass(
+                text,
+                metrics,
+                backend_profile=self.backend_profile,
+            ):
                 retry_temperature = max(0.2, float(temperature))
                 retry_response, retry_attempts = _perform_request(retry_temperature)
                 attempt += retry_attempts
-                retry_text = _extract_text(retry_response).strip()
-                retry_metrics = _extract_confidence_metrics(retry_response)
+                retry_parsed = _parse_transcription_response(retry_response)
+                retry_text = retry_parsed["text"].strip()
+                retry_metrics = _extract_confidence_metrics(
+                    retry_response,
+                    text=retry_text,
+                    expect_no_speech_prob=self.expect_no_speech_prob,
+                )
                 if _prefer_multi_pass_result(
                     original_text=text,
                     original_metrics=metrics,
@@ -139,36 +194,45 @@ class OpenAIWhisperTranscriber:
                     retry_metrics=retry_metrics,
                 ):
                     response = retry_response
+                    parsed = retry_parsed
                     text = retry_text
                     metrics = retry_metrics
-            usage_details = _extract_usage_details(response)
+            usage_details = parsed["usage_details"] or _extract_usage_details(response)
             estimated_tokens = _estimate_token_count(text)
             effective_usage_details = usage_details or (
                 {"input": estimated_tokens, "output": 0, "total": estimated_tokens}
                 if estimated_tokens > 0
                 else None
             )
-            if _should_drop_as_silence(response, text, metrics):
+            if self.enable_silence_drop and _should_drop_as_silence(
+                response,
+                text,
+                metrics,
+                chunk_hints=effective_chunk_hints,
+                expect_no_speech_prob=self.expect_no_speech_prob,
+            ):
                 text = ""
             emit_container_log(
                 __name__,
                 "info",
-                "ASR POST /v1/audio/transcriptions done: model=%s chars=%d attempts=%d suspicious=%s no_speech=%.3f avg_logprob=%s compression_ratio=%s",
+                "ASR POST /v1/audio/transcriptions done: profile=%s model=%s chars=%d attempts=%d suspicious=%s no_speech=%s avg_logprob=%s compression_ratio=%s",
+                self.backend_profile,
                 self.model,
                 len(text),
                 attempt,
                 metrics["suspicious"],
-                metrics["max_no_speech_prob"] or 0.0,
+                metrics["max_no_speech_prob"],
                 metrics["avg_logprob"],
                 metrics["compression_ratio"],
             )
             logger.info(
-                "ASR POST /v1/audio/transcriptions done: model=%s chars=%d attempts=%d suspicious=%s no_speech=%.3f avg_logprob=%s compression_ratio=%s",
+                "ASR POST /v1/audio/transcriptions done: profile=%s model=%s chars=%d attempts=%d suspicious=%s no_speech=%s avg_logprob=%s compression_ratio=%s",
+                self.backend_profile,
                 self.model,
                 len(text),
                 attempt,
                 metrics["suspicious"],
-                metrics["max_no_speech_prob"] or 0.0,
+                metrics["max_no_speech_prob"],
                 metrics["avg_logprob"],
                 metrics["compression_ratio"],
             )
@@ -187,7 +251,7 @@ class OpenAIWhisperTranscriber:
                     usage_details=effective_usage_details,
                 )
 
-        start_ms, end_ms = _extract_bounds_ms(response)
+        start_ms, end_ms = _extract_bounds_ms(parsed if self.expect_segments else response)
         return ASRChunkResult(
             text=text,
             start_ms=start_ms,
@@ -203,9 +267,33 @@ class OpenAIWhisperTranscriber:
     def close(self) -> None:
         return None
 
+    def _build_request_kwargs(
+        self,
+        *,
+        file: io.BytesIO,
+        language: str | None,
+        prompt: str | None,
+        temperature: float,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "file": file,
+            "model": self.model,
+        }
+        if self.send_language and language:
+            kwargs["language"] = language
+        if self.send_prompt and prompt:
+            kwargs["prompt"] = prompt
+        if self.send_temperature:
+            kwargs["temperature"] = temperature
+        if self.response_format:
+            kwargs["response_format"] = self.response_format
+        return kwargs
+
 
 
 def _extract_text(response: Any) -> str:
+    if isinstance(response, str):
+        return response
     if isinstance(response, dict):
         value = response.get("text", "")
         return value if isinstance(value, str) else str(value)
@@ -214,9 +302,47 @@ def _extract_text(response: Any) -> str:
     return value if isinstance(value, str) else str(value)
 
 
+def _parse_transcription_response(response: Any) -> dict[str, Any]:
+    try:
+        if isinstance(response, str):
+            text = response
+            return {
+                "text": text,
+                "segments": None,
+                "usage_details": _usage_from_estimate(text),
+            }
+
+        text = _extract_text(response)
+        if not text:
+            alt_text = _read_field(response, "transcript")
+            if isinstance(alt_text, str):
+                text = alt_text
+            elif alt_text is not None:
+                text = str(alt_text)
+
+        usage_details = _extract_usage_details(response)
+        segments = _extract_segments(response)
+        return {
+            "text": text or "",
+            "segments": segments,
+            "usage_details": usage_details or _usage_from_estimate(text),
+        }
+    except Exception:  # noqa: BLE001
+        fallback_text = ""
+        try:
+            fallback_text = _extract_text(response)
+        except Exception:  # noqa: BLE001
+            fallback_text = ""
+        return {
+            "text": fallback_text,
+            "segments": None,
+            "usage_details": _usage_from_estimate(fallback_text),
+        }
+
+
 
 def _extract_bounds_ms(response: Any) -> tuple[int | None, int | None]:
-    segments = _read_field(response, "segments")
+    segments = _extract_segments(response)
     if not isinstance(segments, list) or not segments:
         return None, None
 
@@ -278,6 +404,13 @@ def _extract_usage_details(response: Any) -> dict[str, int] | None:
     return payload or None
 
 
+def _usage_from_estimate(text: str) -> dict[str, int] | None:
+    estimated = _estimate_token_count(text)
+    if estimated <= 0:
+        return None
+    return {"input": estimated, "output": 0, "total": estimated}
+
+
 def _estimate_token_count(text: str) -> int:
     clean = (text or "").strip()
     if not clean:
@@ -290,8 +423,13 @@ def _estimate_token_count(text: str) -> int:
     return max(1, int(round(ascii_tokens + non_ascii_tokens)))
 
 
-def _extract_confidence_metrics(response: Any) -> dict[str, Any]:
-    segments = _read_field(response, "segments")
+def _extract_confidence_metrics(
+    response: Any,
+    *,
+    text: str = "",
+    expect_no_speech_prob: bool = True,
+) -> dict[str, Any]:
+    segments = _extract_segments(response)
     no_speech_probs: list[float] = []
     avg_logprobs: list[float] = []
     compression_ratios: list[float] = []
@@ -321,6 +459,16 @@ def _extract_confidence_metrics(response: Any) -> dict[str, Any]:
         suspicion_score += 1
     if compression_ratio_value is not None and compression_ratio_value >= 2.4:
         suspicion_score += 1
+    if _has_replacement_chars(text):
+        suspicion_score += 2
+    if _is_extremely_short_text(text):
+        suspicion_score += 1
+    if _has_repetition_noise(text):
+        suspicion_score += 2
+    if _looks_garbled_text(text):
+        suspicion_score += 1
+    if max_no_speech_prob is None and expect_no_speech_prob:
+        suspicion_score = max(0, suspicion_score - 1)
 
     return {
         "max_no_speech_prob": max_no_speech_prob,
@@ -330,16 +478,21 @@ def _extract_confidence_metrics(response: Any) -> dict[str, Any]:
     }
 
 
-def _should_run_multi_pass(text: str, metrics: dict[str, Any]) -> bool:
+def _should_run_multi_pass(text: str, metrics: dict[str, Any], *, backend_profile: str = "whisper") -> bool:
     clean = (text or "").strip()
     if not clean:
         return False
-    max_no_speech = float(metrics.get("max_no_speech_prob") or 0.0)
+    max_no_speech = metrics.get("max_no_speech_prob")
     avg_logprob = metrics.get("avg_logprob")
     suspicious = bool(metrics.get("suspicious"))
-    return suspicious and len(_normalize_for_match(clean)) <= 48 and (
-        max_no_speech >= 0.4 or (avg_logprob is not None and float(avg_logprob) <= -0.8)
-    )
+    normalized_len = len(_normalize_for_match(clean))
+    if not suspicious or normalized_len > 48:
+        return False
+    if max_no_speech is not None:
+        return float(max_no_speech) >= 0.4 or (avg_logprob is not None and float(avg_logprob) <= -0.8)
+    if backend_profile == "vllm_qwen3":
+        return _has_replacement_chars(clean) or _has_repetition_noise(clean) or normalized_len <= 18
+    return avg_logprob is not None and float(avg_logprob) <= -0.8
 
 
 def _prefer_multi_pass_result(
@@ -352,11 +505,15 @@ def _prefer_multi_pass_result(
     candidate = (retry_text or "").strip()
     if not candidate:
         return False
-    if len(_normalize_for_match(candidate)) <= len(_normalize_for_match(original_text)):
+    candidate_len = len(_normalize_for_match(candidate))
+    original_len = len(_normalize_for_match(original_text))
+    if candidate_len <= original_len and bool(retry_metrics.get("suspicious")) >= bool(original_metrics.get("suspicious")):
         return False
-    retry_no_speech = float(retry_metrics.get("max_no_speech_prob") or 0.0)
-    original_no_speech = float(original_metrics.get("max_no_speech_prob") or 0.0)
-    return retry_no_speech <= max(0.55, original_no_speech + 0.05)
+    retry_no_speech = retry_metrics.get("max_no_speech_prob")
+    original_no_speech = original_metrics.get("max_no_speech_prob")
+    if retry_no_speech is None or original_no_speech is None:
+        return bool(original_metrics.get("suspicious")) and not bool(retry_metrics.get("suspicious")) or candidate_len > original_len
+    return float(retry_no_speech) <= max(0.55, float(original_no_speech) + 0.05)
 
 
 RETRYABLE_OPENAI_ERRORS = (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)
@@ -431,7 +588,14 @@ def _normalize_for_match(text: str) -> str:
     return normalized.strip()
 
 
-def _should_drop_as_silence(response: Any, text: str, metrics: dict[str, Any] | None = None) -> bool:
+def _should_drop_as_silence(
+    response: Any,
+    text: str,
+    metrics: dict[str, Any] | None = None,
+    *,
+    chunk_hints: dict[str, Any] | None = None,
+    expect_no_speech_prob: bool = True,
+) -> bool:
     clean = text.strip()
     if not clean:
         return True
@@ -439,11 +603,24 @@ def _should_drop_as_silence(response: Any, text: str, metrics: dict[str, Any] | 
     normalized = _normalize_for_match(clean)
     if normalized in KNOWN_SILENCE_HALLUCINATIONS:
         return True
+    if any(pattern in clean for pattern in SILENCE_HALLUCINATION_PATTERNS) and len(normalized) <= 64:
+        return True
+    if len(normalized) <= 4 and _looks_like_short_noise(clean):
+        return True
 
-    segments = _read_field(response, "segments")
-    if not isinstance(segments, list) or not segments:
+    speech_ratio = _as_float(_read_field(chunk_hints or {}, "speech_ratio"))
+    rms = _as_float(_read_field(chunk_hints or {}, "rms"))
+    peak = _as_float(_read_field(chunk_hints or {}, "peak"))
+    if speech_ratio is not None and speech_ratio < 0.02 and len(normalized) <= 24:
+        return True
+    if speech_ratio is not None and speech_ratio < 0.05 and rms is not None and rms < 0.015 and len(normalized) <= 12:
+        return True
+    if peak is not None and peak < 0.03 and speech_ratio is not None and speech_ratio < 0.03 and len(normalized) <= 8:
+        return True
+
+    segments = _extract_segments(response)
+    if not isinstance(segments, list) or not segments or not expect_no_speech_prob:
         return False
-
     no_speech_probs: list[float] = []
     for seg in segments:
         value = _as_float(_read_field(seg, "no_speech_prob"))
@@ -453,14 +630,121 @@ def _should_drop_as_silence(response: Any, text: str, metrics: dict[str, Any] | 
     if not no_speech_probs:
         return False
 
-    if any(pattern in clean for pattern in SILENCE_HALLUCINATION_PATTERNS):
-        return max(no_speech_probs) >= 0.55 and len(normalized) <= 64
-
     if metrics and metrics.get("suspicious") and (metrics.get("max_no_speech_prob") or 0.0) >= 0.7 and len(normalized) <= 24:
         return True
 
     # 無音寄り判定が高く、かつ短文なら無音ハルシネーションの可能性が高い。
     return max(no_speech_probs) >= 0.85 and len(normalized) <= 32
+
+
+def _extract_segments(response: Any) -> list[Any] | None:
+    segments = _read_field(response, "segments")
+    return segments if isinstance(segments, list) else None
+
+
+def _normalize_response_format(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def _has_replacement_chars(text: str) -> bool:
+    return "\ufffd" in (text or "")
+
+
+def _is_extremely_short_text(text: str) -> bool:
+    normalized = _normalize_for_match(text or "")
+    return bool(normalized) and len(normalized) <= 2
+
+
+def _has_repetition_noise(text: str) -> bool:
+    normalized = _normalize_for_match(text or "")
+    if len(normalized) < 12:
+        return False
+    for unit in range(1, min(6, len(normalized) // 3 + 1)):
+        fragment = normalized[:unit]
+        if fragment and fragment * max(3, len(normalized) // max(1, unit)) in normalized:
+            return True
+    return any(char * 6 in normalized for char in set(normalized))
+
+
+def _looks_garbled_text(text: str) -> bool:
+    clean = (text or "").strip()
+    if not clean:
+        return False
+    punctuation = sum(1 for char in clean if not char.isalnum() and not char.isspace())
+    return punctuation >= max(4, len(clean) // 2)
+
+
+def _looks_like_short_noise(text: str) -> bool:
+    clean = (text or "").strip()
+    return bool(clean) and (clean in {"えー", "あー", "ん", "uh", "um"} or _has_repetition_noise(clean))
+
+
+def _extract_error_body(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    if response is None:
+        body = _read_field(exc, "body")
+        return "" if body is None else str(body)
+    try:
+        text = getattr(response, "text", None)
+        if isinstance(text, str):
+            return text
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        content = getattr(response, "content", None)
+        if isinstance(content, bytes):
+            return content.decode("utf-8", errors="replace")
+        if content is not None:
+            return str(content)
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
+def _log_transcription_error(
+    exc: Exception,
+    *,
+    backend_profile: str,
+    model: str,
+    mime_type: str,
+    audio_bytes_len: int,
+    request_keys: list[str],
+    response_format: str | None,
+    should_retry: bool,
+) -> None:
+    status_code = getattr(exc, "status_code", None)
+    body = _extract_error_body(exc)
+    level = logging.WARNING if should_retry else logging.ERROR
+    logger.log(
+        level,
+        "ASR request failed: profile=%s model=%s mime=%s bytes=%d request_keys=%s response_format=%s status=%s retry=%s body=%s err=%s",
+        backend_profile,
+        model,
+        mime_type,
+        audio_bytes_len,
+        request_keys,
+        response_format or "",
+        status_code,
+        should_retry,
+        body,
+        exc,
+    )
+    emit_container_log(
+        __name__,
+        "warning" if should_retry else "error",
+        "ASR request failed: profile=%s model=%s mime=%s bytes=%d request_keys=%s response_format=%s status=%s retry=%s body=%s err=%s",
+        backend_profile,
+        model,
+        mime_type,
+        audio_bytes_len,
+        request_keys,
+        response_format or "",
+        status_code,
+        should_retry,
+        body,
+        exc,
+    )
 
 @contextmanager
 def _noop_generation():

@@ -26,6 +26,7 @@ class SessionTranscriber(Protocol):
         language: str | None,
         prompt: str | None,
         temperature: float,
+        chunk_hints: dict[str, float] | None = None,
         trace_context: dict[str, str] | None = None,
     ) -> ASRChunkResult: ...
 

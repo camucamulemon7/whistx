@@ -10,6 +10,14 @@ class AsrConfig:
     openai_api_key: str
     openai_base_url: str | None
     asr_model: str
+    asr_backend_profile: str
+    asr_transcription_response_format: str | None
+    asr_send_language: bool
+    asr_send_prompt: bool
+    asr_send_temperature: bool
+    asr_expect_segments: bool
+    asr_expect_no_speech_prob: bool
+    asr_enable_silence_drop: bool
     asr_api_timeout_seconds: float
     summary_api_timeout_seconds: float
     proofread_api_timeout_seconds: float
@@ -37,10 +45,32 @@ class AsrConfig:
 
 
 def load_asr_config() -> AsrConfig:
+    asr_backend_profile = (env_first_non_empty("ASR_BACKEND_PROFILE") or "whisper").strip().lower() or "whisper"
+    default_response_format = "verbose_json"
+    default_send_language = True
+    default_send_prompt = True
+    default_send_temperature = True
+    default_expect_segments = True
+    default_expect_no_speech_prob = True
+    default_enable_silence_drop = True
+
+    if asr_backend_profile == "vllm_qwen3":
+        default_expect_no_speech_prob = False
+
     return AsrConfig(
         openai_api_key=env_first_non_empty("ASR_API_KEY", "OPENAI_API_KEY") or "",
         openai_base_url=env_first_non_empty("ASR_BASE_URL", "OPENAI_BASE_URL"),
         asr_model=env_first_non_empty("ASR_MODEL") or env_first_non_empty("WHISPER_MODEL") or "whisper-1",
+        asr_backend_profile=asr_backend_profile,
+        asr_transcription_response_format=(
+            env_first_non_empty("ASR_TRANSCRIPTION_RESPONSE_FORMAT") or default_response_format
+        ),
+        asr_send_language=to_bool_alias(default_send_language, "ASR_SEND_LANGUAGE"),
+        asr_send_prompt=to_bool_alias(default_send_prompt, "ASR_SEND_PROMPT"),
+        asr_send_temperature=to_bool_alias(default_send_temperature, "ASR_SEND_TEMPERATURE"),
+        asr_expect_segments=to_bool_alias(default_expect_segments, "ASR_EXPECT_SEGMENTS"),
+        asr_expect_no_speech_prob=to_bool_alias(default_expect_no_speech_prob, "ASR_EXPECT_NO_SPEECH_PROB"),
+        asr_enable_silence_drop=to_bool_alias(default_enable_silence_drop, "ASR_ENABLE_SILENCE_DROP"),
         asr_api_timeout_seconds=max(1.0, to_float_alias(60.0, "ASR_API_TIMEOUT_SECONDS")),
         summary_api_timeout_seconds=max(1.0, to_float_alias(60.0, "SUMMARY_API_TIMEOUT_SECONDS")),
         proofread_api_timeout_seconds=max(1.0, to_float_alias(60.0, "PROOFREAD_API_TIMEOUT_SECONDS")),

@@ -105,6 +105,14 @@ class RegressionTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
+                'ASR_BACKEND_PROFILE': 'vllm_qwen3',
+                'ASR_TRANSCRIPTION_RESPONSE_FORMAT': 'json',
+                'ASR_SEND_LANGUAGE': '0',
+                'ASR_SEND_PROMPT': '0',
+                'ASR_SEND_TEMPERATURE': '0',
+                'ASR_EXPECT_SEGMENTS': '0',
+                'ASR_EXPECT_NO_SPEECH_PROB': '0',
+                'ASR_ENABLE_SILENCE_DROP': '0',
                 'ASR_RETRY_MAX_ATTEMPTS': '5',
                 'ASR_RETRY_BASE_DELAY_MS': '250',
                 'ASR_RESCUE_RETRY_ENABLED': '1',
@@ -118,6 +126,14 @@ class RegressionTests(unittest.TestCase):
         ):
             config = load_asr_config()
 
+        self.assertEqual(config.asr_backend_profile, 'vllm_qwen3')
+        self.assertEqual(config.asr_transcription_response_format, 'json')
+        self.assertFalse(config.asr_send_language)
+        self.assertFalse(config.asr_send_prompt)
+        self.assertFalse(config.asr_send_temperature)
+        self.assertFalse(config.asr_expect_segments)
+        self.assertFalse(config.asr_expect_no_speech_prob)
+        self.assertFalse(config.asr_enable_silence_drop)
         self.assertEqual(config.asr_retry_max_attempts, 5)
         self.assertEqual(config.asr_retry_base_delay_ms, 250)
         self.assertTrue(config.asr_rescue_retry_enabled)
@@ -1068,6 +1084,107 @@ class RegressionTests(unittest.TestCase):
         self.assertAlmostEqual(result.max_no_speech_prob or 0.0, 0.91)
         self.assertAlmostEqual(result.avg_logprob or 0.0, -1.2)
         self.assertAlmostEqual(result.compression_ratio or 0.0, 2.6)
+
+    def test_openai_whisper_builds_request_kwargs_from_backend_profile(self) -> None:
+        custom_settings = SimpleNamespace(
+            asr_api_timeout_seconds=30.0,
+            asr_backend_profile='vllm_qwen3',
+            asr_transcription_response_format='verbose_json',
+            asr_send_language=False,
+            asr_send_prompt=False,
+            asr_send_temperature=False,
+            asr_expect_segments=True,
+            asr_expect_no_speech_prob=False,
+            asr_enable_silence_drop=True,
+            asr_retry_max_attempts=1,
+            asr_retry_base_delay_ms=0,
+            asr_multi_pass_enabled=False,
+        )
+        with patch.object(openai_whisper, 'settings', custom_settings):
+            transcriber = openai_whisper.OpenAIWhisperTranscriber(
+                api_key='test-key',
+                base_url=None,
+                model='Qwen3-ASR',
+                observer=None,
+            )
+
+        kwargs = transcriber._build_request_kwargs(
+            file=BytesIO(b'audio'),
+            language='ja',
+            prompt='use glossary',
+            temperature=0.3,
+        )
+
+        self.assertEqual(kwargs['model'], 'Qwen3-ASR')
+        self.assertEqual(kwargs['response_format'], 'verbose_json')
+        self.assertNotIn('language', kwargs)
+        self.assertNotIn('prompt', kwargs)
+        self.assertNotIn('temperature', kwargs)
+
+    def test_openai_whisper_parser_supports_verbose_json_dict(self) -> None:
+        parsed = openai_whisper._parse_transcription_response(
+            {
+                'text': 'hello world',
+                'segments': [{'start': 0.0, 'end': 1.5}],
+                'usage': {'prompt_tokens': 2, 'completion_tokens': 0, 'total_tokens': 2},
+            }
+        )
+
+        self.assertEqual(parsed['text'], 'hello world')
+        self.assertEqual(len(parsed['segments']), 1)
+        self.assertEqual(parsed['usage_details'], {'input': 2, 'output': 0, 'total': 2})
+
+    def test_openai_whisper_parser_supports_json_response(self) -> None:
+        parsed = openai_whisper._parse_transcription_response({'text': 'json only'})
+        self.assertEqual(parsed['text'], 'json only')
+        self.assertIsNone(parsed['segments'])
+        self.assertEqual(parsed['usage_details'], {'input': 2, 'output': 0, 'total': 2})
+
+    def test_openai_whisper_parser_supports_text_response(self) -> None:
+        parsed = openai_whisper._parse_transcription_response('plain text transcript')
+        self.assertEqual(parsed['text'], 'plain text transcript')
+        self.assertIsNone(parsed['segments'])
+        self.assertGreater(parsed['usage_details']['total'], 0)
+
+    def test_openai_whisper_handles_missing_segments_and_missing_no_speech_prob(self) -> None:
+        response = {
+            'text': 'これは通常の文字起こしです',
+            'segments': [{'start': 0.0, 'end': 1.0, 'avg_logprob': -0.2}],
+        }
+
+        metrics = openai_whisper._extract_confidence_metrics(
+            response,
+            text=response['text'],
+            expect_no_speech_prob=False,
+        )
+        start_ms, end_ms = openai_whisper._extract_bounds_ms({'text': 'segments missing'})
+
+        self.assertIsNone(metrics['max_no_speech_prob'])
+        self.assertFalse(metrics['suspicious'])
+        self.assertEqual((start_ms, end_ms), (None, None))
+
+    def test_openai_whisper_logs_error_body_for_4xx(self) -> None:
+        request = httpx.Request('POST', 'https://example.com/v1/audio/transcriptions')
+        response = httpx.Response(422, request=request, content=b'{"detail":"bad audio"}')
+        error = BadRequestError(message='bad request', response=response, body={'detail': 'bad audio'})
+
+        with patch.object(openai_whisper.logger, 'log', autospec=True) as log_mock:
+            openai_whisper._log_transcription_error(
+                error,
+                backend_profile='vllm_qwen3',
+                model='Qwen3-ASR',
+                mime_type='audio/webm',
+                audio_bytes_len=123,
+                request_keys=['model', 'response_format'],
+                response_format='verbose_json',
+                should_retry=False,
+            )
+
+        self.assertTrue(log_mock.called)
+        logged_text = ' '.join(str(value) for value in log_mock.call_args.args)
+        self.assertIn('vllm_qwen3', logged_text)
+        self.assertIn('verbose_json', logged_text)
+        self.assertIn('bad audio', logged_text)
 
     def test_openai_whisper_multi_pass_prefers_longer_retry_result(self) -> None:
         first_response = SimpleNamespace(

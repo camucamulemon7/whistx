@@ -1,14 +1,15 @@
 # whistx
 
-`whistx` is a browser-based transcription app built around an OpenAI-compatible Whisper ASR API.
+`whistx` is a browser-based transcription app built around an OpenAI-compatible transcription ASR API.
 It records microphone audio, shared screen audio, or both, sends chunked audio to a FastAPI backend, and streams finalized transcript segments back to the UI.
 
 ## What It Does
 
 - Real-time chunk-based transcription over WebSocket
-- OpenAI-compatible Whisper ASR backend support
+- OpenAI-compatible transcription backend support
   - OpenAI `whisper-1`
   - OpenAI-compatible Whisper deployments
+  - vLLM `/v1/audio/transcriptions` deployments such as Qwen3-ASR
   - Other compatible backends configured via `ASR_BASE_URL` / `ASR_MODEL`
 - Audio source selection
   - Microphone
@@ -76,7 +77,7 @@ Current backend layout after the refactor:
 5. Finalized text is normalized and stored
 6. UI updates immediately with final segments
 
-Realtime ASR models are not supported in the current build. The old `server/voxtral_realtime.py` path has been removed because `_build_transcriber_factory()` rejects realtime models before runtime. Use a Whisper-compatible `ASR_MODEL`.
+Realtime ASR models are not supported in the current build. The old `server/voxtral_realtime.py` path has been removed because `_build_transcriber_factory()` rejects realtime models before runtime. Use an OpenAI-compatible transcription `ASR_MODEL`.
 
 ## Requirements
 
@@ -161,6 +162,46 @@ If you use an OpenAI-compatible local or self-hosted backend, also set:
 ```env
 ASR_BASE_URL=http://localhost:8000/v1
 ASR_MODEL=whisper-1
+ASR_BACKEND_PROFILE=whisper
+ASR_TRANSCRIPTION_RESPONSE_FORMAT=verbose_json
+```
+
+For Qwen3-ASR on vLLM, start with:
+
+```env
+ASR_BASE_URL=http://localhost:8000/v1
+ASR_MODEL=Qwen/Qwen3-ASR-<model>
+ASR_BACKEND_PROFILE=vllm_qwen3
+ASR_TRANSCRIPTION_RESPONSE_FORMAT=verbose_json
+ASR_EXPECT_NO_SPEECH_PROB=0
+ASR_SEND_PROMPT=1
+ASR_SEND_TEMPERATURE=1
+```
+
+Recommended validation order for Qwen3-ASR / vLLM:
+
+1. Connect with `ASR_TRANSCRIPTION_RESPONSE_FORMAT=verbose_json`.
+2. Confirm `segments` are returned and `tsStart` / `tsEnd` are populated.
+3. Confirm transcription still works when `no_speech_prob` is missing.
+4. If the backend does not support `verbose_json` well enough, try `ASR_TRANSCRIPTION_RESPONSE_FORMAT=json`.
+5. Use `ASR_TRANSCRIPTION_RESPONSE_FORMAT=text` only as a last resort.
+
+Profile guidance:
+
+- `ASR_BACKEND_PROFILE=whisper`
+  Keeps existing Whisper-oriented behavior, including `no_speech_prob` aware silence suppression.
+- `ASR_BACKEND_PROFILE=vllm_qwen3`
+  Prefers `verbose_json`, tolerates missing `segments` / `no_speech_prob`, and softens silence-drop heuristics.
+
+The request builder is capability-aware. These toggles let you adjust what the backend actually receives:
+
+```env
+ASR_SEND_LANGUAGE=1
+ASR_SEND_PROMPT=1
+ASR_SEND_TEMPERATURE=1
+ASR_EXPECT_SEGMENTS=1
+ASR_EXPECT_NO_SPEECH_PROB=1
+ASR_ENABLE_SILENCE_DROP=1
 ```
 
 ## Important Environment Variables
@@ -170,6 +211,14 @@ ASR_MODEL=whisper-1
 - `ASR_API_KEY`
 - `ASR_BASE_URL`
 - `ASR_MODEL`
+- `ASR_BACKEND_PROFILE`
+- `ASR_TRANSCRIPTION_RESPONSE_FORMAT`
+- `ASR_SEND_LANGUAGE`
+- `ASR_SEND_PROMPT`
+- `ASR_SEND_TEMPERATURE`
+- `ASR_EXPECT_SEGMENTS`
+- `ASR_EXPECT_NO_SPEECH_PROB`
+- `ASR_ENABLE_SILENCE_DROP`
 - `ASR_DEFAULT_LANGUAGE`
 - `ASR_DEFAULT_PROMPT`
 - `ASR_DEFAULT_TEMPERATURE`
