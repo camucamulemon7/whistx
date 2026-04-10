@@ -135,6 +135,8 @@ def save_history(
     title: str | None,
     summary_text: str | None,
     proofread_text: str | None,
+    edited_transcript_text: str | None = None,
+    transcript_edited_at: str | None = None,
 ) -> PendingHistorySave:
     existing = history_repository.get_history_by_runtime_session(
         db,
@@ -158,12 +160,18 @@ def save_history(
 
     summary_value = (summary_text or "").strip() or None
     proofread_value = (proofread_text or "").strip() or None
+    edited_value = (edited_transcript_text or "").strip() or None
+    edited_at_value = (transcript_edited_at or "").strip() or None
+    if edited_value and len(edited_value) > 200_000:
+        raise HistoryError("edited_transcript_too_long", 400)
     try:
         plain_text = snapshot.txt_path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError) as exc:
         raise HistoryError("transcript_read_failed", 500) from exc
     if not plain_text:
         plain_text = "\n".join(str(row.get("text") or "").strip() for row in snapshot.segments).strip()
+    if edited_value:
+        plain_text = edited_value
     if not plain_text:
         raise HistoryError("empty_transcript", 400)
 
@@ -191,6 +199,8 @@ def save_history(
             "segmentCount": 0,
             "summaryText": summary_value,
             "proofreadText": proofread_value,
+            "transcriptEdited": bool(edited_value),
+            "transcriptEditedAt": edited_at_value,
         },
         summary_text=summary_value,
         proofread_text=proofread_value,
@@ -253,6 +263,8 @@ def save_history(
                     "segmentCount": len(db_segments),
                     "summaryText": summary_value,
                     "proofreadText": proofread_value,
+                    "transcriptEdited": bool(edited_value),
+                    "transcriptEditedAt": edited_at_value,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -386,7 +398,21 @@ def resolve_history_audio_path(history: TranscriptHistory, filename: str) -> Pat
 
 def build_history_detail_payload(history: TranscriptHistory) -> dict[str, Any]:
     audio_map: dict[int, dict[str, str | None]] = {}
+    transcript_edited = False
+    transcript_edited_at: str | None = None
     jsonl_path = get_history_file_path(history, history.jsonl_path)
+    artifact_dir = _storage()._resolve_history_dir(history)
+    metadata_path = (artifact_dir / "metadata.json") if artifact_dir else None
+    if metadata_path and metadata_path.exists():
+        try:
+            metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if isinstance(metadata_payload, dict):
+                transcript_edited = bool(metadata_payload.get("transcriptEdited"))
+                edited_at_raw = _as_str(metadata_payload.get("transcriptEditedAt"))
+                transcript_edited_at = edited_at_raw or None
+        except Exception:
+            transcript_edited = False
+            transcript_edited_at = None
     if jsonl_path is not None and jsonl_path.exists():
         try:
             for row in read_jsonl_records(jsonl_path):
@@ -410,6 +436,8 @@ def build_history_detail_payload(history: TranscriptHistory) -> dict[str, Any]:
         "plainText": history.plain_text,
         "summaryText": history.summary_text,
         "proofreadText": history.proofread_text,
+        "transcriptEdited": transcript_edited,
+        "transcriptEditedAt": transcript_edited_at,
         "hasDiarization": history.has_diarization,
         "segmentCount": history.segment_count,
         "segments": [
@@ -498,6 +526,8 @@ def create_history_from_payload(db: Session, *, user: User, payload: Any) -> Tra
             title=payload.title,
             summary_text=payload.summaryText,
             proofread_text=payload.proofreadText,
+            edited_transcript_text=getattr(payload, "editedTranscriptText", None),
+            transcript_edited_at=getattr(payload, "transcriptEditedAt", None),
         )
         _storage().finalize_history_artifacts(pending.staged_artifacts)
         db.commit()

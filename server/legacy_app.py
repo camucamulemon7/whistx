@@ -60,11 +60,11 @@ from .services.history_service import (
     build_history_list_item,
     cleanup_expired_runtime_data,
     count_histories,
+    create_history_from_payload,
     get_history_file_path,
     get_history_for_user,
     list_histories,
     resolve_history_screenshot_path,
-    save_history,
 )
 from .services.glossary_service import apply_shared_glossary_replacements, load_shared_glossary
 from .summarizer import OpenAISummarizer
@@ -730,22 +730,9 @@ async def create_history(
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     try:
-        history = save_history(
-            db,
-            user=user,
-            runtime_session_id=payload.runtimeSessionId.strip(),
-            runtime_session_token=payload.runtimeSessionToken,
-            title=payload.title,
-            summary_text=payload.summaryText,
-            proofread_text=payload.proofreadText,
-        )
-        db.commit()
+        history = create_history_from_payload(db, user=user, payload=payload)
     except HistoryError as exc:
-        db.rollback()
         return JSONResponse(status_code=exc.status_code, content={"error": exc.code})
-    except IntegrityError:
-        db.rollback()
-        return JSONResponse(status_code=409, content={"error": "history_already_saved"})
 
     return JSONResponse(
         {

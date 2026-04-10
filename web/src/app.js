@@ -266,6 +266,8 @@ const state = {
   savedHistoryId: null,
   viewingHistoryId: null,
   saveInFlight: false,
+  transcriptEdited: false,
+  transcriptEditedAt: "",
   seq: 0,
   offsetMs: 0,
   chunkMs: CHUNK_DEFAULT_SECONDS * 1000,
@@ -1915,7 +1917,17 @@ function updateSaveControls() {
     saveTitleInputEl.disabled = viewingHistory || state.saveInFlight || recordingLocked;
   }
   setSaveBadge(
-    saved ? "保存済み" : recordingLocked ? "録音中は保存不可" : isGuest ? "ゲストでは保存不可" : authenticated ? "未保存" : "ログインが必要",
+    saved
+      ? "保存済み"
+      : recordingLocked
+        ? "録音中は保存不可"
+        : isGuest
+          ? "ゲストでは保存不可"
+          : authenticated
+            ? state.transcriptEdited
+              ? "未保存（手動修正あり）"
+              : "未保存"
+            : "ログインが必要",
     saved
   );
 }
@@ -2162,6 +2174,8 @@ function resetCurrentSaveState() {
   state.runtimeSessionToken = "";
   state.savedHistoryId = null;
   state.viewingHistoryId = null;
+  state.transcriptEdited = false;
+  state.transcriptEditedAt = "";
   if (saveTitleInputEl) {
     saveTitleInputEl.value = "";
   }
@@ -2191,6 +2205,16 @@ function extractTranscriptText() {
   const rows = Array.from(logEl.querySelectorAll(".log-row .text"));
   const fromDom = rows.map((node) => node.textContent || "").join("\n").trim();
   return fromDom;
+}
+
+function markTranscriptEdited() {
+  state.transcriptEdited = true;
+  state.transcriptEditedAt = new Date().toISOString();
+  state.savedHistoryId = null;
+  state.viewingHistoryId = null;
+  state.history.selectedId = null;
+  updateDownloadLinks();
+  updateSaveControls();
 }
 
 function updateDownloadLinks() {
@@ -2325,6 +2349,45 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", raw
   const body = document.createElement("div");
   body.className = "log-body";
   body.append(content);
+
+  const actions = document.createElement("div");
+  actions.className = "log-actions";
+  const editButton = document.createElement("button");
+  editButton.type = "button";
+  editButton.className = "log-edit-btn";
+  editButton.textContent = "修正";
+  editButton.title = "この行を修正";
+  editButton.addEventListener("click", () => {
+    if (!canUseWorkspace()) {
+      showToast("ログインが必要です", "error");
+      return;
+    }
+    if (state.recording || state.finalizingStop) {
+      showToast("録音停止後に修正できます", "error");
+      return;
+    }
+    if (state.viewingHistoryId) {
+      showToast("履歴表示中は修正できません", "error");
+      return;
+    }
+    const currentRaw = String(content.dataset.rawText || "").trim();
+    const edited = window.prompt("文字起こしを修正", currentRaw);
+    if (edited === null) return;
+    const normalized = String(edited).trim();
+    if (!normalized || normalized === currentRaw) return;
+    content.dataset.rawText = normalized;
+    content.textContent = renderTranscriptText(normalized, content.dataset.speaker || "");
+    const targetSeq = Number(row.dataset.seq);
+    if (Number.isFinite(targetSeq)) {
+      const target = state.segments.find((item) => Number(item.seq) === targetSeq);
+      if (target) target.text = normalized;
+    }
+    markTranscriptEdited();
+    markProofreadStale();
+    showToast("修正を反映しました", "success");
+  });
+  actions.append(editButton);
+  body.append(actions);
 
   let mediaGroup = null;
   if (screenshotPath || rawAudioPath || audioPath) {
@@ -3738,6 +3801,8 @@ async function startRecording() {
   state.pendingSendChain = Promise.resolve();
   state.log = [];
   state.segments = [];
+  state.transcriptEdited = false;
+  state.transcriptEditedAt = "";
   state.logAutoScrollEnabled = true;
   renderEmptyTranscriptState();
   setSummary("", "未生成");
@@ -4151,6 +4216,8 @@ function clearView() {
   }
   state.log = [];
   state.segments = [];
+  state.transcriptEdited = false;
+  state.transcriptEditedAt = "";
   state.logAutoScrollEnabled = true;
   state.history.selectedId = null;
   state.viewingHistoryId = null;
@@ -5059,6 +5126,8 @@ async function logout() {
   clearHistoryState(state);
   state.log = [];
   state.segments = [];
+  state.transcriptEdited = false;
+  state.transcriptEditedAt = "";
   state.logAutoScrollEnabled = true;
   renderEmptyTranscriptState();
   setSummary("", "未生成");
@@ -5171,6 +5240,8 @@ function renderHistoryDetail(payload) {
   }
   setSummary(payload.summaryText || "", payload.savedAt ? `保存: ${new Date(payload.savedAt).toLocaleString("ja-JP")}` : "履歴");
   setProofread(payload.proofreadText || "", payload.savedAt ? `保存: ${new Date(payload.savedAt).toLocaleString("ja-JP")}` : "履歴");
+  state.transcriptEdited = !!payload.transcriptEdited;
+  state.transcriptEditedAt = String(payload.transcriptEditedAt || "");
   if (saveTitleInputEl) {
     saveTitleInputEl.value = String(payload.title || "");
   }
@@ -5259,6 +5330,8 @@ async function saveCurrentHistory() {
       title: buildAutoSaveTitle(),
       summaryText: state.summary || null,
       proofreadText: state.proofread || null,
+      editedTranscriptText: state.transcriptEdited ? extractTranscriptText() : null,
+      transcriptEditedAt: state.transcriptEditedAt || null,
     });
   } catch (error) {
     state.saveInFlight = false;
@@ -5279,6 +5352,8 @@ async function saveCurrentHistory() {
   state.savedHistoryId = payload.history?.id || null;
   state.viewingHistoryId = state.savedHistoryId;
   state.history.selectedId = state.savedHistoryId;
+  state.transcriptEdited = false;
+  state.transcriptEditedAt = "";
   updateDownloadLinks();
   updateSaveControls();
   await loadHistoryList();
