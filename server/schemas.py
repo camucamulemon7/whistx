@@ -26,3 +26,5 @@ class HistorySaveRequest(BaseModel):
     title: str | None = Field(default=None, max_length=255)
     summaryText: str | None = None
     proofreadText: str | None = None
+    editedTranscriptText: str | None = None
+    transcriptEditedAt: str | None = None

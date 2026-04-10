@@ -659,6 +659,72 @@ class RegressionTests(unittest.TestCase):
             self.assertTrue((history_dir / (history.txt_path or '')).exists())
             self.assertIsNotNone(zip_response)
 
+    def test_history_save_prefers_edited_transcript_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            transcripts_dir = root / 'transcripts'
+            history_dir = root / 'history'
+            debug_chunks_dir = root / 'debug_chunks'
+            runtime_dir = transcripts_dir / '2026' / '03' / '22'
+            runtime_dir.mkdir(parents=True)
+            history_dir.mkdir()
+            debug_chunks_dir.mkdir()
+
+            session_id = 'sess-edited-text'
+            (runtime_dir / f'{session_id}.txt').write_text('raw transcript\n', encoding='utf-8')
+            (runtime_dir / f'{session_id}.jsonl').write_text(
+                '{"type":"final","seq":0,"text":"raw transcript","tsStart":0,"tsEnd":100}\n',
+                encoding='utf-8',
+            )
+            (runtime_dir / f'{session_id}.meta.json').write_text(
+                '{"finalized": true, "accessToken": "token"}',
+                encoding='utf-8',
+            )
+
+            user = User(id=1, email='user@example.com', password_hash='hash', is_active=True, is_admin=False)
+
+            class DummyDB:
+                def scalar(self, *_args, **_kwargs):
+                    return None
+
+                def add(self, *_args, **_kwargs):
+                    return None
+
+                def flush(self):
+                    return None
+
+                def commit(self):
+                    return None
+
+                def rollback(self):
+                    return None
+
+            payload = SimpleNamespace(
+                runtimeSessionId=session_id,
+                runtimeSessionToken='token',
+                title='sample',
+                summaryText=None,
+                proofreadText=None,
+                editedTranscriptText='edited transcript body',
+                transcriptEditedAt='2026-04-10T00:00:00+00:00',
+            )
+
+            with patch.object(
+                history_service,
+                'settings',
+                SimpleNamespace(
+                    transcripts_dir=transcripts_dir,
+                    history_dir=history_dir,
+                    debug_chunks_dir=debug_chunks_dir,
+                ),
+            ):
+                history = history_service.create_history_from_payload(DummyDB(), user=user, payload=payload)
+                detail = history_service.build_history_detail_payload(history)
+
+            self.assertEqual(history.plain_text, 'edited transcript body')
+            self.assertTrue(detail.get('transcriptEdited'))
+            self.assertEqual(detail.get('transcriptEditedAt'), '2026-04-10T00:00:00+00:00')
+
     def test_create_history_does_not_commit_before_artifacts_are_finalized(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
