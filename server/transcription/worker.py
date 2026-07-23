@@ -40,6 +40,8 @@ class WorkerDependencies:
 async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependencies) -> None:
     emitted_segments = 0
     emitted_chars = 0
+    if not hasattr(session, "failed_prepared_chunks"):
+        session.failed_prepared_chunks = []
     trace_context = (
         deps.observer.create_trace_context(
             name="asr.session",
