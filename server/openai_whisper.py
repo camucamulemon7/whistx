@@ -120,7 +120,7 @@ class OpenAIWhisperTranscriber:
                     response, used_attempts = _perform_request(temperature)
                     attempt += used_attempts
                     break
-                except Exception as exc:  # noqa: BLE001
+                except Exception:  # noqa: BLE001
                     raise
 
             assert response is not None

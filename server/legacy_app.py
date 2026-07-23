@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
-import hmac
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
@@ -21,7 +20,7 @@ import wave
 from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest, urlopen
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -37,20 +36,19 @@ from .auth import (
     count_admin_users,
     delete_user_session,
     get_user_by_email,
-    get_user_by_identity,
     has_admin_account,
     list_all_users,
     list_pending_users,
     verify_password,
 )
-from .asr import SessionTranscriber
+from .asr import ASRChunkResult, SessionTranscriber
 from .audio_pipeline import AudioPreprocessor
 from .config import settings
 from .db import db_session, get_db, init_db
 from .deps import get_current_admin, get_current_user
 from .diarizer import AudioChunk, PyannoteSpeakerDiarizer, SpeakerTurn
 from .langfuse_observer import make_langfuse_observer
-from .models import TranscriptHistory, User
+from .models import User
 from .openai_whisper import OpenAIWhisperTranscriber
 from .schemas import BootstrapAdminRequest, HistorySaveRequest, LoginRequest, RegisterRequest
 from .services.auth_service import get_optional_user_from_request as auth_service_get_optional_user_from_request, map_keycloak_auth_error as auth_service_map_keycloak_auth_error, upsert_keycloak_user as auth_service_upsert_keycloak_user
@@ -65,6 +63,7 @@ from .services.history_service import (
     list_histories,
     resolve_history_screenshot_path,
     save_history,
+    serialize_app_datetime,
 )
 from .services.glossary_service import apply_shared_glossary_replacements, load_shared_glossary
 from .summarizer import OpenAISummarizer
@@ -753,7 +752,7 @@ async def create_history(
             "history": {
                 "id": history.id,
                 "title": history.title,
-                "savedAt": history_service.serialize_app_datetime(history.saved_at),
+                "savedAt": serialize_app_datetime(history.saved_at),
                 "segmentCount": history.segment_count,
             },
         }
@@ -1760,7 +1759,7 @@ FILLER_REPEAT_RE = re.compile(r"(えーと|えっと|えー|あのー|あの|そ
 MULTISPACE_NUMBER_RE = re.compile(r"(?<=\d)\s+(?=\d)")
 JP_CHAR_CLASS = r"\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
 JP_SPACE_BEFORE_RE = re.compile(rf"(?<=[{JP_CHAR_CLASS}])\s+(?=[{JP_CHAR_CLASS}])")
-JP_PUNCT_SPACE_RE = re.compile(rf"\s+([、。，．・：；！？）］】」』])|([（［【「『])\s+")
+JP_PUNCT_SPACE_RE = re.compile(r"\s+([、。，．・：；！？）］】」』])|([（［【「『])\s+")
 OVERLAP_COMPARE_DROP_RE = re.compile(r"[\s、。，．・：；！？!?,.:;()\[\]{}<>\"'「」『』]+")
 MIN_OVERLAP_MATCH_CHARS = 12
 MAX_OVERLAP_MATCH_CHARS = 96
