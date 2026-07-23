@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -215,6 +216,7 @@ class AudioPipelineTests(unittest.TestCase):
 
         session = SimpleNamespace(
             session_id="sess-2",
+            access_token="test-access-token",
             language="ja",
             audio_source="mic",
             collect_audio_for_diarization=False,
@@ -268,19 +270,21 @@ class AudioPipelineTests(unittest.TestCase):
             await session.queue.put(first)
             await session.queue.put(second)
             await session.queue.put(None)
-            with patch.object(legacy_app, "_prepare_audio_for_asr", side_effect=prepare_calls):
-                with patch.object(legacy_app, "_safe_send", side_effect=fake_safe_send):
-                    with patch.object(
-                        legacy_app,
-                        "settings",
-                        SimpleNamespace(
-                            asr_model="whisper-1",
-                            asr_vad_drop_enabled=False,
-                            asr_vad_speech_ratio_min=0.02,
-                            asr_preprocess_sample_rate=16000,
-                        ),
-                    ):
-                        await legacy_app._session_worker(object(), session)
+            with tempfile.TemporaryDirectory() as temp_dir:
+                with patch.object(legacy_app, "_prepare_audio_for_asr", side_effect=prepare_calls):
+                    with patch.object(legacy_app, "_safe_send", side_effect=fake_safe_send):
+                        with patch.object(
+                            legacy_app,
+                            "settings",
+                            SimpleNamespace(
+                                asr_model="whisper-1",
+                                asr_vad_drop_enabled=False,
+                                asr_vad_speech_ratio_min=0.02,
+                                asr_preprocess_sample_rate=16000,
+                                debug_chunks_dir=Path(temp_dir),
+                            ),
+                        ):
+                            await legacy_app._session_worker(object(), session)
 
         asyncio.run(run_test())
         self.assertEqual(session.transcriber.calls, 2)
