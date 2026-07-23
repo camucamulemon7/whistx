@@ -1113,6 +1113,7 @@ class RegressionTests(unittest.TestCase):
             language='ja',
             prompt='use glossary',
             temperature=0.3,
+            response_format='verbose_json',
         )
 
         self.assertEqual(kwargs['model'], 'Qwen3-ASR')
@@ -1120,6 +1121,44 @@ class RegressionTests(unittest.TestCase):
         self.assertNotIn('language', kwargs)
         self.assertNotIn('prompt', kwargs)
         self.assertNotIn('temperature', kwargs)
+
+    def test_openai_whisper_falls_back_from_verbose_json_to_json(self) -> None:
+        request = httpx.Request('POST', 'https://example.com/v1/audio/transcriptions')
+        unsupported = httpx.Response(
+            400,
+            request=request,
+            content=b'{"error":{"message":"Currently do not support verbose_json"}}',
+        )
+        response = {'text': 'json fallback worked'}
+        create_calls: list[dict[str, object]] = []
+
+        def create(**kwargs):
+            create_calls.append(kwargs)
+            if kwargs.get('response_format') == 'verbose_json':
+                raise BadRequestError(message='bad request', response=unsupported, body=None)
+            return response
+
+        transcriber = openai_whisper.OpenAIWhisperTranscriber(
+            api_key='test-key',
+            base_url=None,
+            model='Qwen3-ASR-1.7B',
+            observer=None,
+        )
+        transcriber.client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)))
+        transcriber.response_format = 'verbose_json'
+        transcriber.expect_segments = False
+
+        result = transcriber.transcribe_chunk(
+            b'abc',
+            mime_type='audio/wav',
+            language='ja',
+            prompt=None,
+            temperature=0.0,
+        )
+
+        self.assertEqual(result.text, 'json fallback worked')
+        self.assertEqual([call.get('response_format') for call in create_calls[:2]], ['verbose_json', 'json'])
+        self.assertEqual(transcriber.response_format, 'json')
 
     def test_openai_whisper_parser_supports_verbose_json_dict(self) -> None:
         parsed = openai_whisper._parse_transcription_response(

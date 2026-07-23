@@ -56,14 +56,15 @@ class OpenAIWhisperTranscriber:
         response: Any | None = None
         attempt = 0
         effective_chunk_hints = dict(chunk_hints or {})
+        initial_response_format = self.response_format
         request_preview = self._build_request_kwargs(
             file=io.BytesIO(audio_bytes),
             language=language,
             prompt=prompt,
             temperature=temperature,
+            response_format=initial_response_format,
         )
         request_response_format = request_preview.get("response_format")
-        request_keys = [key for key in request_preview.keys() if key != "file"]
         file_name = f"chunk{suffix}"
 
         with (self.observer.generation(
@@ -84,77 +85,94 @@ class OpenAIWhisperTranscriber:
             trace_context=trace_context,
         ) if self.observer else _noop_generation()) as generation:
             def _perform_request(request_temperature: float) -> Any:
+                active_response_format = self.response_format
                 local_attempt = 0
                 while True:
                     local_attempt += 1
-                    file_obj = io.BytesIO(audio_bytes)
-                    file_obj.name = file_name
-                    request_kwargs = self._build_request_kwargs(
-                        file=file_obj,
-                        language=language,
-                        prompt=prompt,
-                        temperature=request_temperature,
-                    )
-                    request_keys = [key for key in request_kwargs.keys() if key != "file"]
-                    response_format = request_kwargs.get("response_format")
-                    should_retry = False
-                    emit_container_log(
-                        __name__,
-                        "info",
-                        "ASR POST /v1/audio/transcriptions: profile=%s model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d temp=%s response_format=%s",
-                        self.backend_profile,
-                        self.model,
-                        mime_type,
-                        len(audio_bytes),
-                        language or "",
-                        bool(prompt),
-                        local_attempt,
-                        self.retry_max_attempts,
-                        f"{request_temperature:.2f}" if self.send_temperature else "disabled",
-                        response_format or "",
-                    )
-                    logger.info(
-                        "ASR POST /v1/audio/transcriptions: profile=%s model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d temp=%s response_format=%s",
-                        self.backend_profile,
-                        self.model,
-                        mime_type,
-                        len(audio_bytes),
-                        language or "",
-                        bool(prompt),
-                        local_attempt,
-                        self.retry_max_attempts,
-                        f"{request_temperature:.2f}" if self.send_temperature else "disabled",
-                        response_format or "",
-                    )
-                    try:
-                        return self.client.audio.transcriptions.create(**request_kwargs), local_attempt
-                    except Exception as exc:  # noqa: BLE001
-                        should_retry = _should_retry_openai_error(exc) and local_attempt < self.retry_max_attempts
-                        _log_transcription_error(
-                            exc,
-                            backend_profile=self.backend_profile,
-                            model=self.model,
-                            mime_type=mime_type,
-                            audio_bytes_len=len(audio_bytes),
-                            request_keys=request_keys,
+                    for response_format in _response_format_candidates(active_response_format):
+                        file_obj = io.BytesIO(audio_bytes)
+                        file_obj.name = file_name
+                        request_kwargs = self._build_request_kwargs(
+                            file=file_obj,
+                            language=language,
+                            prompt=prompt,
+                            temperature=request_temperature,
                             response_format=response_format,
-                            should_retry=should_retry,
                         )
-                        if not should_retry:
-                            raise
-
-                        delay_seconds = _retry_delay_seconds(self.retry_base_delay_ms, local_attempt)
-                        logger.warning(
-                            "ASR retryable error: profile=%s model=%s attempt=%d/%d delay_ms=%d err=%s",
+                        request_keys = [key for key in request_kwargs.keys() if key != "file"]
+                        should_retry = False
+                        emit_container_log(
+                            __name__,
+                            "info",
+                            "ASR POST /v1/audio/transcriptions: profile=%s model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d temp=%s response_format=%s",
                             self.backend_profile,
                             self.model,
+                            mime_type,
+                            len(audio_bytes),
+                            language or "",
+                            bool(prompt),
                             local_attempt,
                             self.retry_max_attempts,
-                            int(round(delay_seconds * 1000)),
-                            exc,
+                            f"{request_temperature:.2f}" if self.send_temperature else "disabled",
+                            response_format or "",
                         )
-                        if delay_seconds > 0:
-                            time.sleep(delay_seconds)
+                        logger.info(
+                            "ASR POST /v1/audio/transcriptions: profile=%s model=%s mime=%s bytes=%d language=%s prompt=%s attempt=%d/%d temp=%s response_format=%s",
+                            self.backend_profile,
+                            self.model,
+                            mime_type,
+                            len(audio_bytes),
+                            language or "",
+                            bool(prompt),
+                            local_attempt,
+                            self.retry_max_attempts,
+                            f"{request_temperature:.2f}" if self.send_temperature else "disabled",
+                            response_format or "",
+                        )
+                        try:
+                            return self.client.audio.transcriptions.create(**request_kwargs), local_attempt
+                        except Exception as exc:  # noqa: BLE001
+                            should_retry = _should_retry_openai_error(exc) and local_attempt < self.retry_max_attempts
+                            fallback_format = _next_fallback_response_format(active_response_format, response_format, exc)
+                            _log_transcription_error(
+                                exc,
+                                backend_profile=self.backend_profile,
+                                model=self.model,
+                                mime_type=mime_type,
+                                audio_bytes_len=len(audio_bytes),
+                                request_keys=request_keys,
+                                response_format=response_format,
+                                should_retry=should_retry,
+                                fallback_expected=fallback_format is not None,
+                            )
+                            if fallback_format is not None:
+                                self.response_format = fallback_format
+                                active_response_format = fallback_format
+                                logger.warning(
+                                    "ASR response_format fallback: profile=%s model=%s from=%s to=%s reason=%s",
+                                    self.backend_profile,
+                                    self.model,
+                                    response_format,
+                                    fallback_format,
+                                    exc,
+                                )
+                                continue
+                            if not should_retry:
+                                raise
+
+                            delay_seconds = _retry_delay_seconds(self.retry_base_delay_ms, local_attempt)
+                            logger.warning(
+                                "ASR retryable error: profile=%s model=%s attempt=%d/%d delay_ms=%d err=%s",
+                                self.backend_profile,
+                                self.model,
+                                local_attempt,
+                                self.retry_max_attempts,
+                                int(round(delay_seconds * 1000)),
+                                exc,
+                            )
+                            if delay_seconds > 0:
+                                time.sleep(delay_seconds)
+                            break
 
             while True:
                 try:
@@ -274,6 +292,7 @@ class OpenAIWhisperTranscriber:
         language: str | None,
         prompt: str | None,
         temperature: float,
+        response_format: str | None,
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "file": file,
@@ -285,8 +304,8 @@ class OpenAIWhisperTranscriber:
             kwargs["prompt"] = prompt
         if self.send_temperature:
             kwargs["temperature"] = temperature
-        if self.response_format:
-            kwargs["response_format"] = self.response_format
+        if response_format:
+            kwargs["response_format"] = response_format
         return kwargs
 
 
@@ -647,6 +666,48 @@ def _normalize_response_format(value: Any) -> str | None:
     return normalized or None
 
 
+def _response_format_candidates(primary: str | None) -> list[str | None]:
+    normalized = _normalize_response_format(primary)
+    if not normalized:
+        return [None]
+
+    candidates: list[str | None] = [normalized]
+    if normalized == "verbose_json":
+        candidates.extend(["json", "text"])
+    elif normalized == "json":
+        candidates.append("text")
+    return candidates
+
+
+def _next_fallback_response_format(primary: str | None, current: str | None, exc: Exception) -> str | None:
+    if not _should_fallback_response_format(exc, current):
+        return None
+
+    candidates = _response_format_candidates(primary)
+    try:
+        current_index = candidates.index(current)
+    except ValueError:
+        return None
+    for candidate in candidates[current_index + 1 :]:
+        if candidate != current:
+            return candidate
+    return None
+
+
+def _should_fallback_response_format(exc: Exception, response_format: str | None) -> bool:
+    if response_format not in {"verbose_json", "json"}:
+        return False
+    if not isinstance(exc, APIStatusError):
+        return False
+    status_code = getattr(exc, "status_code", None)
+    if status_code not in {400, 404, 415, 422}:
+        return False
+    body = _extract_error_body(exc).lower()
+    if not body:
+        return False
+    return "response_format" in body or "verbose_json" in body or "do not support" in body or "unsupported" in body
+
+
 def _has_replacement_chars(text: str) -> bool:
     return "\ufffd" in (text or "")
 
@@ -712,13 +773,14 @@ def _log_transcription_error(
     request_keys: list[str],
     response_format: str | None,
     should_retry: bool,
+    fallback_expected: bool = False,
 ) -> None:
     status_code = getattr(exc, "status_code", None)
     body = _extract_error_body(exc)
-    level = logging.WARNING if should_retry else logging.ERROR
+    level = logging.WARNING if should_retry or fallback_expected else logging.ERROR
     logger.log(
         level,
-        "ASR request failed: profile=%s model=%s mime=%s bytes=%d request_keys=%s response_format=%s status=%s retry=%s body=%s err=%s",
+        "ASR request failed: profile=%s model=%s mime=%s bytes=%d request_keys=%s response_format=%s status=%s retry=%s fallback_expected=%s body=%s err=%s",
         backend_profile,
         model,
         mime_type,
@@ -727,13 +789,14 @@ def _log_transcription_error(
         response_format or "",
         status_code,
         should_retry,
+        fallback_expected,
         body,
         exc,
     )
     emit_container_log(
         __name__,
-        "warning" if should_retry else "error",
-        "ASR request failed: profile=%s model=%s mime=%s bytes=%d request_keys=%s response_format=%s status=%s retry=%s body=%s err=%s",
+        "warning" if should_retry or fallback_expected else "error",
+        "ASR request failed: profile=%s model=%s mime=%s bytes=%d request_keys=%s response_format=%s status=%s retry=%s fallback_expected=%s body=%s err=%s",
         backend_profile,
         model,
         mime_type,
@@ -742,6 +805,7 @@ def _log_transcription_error(
         response_format or "",
         status_code,
         should_retry,
+        fallback_expected,
         body,
         exc,
     )
