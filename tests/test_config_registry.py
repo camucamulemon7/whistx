@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import os
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -82,6 +83,47 @@ class ConfigRegistryTests(unittest.TestCase):
         source = (ROOT / "scripts" / "container_common.sh").read_text(encoding="utf-8")
         forwarded = set(re.findall(r'-e "([A-Z][A-Z0-9_]+)=', source))
         self.assertEqual(set(ENV_BY_NAME) - forwarded, set())
+
+    def test_container_preserves_host_runtime_values(self) -> None:
+        environment = {
+            **os.environ,
+            "APP_ENV": "production",
+            "APP_HOST": "127.0.0.1",
+            "APP_PORT": "9001",
+            "APP_ENTRYPOINT": "server.app:app",
+            "APP_WS_PATH": "/custom/ws",
+            "ASR_API_TIMEOUT_SECONDS": "17.5",
+            "ASR_RETRY_MAX_ATTEMPTS": "9",
+            "ASR_VAD_SPEECH_RATIO_MIN": "0.15",
+            "ASR_CONTEXT_RECENT_LINES": "12",
+            "HISTORY_RETENTION_DAYS": "31",
+        }
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source scripts/container_common.sh; build_common_container_env; printf "%s\\n" "${COMMON_CONTAINER_ENV[@]}"',
+            ],
+            cwd=ROOT,
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        arguments = result.stdout.splitlines()
+        self.assertIn("APP_ENV=production", arguments)
+        self.assertIn("ASR_API_TIMEOUT_SECONDS=17.5", arguments)
+        self.assertIn("ASR_RETRY_MAX_ATTEMPTS=9", arguments)
+        self.assertIn("ASR_VAD_SPEECH_RATIO_MIN=0.15", arguments)
+        self.assertIn("ASR_CONTEXT_RECENT_LINES=12", arguments)
+        self.assertIn("HISTORY_RETENTION_DAYS=31", arguments)
+
+    def test_docker_and_podman_use_the_shared_environment_builder(self) -> None:
+        for script_name in ("start.sh", "podman-run.sh"):
+            source = (ROOT / script_name).read_text(encoding="utf-8")
+            self.assertIn('source "${SCRIPT_DIR}/scripts/container_common.sh"', source)
+            self.assertIn("build_common_container_env", source)
+            self.assertIn('"${COMMON_CONTAINER_ENV[@]}"', source)
 
     def test_aliases_have_an_explicit_removal_policy(self) -> None:
         for item in ENV_REGISTRY:
