@@ -472,7 +472,7 @@ class RegressionTests(unittest.TestCase):
         async def fake_summarize(payload):
             return summary_routes.JSONResponse({'summary': payload.text, 'model': 'test'})
 
-        with patch.object(summary_routes.legacy, 'summarize', side_effect=fake_summarize):
+        with patch.object(summary_routes.runtime, 'summarize', side_effect=fake_summarize):
             response = client.post('/api/summarize', json={'text': 'hello', 'language': 'ja'})
 
         self.assertEqual(response.status_code, 200)
@@ -538,7 +538,7 @@ class RegressionTests(unittest.TestCase):
 
         with (
             patch.object(ws_routes, 'get_optional_user_from_request', return_value=user),
-            patch.object(ws_routes.legacy, 'ws_transcribe', side_effect=accept_and_close) as handler,
+            patch.object(ws_routes.runtime, 'ws_transcribe', side_effect=accept_and_close) as handler,
         ):
             with client.websocket_connect('/ws/transcribe'):
                 pass
@@ -564,7 +564,7 @@ class RegressionTests(unittest.TestCase):
         with (
             patch.object(ws_routes, 'settings', guest_settings),
             patch.object(ws_routes, 'get_optional_user_from_request', return_value=None),
-            patch.object(ws_routes.legacy, 'ws_transcribe', side_effect=accept_and_close) as handler,
+            patch.object(ws_routes.runtime, 'ws_transcribe', side_effect=accept_and_close) as handler,
         ):
             with client.websocket_connect('/ws/transcribe'):
                 pass
@@ -626,8 +626,8 @@ class RegressionTests(unittest.TestCase):
         async def fake_shutdown() -> None:
             events.append('shutdown')
 
-        with patch.object(application_core.legacy, 'on_startup', side_effect=fake_startup):
-            with patch.object(application_core.legacy, 'on_shutdown', side_effect=fake_shutdown):
+        with patch.object(application_core.runtime, 'on_startup', side_effect=fake_startup):
+            with patch.object(application_core.runtime, 'on_shutdown', side_effect=fake_shutdown):
                 with TestClient(application_core.create_app()):
                     self.assertEqual(events, ['startup'])
 
