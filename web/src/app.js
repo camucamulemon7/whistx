@@ -4,9 +4,39 @@ import { canUseWorkspace as canUseWorkspaceForAuth, persistGuestMode, readGuestM
 import { deleteHistoryRequest, fetchHistoryList as fetchHistoryListRequest, fetchHistoryDetail, saveHistoryRequest } from "./history/api.js";
 import { fetchSharedGlossary as fetchSharedGlossaryRequest, saveSharedGlossary as saveSharedGlossaryRequest } from "./api/glossary.js";
 import { fetchJson } from "./api/client.js";
+import { readSseJsonStream } from "./api/sse.js";
 import { applyHistoryDetailPayload, applyHistoryListPayload, clearHistoryState } from "./history/state.js";
 import { readStoredJson, readStoredValue, writeStoredValue } from "./state/storage.js";
 import { normalizeTheme, resolveInitialTheme, themeMetaColor } from "./ui/theme.js";
+import {
+  clampSpeakerCount as clampSpeakerCountValue,
+  escapeHtml,
+  formatAudioSource as formatModeLabel,
+  formatLanguageLabel,
+  formatStatusText,
+  formatTimestamp as formatMs,
+  isLoginRequiredError,
+  normalizeBannerType,
+  normalizeProofreadMode,
+  normalizeSpeakerMode,
+} from "./ui/format.js";
+import {
+  arrayBufferToBase64,
+  buildWebSocketUrl,
+  normalizeWsPath,
+  waitForOpen,
+  waitForSessionReady,
+} from "./transcription/websocket.js";
+import {
+  VAD_SAMPLE_MS,
+  buildVadDecision as calculateVadDecision,
+  minSegmentDuration,
+  normalizeAudioSource,
+  shouldCutOnSilence,
+  shouldSkipChunkByVad as calculateShouldSkipChunkByVad,
+  vadSourceCutPolicy,
+  vadThresholdForSource,
+} from "./audio/vad.js";
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -154,45 +184,10 @@ const CHUNK_DEFAULT_SECONDS = 30;
 const DIARIZATION_SPEAKER_MIN = 1;
 const DIARIZATION_SPEAKER_MAX = 12;
 
-const VAD_SAMPLE_MS = 80;
-const VAD_MIN_SPEECH_RATIO = 0.025;
-const VAD_MIN_ACTIVE_MS = 120;
 const VAD_SEGMENT_MIN_MS = 12_000;
-const VAD_SEGMENT_MAX_SILENCE_MS = 1_100;
-const VAD_SEGMENT_MIN_SILENCE_MS = 450;
 const VAD_SOFT_CUT_GRACE_MS = 6_000;
 const VAD_NOISE_FLOOR_WARMUP_MS = 1_800;
 const VAD_NOISE_FLOOR_EWMA = 0.18;
-const VAD_NOISE_FLOOR_OFFSET = {
-  mic: 0.0012,
-  display: 0.0008,
-  both: 0.0010,
-};
-const VAD_NOISE_FLOOR_MULTIPLIER = {
-  mic: 3.0,
-  display: 3.4,
-  both: 3.2,
-};
-const VAD_SOURCE_CUT_POLICY = {
-  mic: {
-    minSilenceMs: 450,
-    maxSilenceMs: 1_100,
-    silenceRatio: 0.18,
-    minSegmentRatio: 0.45,
-  },
-  display: {
-    minSilenceMs: 550,
-    maxSilenceMs: 1_400,
-    silenceRatio: 0.22,
-    minSegmentRatio: 0.50,
-  },
-  both: {
-    minSilenceMs: 500,
-    maxSilenceMs: 1_500,
-    silenceRatio: 0.20,
-    minSegmentRatio: 0.50,
-  },
-};
 const AUDIO_LEVEL_NOISE_FLOOR = 0.0025;
 const AUDIO_LEVEL_GAIN = 22;
 const AUDIO_LEVEL_EXPONENT = 0.65;
@@ -391,22 +386,6 @@ function selectedLanguage() {
   return value;
 }
 
-function formatStatusText(text) {
-  const raw = String(text || "").trim();
-  const normalized = raw.toLowerCase();
-  if (!raw || normalized === "idle") return "待機中";
-  if (normalized.startsWith("recording")) return "録音中";
-  if (normalized === "stopping") return "停止処理中";
-  if (normalized.startsWith("start_failed")) return "開始失敗";
-  if (normalized.includes("proofread")) return normalized.includes("error") ? "校正失敗" : "校正処理";
-  if (normalized.includes("summary")) return normalized.includes("error") ? "要約失敗" : "要約処理";
-  if (normalized === "copied") return "コピー済み";
-  if (normalized === "copy_failed") return "コピー失敗";
-  if (normalized.includes("unavailable")) return "利用不可";
-  if (normalized.includes("error")) return "エラー";
-  return raw;
-}
-
 function setStatus(text) {
   const raw = String(text || "").trim();
   state.latestStatus = raw || "idle";
@@ -435,11 +414,6 @@ function setProofreadButtonBusy(busy) {
     proofreadBtnLabelEl.textContent = busy ? "生成中..." : "生成";
   }
   proofreadBtn.setAttribute("aria-busy", busy ? "true" : "false");
-}
-
-function normalizeProofreadMode(value) {
-  if (value === "translate_ja" || value === "translate_en") return value;
-  return "proofread";
 }
 
 function proofreadActionLabel() {
@@ -1182,12 +1156,6 @@ function setHistorySearchQuery(value) {
   }, HISTORY_SEARCH_DEBOUNCE_MS);
 }
 
-function formatModeLabel(mode) {
-  if (mode === "both") return "両方";
-  if (mode === "display") return "画面共有";
-  return "マイク";
-}
-
 function updateRecordingTelemetry() {
   if (!recordTelemetryEl) return;
   if (!state.recording) {
@@ -1540,44 +1508,6 @@ function setupPanelToggles() {
   });
 }
 
-async function readSseJsonStream(response, onEvent) {
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw new Error("stream_not_supported");
-  }
-
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-
-    let boundaryIndex = buffer.indexOf("\n\n");
-    while (boundaryIndex !== -1) {
-      const rawEvent = buffer.slice(0, boundaryIndex);
-      buffer = buffer.slice(boundaryIndex + 2);
-
-      const data = rawEvent
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart())
-        .join("\n")
-        .trim();
-
-      if (data) {
-        onEvent(JSON.parse(data));
-      }
-
-      boundaryIndex = buffer.indexOf("\n\n");
-    }
-
-    if (done) {
-      break;
-    }
-  }
-}
-
 function applyDiarizationEnabled(value, options = {}) {
   const persist = options.persist !== false;
   const enabled = !!value;
@@ -1607,15 +1537,8 @@ function applyDiarizationEnabled(value, options = {}) {
 }
 
 function clampSpeakerCount(value) {
-  const num = Number(value);
   const cap = Math.max(DIARIZATION_SPEAKER_MIN, Number(state.diarizationSpeakerCap || DIARIZATION_SPEAKER_MAX));
-  if (!Number.isFinite(num)) return DIARIZATION_SPEAKER_MIN;
-  return Math.max(DIARIZATION_SPEAKER_MIN, Math.min(cap, Math.round(num)));
-}
-
-function normalizeSpeakerMode(value) {
-  if (value === "fixed" || value === "range") return value;
-  return "auto";
+  return clampSpeakerCountValue(value, cap, DIARIZATION_SPEAKER_MIN);
 }
 
 function updateDiarizationSpeakerUi() {
@@ -1745,12 +1668,6 @@ function resolveDiarizationStartOptions() {
   };
 }
 
-function normalizeBannerType(value) {
-  const type = String(value || "info").toLowerCase();
-  if (type === "success" || type === "warning" || type === "error") return type;
-  return "info";
-}
-
 function renderBanners(rawBanners) {
   if (!bannersContainerEl) return;
 
@@ -1873,19 +1790,6 @@ function renderEmptyTranscriptState() {
   `;
 }
 
-function escapeHtml(value) {
-  return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function isLoginRequiredError(error) {
-  return error?.status === 401 || error?.message === "login_required" || error?.payload?.detail === "login_required";
-}
-
 function setSaveBadge(label, saved = false) {
   if (!saveStateBadgeEl) return;
   saveStateBadgeEl.textContent = label;
@@ -1937,14 +1841,6 @@ function formatHistoryDaysRemaining(item) {
   const remainingMs = expiresAtMs - Date.now();
   if (remainingMs <= 0) return "まもなく削除";
   return `あと${Math.ceil(remainingMs / (24 * 60 * 60 * 1000))}日`;
-}
-
-function formatLanguageLabel(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "ja") return "日本語";
-  if (normalized === "en") return "英語";
-  if (!normalized || normalized === "auto") return "自動";
-  return String(value);
 }
 
 function updateHistoryEmptyState(message = "") {
@@ -2485,22 +2381,8 @@ function applySpeakerPatch(segments) {
   }
 }
 
-function formatMs(ms) {
-  const totalSec = Math.floor(Math.max(0, ms) / 1000);
-  const min = String(Math.floor(totalSec / 60)).padStart(2, "0");
-  const sec = String(totalSec % 60).padStart(2, "0");
-  return `${min}:${sec}`;
-}
-
-function normalizeWsPath(value) {
-  const trimmed = String(value || "").trim();
-  if (!trimmed) return "/ws/transcribe";
-  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-}
-
 function wsUrl() {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${location.host}${normalizeWsPath(state.wsPath)}`;
+  return buildWebSocketUrl(location, state.wsPath);
 }
 
 function selectMimeType() {
@@ -2596,11 +2478,6 @@ function setUiRecording(active) {
   updateSaveControls();
 }
 
-function normalizeAudioSource(value) {
-  if (value === "display" || value === "both") return value;
-  return "mic";
-}
-
 function resetRuntimeSessionState() {
   state.runtimeSessionId = "";
   state.runtimeSessionToken = "";
@@ -2631,21 +2508,6 @@ function applyAudioSource(value) {
     // ignore
   }
   return source;
-}
-
-function vadThresholdForSource(source, noiseFloor = null) {
-  const mode = normalizeAudioSource(source);
-  const baseThreshold = mode === "display" ? 0.0045 : mode === "both" ? 0.0065 : 0.0075;
-  const floor = Number.isFinite(noiseFloor) ? Math.max(0, Number(noiseFloor)) : 0;
-  if (floor <= 0) return baseThreshold;
-
-  const multiplier = VAD_NOISE_FLOOR_MULTIPLIER[mode] || VAD_NOISE_FLOOR_MULTIPLIER.mic;
-  const offset = VAD_NOISE_FLOOR_OFFSET[mode] || VAD_NOISE_FLOOR_OFFSET.mic;
-  return Math.max(baseThreshold, floor * multiplier + offset);
-}
-
-function vadSourceCutPolicy(source) {
-  return VAD_SOURCE_CUT_POLICY[normalizeAudioSource(source)] || VAD_SOURCE_CUT_POLICY.mic;
 }
 
 function currentVadSourceMode() {
@@ -3169,96 +3031,6 @@ async function ensureSocket() {
   return ws;
 }
 
-function waitForSessionReady(ws) {
-  return new Promise((resolve, reject) => {
-    const onMessage = (event) => {
-      let data;
-      try {
-        data = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-
-      if (data.type === "info" && data.message === "ready") {
-        cleanup();
-        resolve(data);
-        return;
-      }
-
-      if (data.type === "error" && (data.message === "session_create_failed" || data.message === "not_started")) {
-        cleanup();
-        reject(new Error(String(data.detail || data.message || "session_start_failed")));
-      }
-    };
-
-    const onClose = () => {
-      cleanup();
-      reject(new Error("websocket_closed"));
-    };
-
-    const onError = () => {
-      cleanup();
-      reject(new Error("websocket_error"));
-    };
-
-    const cleanup = () => {
-      ws.removeEventListener("message", onMessage);
-      ws.removeEventListener("close", onClose);
-      ws.removeEventListener("error", onError);
-    };
-
-    ws.addEventListener("message", onMessage);
-    ws.addEventListener("close", onClose);
-    ws.addEventListener("error", onError);
-  });
-}
-
-function waitForOpen(ws) {
-  return new Promise((resolve, reject) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      resolve();
-      return;
-    }
-
-    const onOpen = () => {
-      cleanup();
-      resolve();
-    };
-
-    const onClose = () => {
-      cleanup();
-      reject(new Error("websocket_closed"));
-    };
-
-    const onError = () => {
-      cleanup();
-      reject(new Error("websocket_error"));
-    };
-
-    const cleanup = () => {
-      ws.removeEventListener("open", onOpen);
-      ws.removeEventListener("close", onClose);
-      ws.removeEventListener("error", onError);
-    };
-
-    ws.addEventListener("open", onOpen);
-    ws.addEventListener("close", onClose);
-    ws.addEventListener("error", onError);
-  });
-}
-
-function arrayBufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  const chunkSize = 0x8000;
-  let binary = "";
-
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    const chunk = bytes.subarray(i, i + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return btoa(binary);
-}
-
 function ensureAudioLevelMatrix() {
   if (!audioLevelMatrixEl) return [];
   if (state.audioLevelColumns.length) return state.audioLevelColumns;
@@ -3460,52 +3232,21 @@ function snapshotVadCounters() {
 }
 
 function buildVadDecision(snapshot, endedAt, sourceMode) {
-  if (!state.vadAnalyser) {
-    return {
-      enabled: false,
-      speechRatio: 1,
-      activeMs: state.chunkMs,
-      silenceMs: 0,
-      skip: false,
-    };
-  }
-
-  const totalFrames = Math.max(1, state.vadFrameCount - snapshot.frameCount);
-  const speechFrames = Math.max(0, state.vadSpeechFrameCount - snapshot.speechFrameCount);
-  const policy = vadSourceCutPolicy(sourceMode);
-  const chunkEndAt = Number.isFinite(endedAt) ? endedAt : performance.now();
-  const lastSpeechAt = state.vadLastSpeechAt || state.segmentStartedAt || snapshot.startedAt || chunkEndAt;
-
-  const speechRatio = speechFrames / totalFrames;
-  const activeMs = speechFrames * VAD_SAMPLE_MS;
-  const silenceMs = Math.max(0, chunkEndAt - lastSpeechAt);
-  const skip = speechRatio < VAD_MIN_SPEECH_RATIO && activeMs < VAD_MIN_ACTIVE_MS;
-
-  return {
-    enabled: true,
-    speechRatio,
-    activeMs,
-    silenceMs,
-    sourceMode: normalizeAudioSource(sourceMode),
-    policy,
-    skip,
-  };
+  return calculateVadDecision({
+    analyserEnabled: !!state.vadAnalyser,
+    snapshot,
+    frameCount: state.vadFrameCount,
+    speechFrameCount: state.vadSpeechFrameCount,
+    endedAt: Number.isFinite(endedAt) ? endedAt : performance.now(),
+    lastSpeechAt: state.vadLastSpeechAt,
+    segmentStartedAt: state.segmentStartedAt,
+    chunkMs: state.chunkMs,
+    sourceMode,
+  });
 }
 
 function shouldSkipChunkByVad(durationMs, vadDecision) {
-  if (!CLIENT_VAD_DROP_ENABLED) {
-    return false;
-  }
-  if (!vadDecision?.enabled || !vadDecision.skip) {
-    return false;
-  }
-
-  const safeDurationMs = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
-  if (safeDurationMs >= 4_000) {
-    return false;
-  }
-
-  return vadDecision.speechRatio < 0.01 && vadDecision.activeMs < 80;
+  return calculateShouldSkipChunkByVad(durationMs, vadDecision, CLIENT_VAD_DROP_ENABLED);
 }
 
 async function sendChunk(blob, mimeType, durationMsOverride, vadDecision) {
@@ -3572,8 +3313,7 @@ function clearChunkTimer() {
 }
 
 function minSegmentMs() {
-  const policy = vadSourceCutPolicy(currentVadSourceMode());
-  return Math.max(Math.min(VAD_SEGMENT_MIN_MS, state.chunkMs), Math.round(state.chunkMs * policy.minSegmentRatio));
+  return minSegmentDuration(state.chunkMs, currentVadSourceMode(), VAD_SEGMENT_MIN_MS);
 }
 
 function chunkHardMaxMs() {
@@ -3585,20 +3325,17 @@ function chunkHardMaxMs() {
 function shouldCutChunkOnSilence(options = {}) {
   if (!state.vadAnalyser || !state.segmentStartedAt) return false;
 
-  const policy = vadSourceCutPolicy(currentVadSourceMode());
-  const relaxed = !!options.relaxed;
   const now = performance.now();
   const elapsedMs = now - state.segmentStartedAt;
-  if (elapsedMs < minSegmentMs()) return false;
-
   const silenceMs = Math.max(0, now - (state.vadLastSpeechAt || state.segmentStartedAt));
-  const minSilenceMs = relaxed
-    ? Math.max(220, Math.min(policy.minSilenceMs, Math.round(policy.minSilenceMs * 0.55)))
-    : policy.minSilenceMs;
-  if (silenceMs < minSilenceMs) return false;
-
-  const silenceRatio = relaxed ? Math.max(0.1, policy.silenceRatio * 0.72) : policy.silenceRatio;
-  return silenceMs >= Math.min(policy.maxSilenceMs, Math.max(minSilenceMs + 160, Math.round(elapsedMs * silenceRatio)));
+  return shouldCutOnSilence({
+    elapsedMs,
+    silenceMs,
+    chunkMs: state.chunkMs,
+    sourceMode: currentVadSourceMode(),
+    relaxed: !!options.relaxed,
+    minimumMs: VAD_SEGMENT_MIN_MS,
+  });
 }
 
 function requestChunkFlush(recorder) {
