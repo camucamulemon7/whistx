@@ -40,10 +40,10 @@ fi
 if [[ "${DEV_SKIP_PIP_INSTALL:-${SKIP_PIP_INSTALL:-0}}" != "1" ]]; then
   echo "[run.sh] 依存関係を更新します" >&2
   python -m pip install -U pip
-  pip install -r "${SCRIPT_DIR}/requirements.txt"
+  pip install --require-hashes -r "${SCRIPT_DIR}/requirements.lock"
   if [[ "${DIARIZATION_ENABLED:-0}" == "1" || "${INSTALL_DIARIZATION_DEPS:-0}" == "1" ]]; then
     echo "[run.sh] diarization 依存関係を追加インストールします" >&2
-    pip install -r "${SCRIPT_DIR}/requirements-diarization.txt"
+    pip install --require-hashes -r "${SCRIPT_DIR}/requirements-diarization.lock"
   fi
 fi
 

@@ -123,7 +123,27 @@ cp .env.example .env
 ./start.sh
 ```
 
-The container image installs Python dependencies with `uv`. Dependency source of truth is `requirements.txt`; diarization-only additions live in `requirements-diarization.txt`; `pyproject.toml` remains tool metadata.
+The container image installs the exact versions and hashes recorded in `requirements.lock`. Dependency declarations remain in `requirements.txt`; diarization-only declarations live in `requirements-diarization.txt`.
+
+### Dependency locking
+
+- Runtime declarations: `requirements.txt`
+- Diarization declarations: `requirements-diarization.txt`
+- Development declarations (including Ruff): `requirements-dev.txt`
+- Generated locks: the matching `*.lock` files; do not edit these by hand
+
+Regenerate all lock files with the same `uv` version used by the container:
+
+```bash
+docker run --rm -v "$PWD:/workspace" -w /workspace ghcr.io/astral-sh/uv:0.8.17-python3.12-bookworm-slim \
+  uv pip compile requirements.txt --python-version 3.12 --generate-hashes -o requirements.lock
+docker run --rm -v "$PWD:/workspace" -w /workspace ghcr.io/astral-sh/uv:0.8.17-python3.12-bookworm-slim \
+  uv pip compile requirements-diarization.txt --python-version 3.12 --generate-hashes -o requirements-diarization.lock
+docker run --rm -v "$PWD:/workspace" -w /workspace ghcr.io/astral-sh/uv:0.8.17-python3.12-bookworm-slim \
+  uv pip compile requirements-dev.txt --python-version 3.12 --generate-hashes -o requirements-dev.lock
+```
+
+Local startup and container builds consume the runtime lock. CI consumes the development lock so all three environments resolve the same runtime versions.
 
 ### Podman (rootless)
 
@@ -396,4 +416,4 @@ MIT. See [LICENSE](./LICENSE).
 - Backend route registration lives in `server/core/application.py` and `server/api/routes/`.
 - Runtime configuration is split under `server/core/config/`. Add new env-backed settings there first.
 - `web/main.js` is now a thin module entrypoint that loads `web/src/app.js`.
-- Dependency source of truth remains `requirements.txt` and `requirements-diarization.txt`. `pyproject.toml` is metadata-only for now.
+- Dependency declarations remain in `requirements*.txt`; generated `requirements*.lock` files are the reproducible install inputs. `pyproject.toml` is metadata-only for now.

@@ -7,6 +7,8 @@ requires-python = ">=3.12"
 # Dependency source of truth policy:
 # - runtime/base deps: requirements.txt
 # - diarization extras: requirements-diarization.txt
+# - development deps: requirements-dev.txt
+# - reproducible installs: generated requirements*.lock files
 # - this pyproject keeps uv/tool metadata only
 
 [tool.uv]
