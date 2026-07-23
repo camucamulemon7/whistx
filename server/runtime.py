@@ -17,9 +17,8 @@ from pathlib import Path
 from typing import Any, Callable
 import wave
 
-from fastapi import Depends, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -40,10 +39,10 @@ from .auth import (
 )
 from .asr import ASRChunkResult, SessionTranscriber
 from .audio_pipeline import AudioPreprocessor
-from .config import settings
+from .core.config import settings
 from .db import db_session, get_db, init_db
 from .deps import get_current_admin, get_current_user
-from .diarizer import AudioChunk, PyannoteSpeakerDiarizer, SpeakerTurn
+from .diarizer import PyannoteSpeakerDiarizer, SpeakerTurn
 from .langfuse_observer import make_langfuse_observer
 from .models import User
 from .openai_whisper import OpenAIWhisperTranscriber
@@ -72,7 +71,6 @@ from .services.oidc_service import (
 )
 from .summarizer import OpenAISummarizer
 from .transcript_store import (
-    TranscriptRecord,
     build_debug_chunks_dir,
     iter_debug_chunk_dirs,
     iter_runtime_screenshot_dirs,
@@ -88,7 +86,7 @@ from .transcription.messages import (
     parse_chunk_message as _parse_chunk_message,
     validate_chunk_order as _validate_chunk_order,
 )
-from .transcription.session import ChunkMessage, FailedPreparedChunk, LiveSession
+from .transcription.session import ChunkMessage, LiveSession
 from .transcription.worker import WorkerDependencies, run_session_worker
 from .core.security import (
     clear_oidc_state_cookie as security_clear_oidc_state_cookie,
@@ -113,7 +111,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="whistx", version="2.0.0")
 MAX_DIARIZATION_SPEAKERS = 12
 
 
@@ -146,7 +143,6 @@ LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
 
 
-@app.on_event("startup")
 async def on_startup() -> None:
     global TRANSCRIBER_FACTORY, AUDIO_PREPROCESSOR, SUMMARIZER, PROOFREADER, DIARIZER, LANGFUSE_OBSERVER, CLEANUP_TASK
 
@@ -243,7 +239,6 @@ async def on_startup() -> None:
     emit_container_log(__name__, "info", "whistx started (model=%s, ws=%s)", settings.asr_model, settings.ws_path)
 
 
-@app.on_event("shutdown")
 async def on_shutdown() -> None:
     global CLEANUP_TASK
     if CLEANUP_TASK is not None:
@@ -275,7 +270,6 @@ async def _periodic_cleanup_loop() -> None:
         raise
 
 
-@app.get("/api/health")
 async def health() -> JSONResponse:
     return JSONResponse(
         {
@@ -359,7 +353,6 @@ def _map_keycloak_auth_error(exc: Exception) -> str:
     return auth_service_map_keycloak_auth_error(exc)
 
 
-@app.get("/api/auth/me")
 async def auth_me(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     user = _get_optional_user(request, db)
     bootstrap_admin_required = not has_admin_account(db)
@@ -376,7 +369,6 @@ async def auth_me(request: Request, db: Session = Depends(get_db)) -> JSONRespon
     )
 
 
-@app.post("/api/auth/login")
 async def auth_login(
     payload: LoginRequest,
     request: Request,
@@ -413,7 +405,6 @@ async def auth_login(
     return response
 
 
-@app.post("/api/auth/bootstrap-admin")
 async def auth_bootstrap_admin(
     payload: BootstrapAdminRequest,
     request: Request,
@@ -457,7 +448,6 @@ async def auth_bootstrap_admin(
     return response
 
 
-@app.get("/api/auth/keycloak/login")
 async def auth_keycloak_login(request: Request) -> Response:
     if not _keycloak_login_enabled():
         return JSONResponse(status_code=404, content={"error": "keycloak_disabled"})
@@ -484,7 +474,6 @@ async def auth_keycloak_login(request: Request) -> Response:
     return response
 
 
-@app.get("/api/auth/keycloak/callback")
 async def auth_keycloak_callback(
     request: Request,
     db: Session = Depends(get_db),
@@ -536,7 +525,6 @@ async def auth_keycloak_callback(
     return _response
 
 
-@app.post("/api/auth/logout")
 async def auth_logout(
     request: Request,
     db: Session = Depends(get_db),
@@ -548,7 +536,6 @@ async def auth_logout(
     return response
 
 
-@app.get("/api/admin/pending-users")
 async def admin_pending_users(
     user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -565,7 +552,6 @@ async def admin_pending_users(
     return JSONResponse({"items": items})
 
 
-@app.post("/api/admin/pending-users/{user_id}/approve")
 async def admin_approve_pending_user(
     user_id: int,
     user: User = Depends(get_current_admin),
@@ -580,7 +566,6 @@ async def admin_approve_pending_user(
     return JSONResponse({"ok": True, "user": _serialize_user(pending_user)})
 
 
-@app.get("/api/admin/users")
 async def admin_users(
     user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -601,7 +586,6 @@ async def admin_users(
     return JSONResponse({"items": items})
 
 
-@app.post("/api/admin/users/{user_id}/role")
 async def admin_update_user_role(
     user_id: int,
     request: Request,
@@ -630,7 +614,6 @@ async def admin_update_user_role(
     return JSONResponse({"ok": True, "user": _serialize_user(target)})
 
 
-@app.post("/api/auth/register")
 async def auth_register(
     payload: RegisterRequest,
     db: Session = Depends(get_db),
@@ -669,7 +652,6 @@ async def auth_register(
     return JSONResponse({"ok": True, "pending": True, "user": _serialize_user(user)})
 
 
-@app.post("/api/history")
 async def create_history(
     payload: HistorySaveRequest,
     user: User = Depends(get_current_user),
@@ -706,7 +688,6 @@ async def create_history(
     )
 
 
-@app.get("/api/history")
 async def get_history_list(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -726,7 +707,6 @@ async def get_history_list(
     )
 
 
-@app.get("/api/history/{history_id}")
 async def get_history_detail(
     history_id: str,
     user: User = Depends(get_current_user),
@@ -738,7 +718,6 @@ async def get_history_detail(
     return JSONResponse(build_history_detail_payload(history))
 
 
-@app.get("/api/history/{history_id}/download.txt", response_model=None)
 async def download_history_txt(
     history_id: str,
     user: User = Depends(get_current_user),
@@ -751,7 +730,6 @@ async def download_history_txt(
     return FileResponse(str(path), media_type="text/plain", filename=f"{history.id}.txt")
 
 
-@app.get("/api/history/{history_id}/download.jsonl", response_model=None)
 async def download_history_jsonl(
     history_id: str,
     user: User = Depends(get_current_user),
@@ -764,7 +742,6 @@ async def download_history_jsonl(
     return FileResponse(str(path), media_type="application/x-ndjson", filename=f"{history.id}.jsonl")
 
 
-@app.get("/api/history/{history_id}/download.zip", response_model=None)
 async def download_history_zip(
     history_id: str,
     user: User = Depends(get_current_user),
@@ -777,7 +754,6 @@ async def download_history_zip(
     return FileResponse(str(path), media_type="application/zip", filename=f"{history.id}.zip")
 
 
-@app.get("/api/history/{history_id}/screenshots/{filename}", response_model=None)
 async def get_history_screenshot(
     history_id: str,
     filename: str,
@@ -802,7 +778,6 @@ async def get_history_screenshot(
     return FileResponse(str(path), media_type=media_type)
 
 
-@app.post("/api/summarize")
 async def summarize(payload: SummarizeRequest) -> JSONResponse:
     if SUMMARIZER is None:
         return JSONResponse(
@@ -848,7 +823,6 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
     )
 
 
-@app.post("/api/proofread")
 async def proofread(payload: ProofreadRequest) -> JSONResponse:
     if PROOFREADER is None:
         return JSONResponse(
@@ -899,7 +873,6 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
     )
 
 
-@app.post("/api/proofread/stream")
 async def proofread_stream(payload: ProofreadRequest) -> Response:
     if PROOFREADER is None:
         return JSONResponse(
@@ -954,7 +927,6 @@ async def proofread_stream(payload: ProofreadRequest) -> Response:
     )
 
 
-@app.websocket(settings.ws_path)
 async def ws_transcribe(ws: WebSocket) -> None:
     await ws.accept()
     ACTIVE_SOCKETS.add(ws)
@@ -1229,293 +1201,6 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
             emit_log=emit_container_log,
         ),
     )
-
-
-async def _legacy_session_worker(ws: WebSocket, session: LiveSession) -> None:
-    emitted_segments = 0
-    emitted_chars = 0
-    if not hasattr(session, "failed_prepared_chunks"):
-        session.failed_prepared_chunks = []
-    trace_context = LANGFUSE_OBSERVER.create_trace_context(
-        name="asr.session",
-        input={
-            "sessionId": session.session_id,
-            "language": session.language or "",
-            "audioSource": session.audio_source,
-            "model": settings.asr_model,
-            "diarizationEnabled": session.collect_audio_for_diarization,
-        },
-    ) if LANGFUSE_OBSERVER is not None else None
-    try:
-        while True:
-            item = await session.queue.get()
-            if item is None:
-                break
-
-            if session.collect_audio_for_diarization:
-                try:
-                    chunk_path = session.store.save_audio_chunk(
-                        seq=item.seq,
-                        mime_type=item.mime_type,
-                        audio_bytes=item.audio_bytes,
-                    )
-                    session.audio_chunks.append(
-                        AudioChunk(
-                            seq=item.seq,
-                            path=chunk_path,
-                            offset_ms=item.offset_ms,
-                            duration_ms=item.duration_ms,
-                        )
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Chunk save failed for diarization: session=%s seq=%s err=%s",
-                        session.session_id,
-                        item.seq,
-                        exc,
-                    )
-            _save_debug_audio_chunk(session, item)
-
-            try:
-                prepared = _prepare_audio_for_asr(session=session, item=item)
-                buffered_count = len(session.failed_prepared_chunks)
-                effective_audio_bytes = prepared.audio_bytes
-                effective_seq = item.seq
-                effective_offset_ms = item.offset_ms
-                effective_duration_ms = item.duration_ms
-                if session.failed_prepared_chunks:
-                    buffered = list(session.failed_prepared_chunks)
-                    effective_audio_bytes = _merge_wav_chunks(
-                        [entry.audio_bytes for entry in buffered] + [prepared.audio_bytes]
-                    )
-                    effective_seq = buffered[0].seq
-                    effective_offset_ms = buffered[0].offset_ms
-                    effective_duration_ms = sum(entry.duration_ms for entry in buffered) + item.duration_ms
-                    logger.info(
-                        "Merging failed chunks before retry: session=%s buffered=%d first_seq=%s current_seq=%s",
-                        session.session_id,
-                        buffered_count,
-                        effective_seq,
-                        item.seq,
-                    )
-                logger.info(
-                    "Prepared audio: session=%s seq=%s rms=%.4f peak=%.4f speech_ratio=%.4f overlap_ms=%d",
-                    session.session_id,
-                    item.seq,
-                    prepared.rms,
-                    prepared.peak,
-                    prepared.speech_ratio,
-                    prepared.overlap_ms_used,
-                )
-                if settings.asr_vad_drop_enabled and prepared.speech_ratio < settings.asr_vad_speech_ratio_min:
-                    logger.info(
-                        "Skipping low-speech chunk: session=%s seq=%s speech_ratio=%.4f threshold=%.4f",
-                        session.session_id,
-                        item.seq,
-                        prepared.speech_ratio,
-                        settings.asr_vad_speech_ratio_min,
-                    )
-                    await _safe_send(
-                        ws,
-                        {
-                            "type": "ack",
-                            "seq": item.seq,
-                            "empty": True,
-                            "skipped": True,
-                            "reason": "low_speech_ratio",
-                            "speechRatio": prepared.speech_ratio,
-                            "rms": prepared.rms,
-                            "peak": prepared.peak,
-                        },
-                    )
-                    continue
-                prompt = _build_prompt(session)
-                result = await asyncio.to_thread(
-                    session.transcriber.transcribe_chunk,
-                    effective_audio_bytes,
-                    mime_type=prepared.mime_type,
-                    language=session.language,
-                    prompt=prompt,
-                    temperature=session.temperature,
-                    trace_context=trace_context,
-                )
-                _accumulate_asr_usage(session, result)
-                result = await _retry_weird_transcription_if_needed(
-                    session=session,
-                    prepared=prepared,
-                    trace_context=trace_context,
-                    audio_bytes=effective_audio_bytes,
-                    previous_text=session.last_emitted_text,
-                    result=result,
-                )
-                session.failed_prepared_chunks.clear()
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("Transcription failed: session=%s seq=%s", session.session_id, item.seq)
-                if len(session.failed_prepared_chunks) >= 2:
-                    session.failed_prepared_chunks = session.failed_prepared_chunks[-1:]
-                session.failed_prepared_chunks.append(
-                    FailedPreparedChunk(
-                        seq=item.seq,
-                        offset_ms=item.offset_ms,
-                        duration_ms=item.duration_ms,
-                        audio_bytes=prepared.audio_bytes if "prepared" in locals() else b"",
-                        speech_ratio=item.speech_ratio,
-                        active_ms=item.active_ms,
-                        silence_ms=item.silence_ms,
-                    )
-                )
-                await _safe_send(
-                    ws,
-                    {
-                        "type": "error",
-                        "message": "transcription_failed",
-                        "seq": item.seq,
-                        "buffered": True,
-                        "bufferedCount": len(session.failed_prepared_chunks),
-                        "detail": str(exc),
-                    },
-                )
-                continue
-
-            text = result.text.strip()
-            if result.suspicious:
-                logger.debug(
-                    "Suspicious ASR chunk: session=%s seq=%s no_speech=%s avg_logprob=%s compression_ratio=%s",
-                    session.session_id,
-                    effective_seq if "effective_seq" in locals() else item.seq,
-                    result.max_no_speech_prob,
-                    result.avg_logprob,
-                    result.compression_ratio,
-                )
-            text = _sanitize_transcript_text(text, language=session.language)
-            text = _trim_overlap_prefix(text, session.last_emitted_text)
-            text = _sanitize_transcript_text(text, language=session.language)
-            if bool(getattr(settings, "asr_light_proofread_enabled", True)):
-                text = _light_proofread(text, language=session.language)
-            if not text:
-                await _safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
-                continue
-            if _should_drop_boundary_fragment(
-                text,
-                session.last_emitted_text,
-                source_mode=session.audio_source,
-                suspicious=bool(result.suspicious),
-            ):
-                await _safe_send(
-                    ws,
-                    {"type": "ack", "seq": item.seq, "empty": True, "skipped": True, "reason": "boundary_fragment"},
-                )
-                continue
-
-            current_start_hint = max(0, effective_offset_ms - prepared.overlap_ms_used) + (result.start_ms or 0)
-            if _is_near_duplicate(
-                text,
-                session.last_emitted_text,
-                current_start_ms=current_start_hint,
-                previous_end_ms=session.last_emitted_ts_end,
-            ):
-                await _safe_send(
-                    ws,
-                    {"type": "ack", "seq": item.seq, "duplicate": True},
-                )
-                continue
-
-            ts_base_offset = max(0, effective_offset_ms - prepared.overlap_ms_used)
-            ts_start = ts_base_offset + (result.start_ms or 0)
-            if result.end_ms is not None:
-                ts_end = ts_base_offset + result.end_ms
-            else:
-                ts_end = effective_offset_ms + max(effective_duration_ms, 600)
-
-            ts_start, ts_end = _coerce_monotonic_bounds(
-                ts_start=ts_start,
-                ts_end=ts_end,
-                previous_end_ms=session.last_emitted_ts_end,
-            )
-
-            record = TranscriptRecord(
-                type="final",
-                segmentId=f"{effective_seq:06d}",
-                seq=effective_seq,
-                text=text,
-                tsStart=ts_start,
-                tsEnd=ts_end,
-                chunkOffsetMs=effective_offset_ms,
-                chunkDurationMs=effective_duration_ms,
-                language=session.language,
-                createdAt=datetime.now(timezone.utc).isoformat(),
-                screenshotPath=_store_screenshot_for_chunk(session, item),
-                rawAudioPath=(
-                    _store_debug_raw_audio_for_final(session, item)
-                    or _resolve_existing_debug_audio_url(session, prefix="raw", seq=item.seq)
-                ),
-                audioPath=(
-                    _store_debug_audio_for_final(session, effective_seq, effective_audio_bytes)
-                    or _resolve_existing_debug_audio_url(session, prefix="asr", seq=effective_seq)
-                ),
-            )
-            session.store.append_final(record)
-            session.last_emitted_text = text
-            session.last_emitted_ts_end = ts_end
-            session.transcript_history.append(text)
-            _append_context(session, text)
-            emitted_segments += 1
-            emitted_chars += len(text)
-
-            await _safe_send(
-                ws,
-                {
-                    "type": "final",
-                    "segmentId": record.segmentId,
-                    "seq": record.seq,
-                    "text": record.text,
-                    "tsStart": record.tsStart,
-                    "tsEnd": record.tsEnd,
-                    "speaker": record.speaker,
-                    "screenshotPath": record.screenshotPath,
-                    "rawAudioPath": record.rawAudioPath,
-                    "audioPath": record.audioPath,
-                },
-            )
-            logger.debug(
-                "ws final sent: session=%s seq=%s chars=%s ts_start=%s ts_end=%s",
-                session.session_id,
-                record.seq,
-                len(record.text),
-                record.tsStart,
-                record.tsEnd,
-            )
-            emit_container_log(
-                __name__,
-                "debug",
-                "ws final sent: session=%s seq=%s chars=%s ts_start=%s ts_end=%s",
-                session.session_id,
-                record.seq,
-                len(record.text),
-                record.tsStart,
-                record.tsEnd,
-            )
-
-        if LANGFUSE_OBSERVER is not None and trace_context is not None:
-            with LANGFUSE_OBSERVER.generation(
-                name="asr.session.result",
-                model=settings.asr_model,
-                output={
-                    "segmentCount": emitted_segments,
-                    "charCount": emitted_chars,
-                    "estimatedTokens": session.asr_estimated_tokens,
-                    "finalTranscript": _clip_trace_text("\n".join(session.transcript_history)),
-                },
-                metadata={"usageSource": "api" if session.asr_total_tokens > 0 else "estimated"},
-                model_parameters={"estimatedTokens": session.asr_estimated_tokens},
-                trace_context=trace_context,
-            ):
-                pass
-    finally:
-        try:
-            await asyncio.to_thread(session.transcriber.close)
-        except Exception:  # noqa: BLE001
-            logger.debug("session transcriber close failed: session=%s", session.session_id, exc_info=True)
 
 
 
@@ -2566,7 +2251,6 @@ def _clear_session_cookie(response: Response, request: Request) -> None:
     security_clear_session_cookie(response=response, request=request, cookie_name=SESSION_COOKIE_NAME)
 
 
-@app.get("/api/transcript/{session_id}.txt", response_model=None)
 async def get_txt(session_id: str, token: str | None = Query(default=None)) -> Response:
     if not _runtime_access_allowed(session_id, token):
         return HTMLResponse(status_code=404, content="not found")
@@ -2576,7 +2260,6 @@ async def get_txt(session_id: str, token: str | None = Query(default=None)) -> R
     return FileResponse(str(path), media_type="text/plain")
 
 
-@app.get("/api/transcript/{session_id}.jsonl", response_model=None)
 async def get_jsonl(session_id: str, token: str | None = Query(default=None)) -> Response:
     if not _runtime_access_allowed(session_id, token):
         return HTMLResponse(status_code=404, content="not found")
@@ -2586,7 +2269,6 @@ async def get_jsonl(session_id: str, token: str | None = Query(default=None)) ->
     return FileResponse(str(path), media_type="application/x-ndjson")
 
 
-@app.get("/api/transcript/{session_id}.zip", response_model=None)
 async def get_zip(session_id: str, token: str | None = Query(default=None)) -> Response:
     if not _runtime_access_allowed(session_id, token):
         return HTMLResponse(status_code=404, content="not found")
@@ -2620,7 +2302,6 @@ async def get_zip(session_id: str, token: str | None = Query(default=None)) -> R
     return Response(content=buffer.getvalue(), media_type="application/zip", headers=headers)
 
 
-@app.get("/api/transcripts/{session_id}/screenshots/{filename}", response_model=None)
 async def get_screenshot(session_id: str, filename: str, token: str | None = Query(default=None)) -> Response:
     if not _runtime_access_allowed(session_id, token):
         return HTMLResponse(status_code=404, content="not found")
@@ -2640,7 +2321,6 @@ async def get_screenshot(session_id: str, filename: str, token: str | None = Que
     return FileResponse(str(path), media_type=media_type)
 
 
-@app.get("/api/transcripts/{session_id}/audio/{filename}", response_model=None)
 async def get_debug_audio(session_id: str, filename: str, token: str | None = Query(default=None)) -> Response:
     if not _runtime_access_allowed(session_id, token):
         return HTMLResponse(status_code=404, content="not found")
@@ -2664,7 +2344,6 @@ async def get_debug_audio(session_id: str, filename: str, token: str | None = Qu
     return FileResponse(str(path), media_type=media_type)
 
 
-@app.get("/admin", response_model=None)
 async def admin_page(
     user: User = Depends(get_current_admin),
 ) -> Response:
@@ -2673,8 +2352,3 @@ async def admin_page(
     if not path.exists():
         return HTMLResponse(status_code=404, content="not found")
     return FileResponse(str(path), media_type="text/html")
-
-
-WEB_DIR = Path("web")
-if WEB_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="static")

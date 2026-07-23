@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
-from ... import legacy_app as legacy
+from ... import runtime
 from ...db import get_db
 from ...deps import get_current_admin
 from ...models import User
@@ -58,4 +58,4 @@ async def admin_update_user_role(
 
 @router.get('/admin', response_model=None)
 async def admin_page(user: User = Depends(get_current_admin)) -> Response:
-    return await legacy.admin_page(user)
+    return await runtime.admin_page(user)

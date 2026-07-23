@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from ..config import settings
+from ..core.config import settings
 from ..models import TranscriptHistory
 from ..transcript_store import (
     iter_debug_chunk_dirs,

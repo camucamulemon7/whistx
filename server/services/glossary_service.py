@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..config import settings
+from ..core.config import settings
 
 
 def glossary_path() -> Path:

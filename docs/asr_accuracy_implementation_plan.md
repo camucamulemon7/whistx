@@ -131,7 +131,7 @@
 
 対象ファイル:
 
-- [server/legacy_app.py](/home/remon1129/ai/whistx/server/legacy_app.py)
+- [server/runtime.py](/home/remon1129/ai/whistx/server/runtime.py)
 - [server/openai_whisper.py](/home/remon1129/ai/whistx/server/openai_whisper.py)
 
 完了条件:
@@ -188,7 +188,7 @@
 
 - [server/audio_pipeline.py](/home/remon1129/ai/whistx/server/audio_pipeline.py)
 - [server/core/config/asr.py](/home/remon1129/ai/whistx/server/core/config/asr.py)
-- [server/legacy_app.py](/home/remon1129/ai/whistx/server/legacy_app.py)
+- [server/runtime.py](/home/remon1129/ai/whistx/server/runtime.py)
 
 完了条件:
 
@@ -246,7 +246,7 @@
 
 対象ファイル:
 
-- [server/legacy_app.py](/home/remon1129/ai/whistx/server/legacy_app.py)
+- [server/runtime.py](/home/remon1129/ai/whistx/server/runtime.py)
 
 完了条件:
 
@@ -298,7 +298,7 @@
 
 - [web/src/app.js](/home/remon1129/ai/whistx/web/src/app.js)
 - [server/audio_pipeline.py](/home/remon1129/ai/whistx/server/audio_pipeline.py)
-- [server/legacy_app.py](/home/remon1129/ai/whistx/server/legacy_app.py)
+- [server/runtime.py](/home/remon1129/ai/whistx/server/runtime.py)
 
 完了条件:
 
@@ -353,7 +353,7 @@
 
 対象ファイル:
 
-- [server/legacy_app.py](/home/remon1129/ai/whistx/server/legacy_app.py)
+- [server/runtime.py](/home/remon1129/ai/whistx/server/runtime.py)
 - [server/core/config/asr.py](/home/remon1129/ai/whistx/server/core/config/asr.py)
 
 完了条件:
@@ -382,7 +382,7 @@
 
 - [server/asr.py](/home/remon1129/ai/whistx/server/asr.py)
 - [server/openai_whisper.py](/home/remon1129/ai/whistx/server/openai_whisper.py)
-- [server/legacy_app.py](/home/remon1129/ai/whistx/server/legacy_app.py)
+- [server/runtime.py](/home/remon1129/ai/whistx/server/runtime.py)
 
 完了条件:
 
@@ -407,7 +407,7 @@
 
 対象ファイル:
 
-- [server/legacy_app.py](/home/remon1129/ai/whistx/server/legacy_app.py)
+- [server/runtime.py](/home/remon1129/ai/whistx/server/runtime.py)
 
 完了条件:
 
@@ -458,7 +458,7 @@
 
 対象ファイル:
 
-- [server/legacy_app.py](/home/remon1129/ai/whistx/server/legacy_app.py)
+- [server/runtime.py](/home/remon1129/ai/whistx/server/runtime.py)
 
 完了条件:
 
@@ -483,7 +483,7 @@
 対象ファイル:
 
 - [server/diarizer.py](/home/remon1129/ai/whistx/server/diarizer.py)
-- [server/legacy_app.py](/home/remon1129/ai/whistx/server/legacy_app.py)
+- [server/runtime.py](/home/remon1129/ai/whistx/server/runtime.py)
 
 完了条件:
 

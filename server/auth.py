@@ -9,7 +9,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from sqlalchemy.orm import Session
 
-from .config import settings
+from .core.config import settings
 from .models import User, UserSession
 from .repositories import session_repository, user_repository
 

@@ -45,13 +45,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from server import app as app_module
 from server import auth as auth_module
-from server import legacy_app
+from server import runtime
 from server import openai_whisper
 from server import summarizer as summarizer_module
 from server.asr import ASRChunkResult
-from server.app import LoginRequest
+from server.schemas import LoginRequest, RegisterRequest
 from server.api.routes import admin as admin_routes
 from server.api.routes import auth as auth_routes
 from server.api.routes import summary as summary_routes
@@ -100,7 +99,7 @@ def make_security_settings(**overrides):
 
 class RegressionTests(unittest.TestCase):
     def setUp(self) -> None:
-        app_module.LOGIN_ATTEMPTS.clear()
+        auth_service.LOGIN_ATTEMPTS.clear()
         rate_limit.clear()
 
     def test_login_route_rate_limits_after_repeated_failures(self) -> None:
@@ -108,12 +107,12 @@ class RegressionTests(unittest.TestCase):
         request = make_request()
         db = DummyDB()
 
-        with patch.object(app_module, 'get_user_by_email', return_value=None):
+        with patch.object(auth_module, 'get_user_by_email', return_value=None):
             for _ in range(5):
-                response = asyncio.run(app_module.auth_login(payload, request, db))
+                response = asyncio.run(auth_routes.auth_login(payload, request, db))
                 self.assertEqual(response.status_code, 401)
 
-            response = asyncio.run(app_module.auth_login(payload, request, db))
+            response = asyncio.run(auth_routes.auth_login(payload, request, db))
             self.assertEqual(response.status_code, 429)
             self.assertIn('too_many_login_attempts', response.body.decode('utf-8'))
 
@@ -184,9 +183,9 @@ class RegressionTests(unittest.TestCase):
         db = DummyDB()
         userinfo = {'sub': 'sub-1', 'email': 'user@example.com', 'email_verified': None}
 
-        with patch.object(app_module, 'settings', SimpleNamespace(keycloak_require_email_verified=True)):
+        with patch.object(auth_service, 'settings', SimpleNamespace(keycloak_require_email_verified=True)):
             with self.assertRaises(RuntimeError) as ctx:
-                app_module._upsert_keycloak_user(db, userinfo)
+                auth_service.upsert_keycloak_user(db, userinfo)
 
         self.assertEqual(str(ctx.exception), 'keycloak_email_not_verified')
 
@@ -473,7 +472,7 @@ class RegressionTests(unittest.TestCase):
         async def fake_summarize(payload):
             return summary_routes.JSONResponse({'summary': payload.text, 'model': 'test'})
 
-        with patch.object(summary_routes.legacy, 'summarize', side_effect=fake_summarize):
+        with patch.object(summary_routes.runtime, 'summarize', side_effect=fake_summarize):
             response = client.post('/api/summarize', json={'text': 'hello', 'language': 'ja'})
 
         self.assertEqual(response.status_code, 200)
@@ -539,7 +538,7 @@ class RegressionTests(unittest.TestCase):
 
         with (
             patch.object(ws_routes, 'get_optional_user_from_request', return_value=user),
-            patch.object(ws_routes.legacy, 'ws_transcribe', side_effect=accept_and_close) as handler,
+            patch.object(ws_routes.runtime, 'ws_transcribe', side_effect=accept_and_close) as handler,
         ):
             with client.websocket_connect('/ws/transcribe'):
                 pass
@@ -565,7 +564,7 @@ class RegressionTests(unittest.TestCase):
         with (
             patch.object(ws_routes, 'settings', guest_settings),
             patch.object(ws_routes, 'get_optional_user_from_request', return_value=None),
-            patch.object(ws_routes.legacy, 'ws_transcribe', side_effect=accept_and_close) as handler,
+            patch.object(ws_routes.runtime, 'ws_transcribe', side_effect=accept_and_close) as handler,
         ):
             with client.websocket_connect('/ws/transcribe'):
                 pass
@@ -627,8 +626,8 @@ class RegressionTests(unittest.TestCase):
         async def fake_shutdown() -> None:
             events.append('shutdown')
 
-        with patch.object(application_core.legacy, 'on_startup', side_effect=fake_startup):
-            with patch.object(application_core.legacy, 'on_shutdown', side_effect=fake_shutdown):
+        with patch.object(application_core.runtime, 'on_startup', side_effect=fake_startup):
+            with patch.object(application_core.runtime, 'on_shutdown', side_effect=fake_shutdown):
                 with TestClient(application_core.create_app()):
                     self.assertEqual(events, ['startup'])
 
@@ -813,8 +812,8 @@ class RegressionTests(unittest.TestCase):
             )
             (screenshots_dir / '000001.webp').write_bytes(b'webp')
 
-            with patch.object(legacy_app, 'settings', SimpleNamespace(transcripts_dir=transcripts_dir)):
-                response = asyncio.run(legacy_app.get_zip('sess-zip', token='token'))
+            with patch.object(runtime, 'settings', SimpleNamespace(transcripts_dir=transcripts_dir)):
+                response = asyncio.run(runtime.get_zip('sess-zip', token='token'))
 
             with zipfile.ZipFile(BytesIO(response.body)) as archive:
                 names = sorted(archive.namelist())
@@ -922,14 +921,14 @@ class RegressionTests(unittest.TestCase):
 
     def test_keycloak_error_mapping_is_specific(self) -> None:
         self.assertEqual(
-            app_module._map_keycloak_auth_error(RuntimeError('keycloak_email_not_verified')),
+            auth_service.map_keycloak_auth_error(RuntimeError('keycloak_email_not_verified')),
             'keycloak_email_not_verified',
         )
         self.assertEqual(
-            app_module._map_keycloak_auth_error(RuntimeError('keycloak_account_link_required')),
+            auth_service.map_keycloak_auth_error(RuntimeError('keycloak_account_link_required')),
             'keycloak_account_link_required',
         )
-        self.assertEqual(app_module._map_keycloak_auth_error(RuntimeError('something_else')), 'keycloak_failed')
+        self.assertEqual(auth_service.map_keycloak_auth_error(RuntimeError('something_else')), 'keycloak_failed')
 
     def test_history_file_path_rejects_parent_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1042,12 +1041,12 @@ class RegressionTests(unittest.TestCase):
     def test_trim_overlap_prefix_requires_substantial_match(self) -> None:
         previous = '本日の会議では新製品の価格改定について説明します'
         current = '価格改定について説明します。次に販売計画を確認します'
-        self.assertEqual(legacy_app._trim_overlap_prefix(current, previous), '次に販売計画を確認します')
+        self.assertEqual(runtime._trim_overlap_prefix(current, previous), '次に販売計画を確認します')
 
     def test_trim_overlap_prefix_fuzzy_match_handles_small_variation(self) -> None:
         previous = '新製品の価格改定について説明いたします'
         current = '価格改定について説明します。次に販売計画です'
-        self.assertEqual(legacy_app._trim_overlap_prefix(current, previous), '次に販売計画です')
+        self.assertEqual(runtime._trim_overlap_prefix(current, previous), '次に販売計画です')
 
     def test_build_prompt_includes_shared_vocabulary(self) -> None:
         session = SimpleNamespace(
@@ -1059,7 +1058,7 @@ class RegressionTests(unittest.TestCase):
             context_max_chars=400,
             language='ja',
         )
-        prompt = legacy_app._build_prompt(session)
+        prompt = runtime._build_prompt(session)
         self.assertIsNotNone(prompt)
         self.assertIn('共有用語辞典', prompt)
         self.assertIn('PCIe, UCIe, Blackwell', prompt)
@@ -1212,23 +1211,23 @@ class RegressionTests(unittest.TestCase):
     def test_near_duplicate_detection_does_not_drop_extended_text(self) -> None:
         previous = '本日の会議では新製品の価格改定について説明します'
         current = '本日の会議では新製品の価格改定について詳細を説明します'
-        self.assertFalse(legacy_app._is_near_duplicate(current, previous))
+        self.assertFalse(runtime._is_near_duplicate(current, previous))
 
     def test_near_duplicate_detection_uses_timestamp_gap(self) -> None:
         previous = '価格改定について説明します'
         current = '価格改定について説明します'
-        self.assertTrue(legacy_app._is_near_duplicate(current, previous, current_start_ms=1000, previous_end_ms=900))
-        self.assertFalse(legacy_app._is_near_duplicate(current, previous, current_start_ms=5000, previous_end_ms=900))
+        self.assertTrue(runtime._is_near_duplicate(current, previous, current_start_ms=1000, previous_end_ms=900))
+        self.assertFalse(runtime._is_near_duplicate(current, previous, current_start_ms=5000, previous_end_ms=900))
 
     def test_light_proofread_collapses_fillers_and_normalizes_digits(self) -> None:
-        value = legacy_app._light_proofread('えーと、えーと ２０ ２５ 年の計画です', language='ja')
+        value = runtime._light_proofread('えーと、えーと ２０ ２５ 年の計画です', language='ja')
         self.assertIn('えーと', value)
         self.assertNotIn('えーと、えーと', value)
         self.assertIn('2025', value)
 
     def test_boundary_fragment_detection_drops_broken_display_chunk(self) -> None:
         self.assertTrue(
-            legacy_app._should_drop_boundary_fragment(
+            runtime._should_drop_boundary_fragment(
                 'おすすめとかえええ\ufffd',
                 '有識者のみなさんぜひ教えてくださいよということでお願いしますよお願いしますほなじゃあなんかありますかおすすめとか',
                 source_mode='display',
@@ -1261,7 +1260,7 @@ class RegressionTests(unittest.TestCase):
 
     def test_weird_transcription_retry_detection_handles_broken_chunk(self) -> None:
         self.assertTrue(
-            legacy_app._should_retry_weird_transcription(
+            runtime._should_retry_weird_transcription(
                 'おすすめとかえええ\ufffd',
                 '有識者のみなさんぜひ教えてくださいよということでお願いしますよお願いしますほなじゃあなんかありますかおすすめとか',
                 source_mode='display',
@@ -1273,7 +1272,7 @@ class RegressionTests(unittest.TestCase):
         original = ASRChunkResult(text='おすすめとかえええ\ufffd', start_ms=0, end_ms=1000, suspicious=True)
         retry = ASRChunkResult(text='おすすめとか', start_ms=0, end_ms=1000, suspicious=False)
         self.assertTrue(
-            legacy_app._prefer_rescue_transcription_result(
+            runtime._prefer_rescue_transcription_result(
                 original=original,
                 retry=retry,
                 previous_text='有識者のみなさんぜひ教えてくださいよということでお願いしますよお願いしますほなじゃあなんかありますか',
@@ -1282,11 +1281,11 @@ class RegressionTests(unittest.TestCase):
         )
 
     def test_monotonic_bounds_prevent_timestamp_overlap(self) -> None:
-        self.assertEqual(legacy_app._coerce_monotonic_bounds(ts_start=8100, ts_end=8900, previous_end_ms=9000), (9000, 9000))
-        self.assertEqual(legacy_app._coerce_monotonic_bounds(ts_start=9100, ts_end=9500, previous_end_ms=9000), (9100, 9500))
+        self.assertEqual(runtime._coerce_monotonic_bounds(ts_start=8100, ts_end=8900, previous_end_ms=9000), (9000, 9000))
+        self.assertEqual(runtime._coerce_monotonic_bounds(ts_start=9100, ts_end=9500, previous_end_ms=9000), (9100, 9500))
 
     def test_register_user_rejects_when_self_signup_disabled(self) -> None:
-        payload = app_module.RegisterRequest(email='user@example.com', password='password123', display_name='User')
+        payload = RegisterRequest(email='user@example.com', password='password123', display_name='User')
         db = SimpleNamespace()
         with patch.object(auth_service.auth, 'has_admin_account', return_value=True):
             with patch.object(auth_service, 'settings', SimpleNamespace(enable_self_signup=False)):
@@ -1334,7 +1333,7 @@ class RegressionTests(unittest.TestCase):
 
         with (
             patch.object(
-                legacy_app,
+                runtime,
                 'settings',
                 SimpleNamespace(
                     keycloak_enabled=True,
@@ -1351,9 +1350,9 @@ class RegressionTests(unittest.TestCase):
                 ),
             ),
         ):
-            with patch.object(legacy_app, '_get_keycloak_discovery', return_value={'authorization_endpoint': 'https://idp.example.com/auth'}):
+            with patch.object(runtime, '_get_keycloak_discovery', return_value={'authorization_endpoint': 'https://idp.example.com/auth'}):
                 with patch.object(
-                    legacy_app,
+                    runtime,
                     '_build_keycloak_authorization_url',
                     side_effect=lambda **kwargs: f"https://idp.example.com/auth?redirect_uri={kwargs['redirect_uri']}",
                 ):

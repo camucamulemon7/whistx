@@ -36,7 +36,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from server.audio_pipeline import AudioPreprocessor, PreparedAudio
-from server import legacy_app
+from server import runtime
 from server.asr import ASRChunkResult
 
 
@@ -112,10 +112,10 @@ class AudioPipelineTests(unittest.TestCase):
         async def run_test() -> None:
             await session.queue.put(SimpleNamespace(seq=1, offset_ms=0, duration_ms=1_000, mime_type="audio/webm", audio_bytes=b"a"))
             await session.queue.put(None)
-            with patch.object(legacy_app, "_prepare_audio_for_asr", return_value=prepared):
-                with patch.object(legacy_app, "_safe_send", side_effect=fake_safe_send):
+            with patch.object(runtime, "_prepare_audio_for_asr", return_value=prepared):
+                with patch.object(runtime, "_safe_send", side_effect=fake_safe_send):
                     with patch.object(
-                        legacy_app,
+                        runtime,
                         "settings",
                         SimpleNamespace(
                             asr_model="whisper-1",
@@ -123,7 +123,7 @@ class AudioPipelineTests(unittest.TestCase):
                             asr_vad_speech_ratio_min=0.02,
                         ),
                     ):
-                        await legacy_app._session_worker(object(), session)
+                        await runtime._session_worker(object(), session)
 
         asyncio.run(run_test())
         self.assertFalse(session.transcriber.called)
@@ -143,7 +143,7 @@ class AudioPipelineTests(unittest.TestCase):
             "activeMs": 840,
             "silenceMs": 220,
         }
-        chunk = legacy_app._parse_chunk_message(payload)
+        chunk = runtime._parse_chunk_message(payload)
         assert chunk is not None
         self.assertEqual(chunk.seq, 3)
         self.assertAlmostEqual(chunk.speech_ratio, 0.35)
@@ -172,7 +172,7 @@ class AudioPipelineTests(unittest.TestCase):
 
     def test_session_worker_retries_failed_chunk_with_next_chunk(self) -> None:
         prepared_first = PreparedAudio(
-            audio_bytes=legacy_app._merge_wav_chunks([_make_test_wav(16000)]),
+            audio_bytes=runtime._merge_wav_chunks([_make_test_wav(16000)]),
             mime_type="audio/wav",
             overlap_ms_used=0,
             tail_pcm=b"",
@@ -182,7 +182,7 @@ class AudioPipelineTests(unittest.TestCase):
             audio_metrics={"rms": 0.05, "peak": 0.2, "speech_ratio": 0.5},
         )
         prepared_second = PreparedAudio(
-            audio_bytes=legacy_app._merge_wav_chunks([_make_test_wav(8000)]),
+            audio_bytes=runtime._merge_wav_chunks([_make_test_wav(8000)]),
             mime_type="audio/wav",
             overlap_ms_used=0,
             tail_pcm=b"",
@@ -271,10 +271,10 @@ class AudioPipelineTests(unittest.TestCase):
             await session.queue.put(second)
             await session.queue.put(None)
             with tempfile.TemporaryDirectory() as temp_dir:
-                with patch.object(legacy_app, "_prepare_audio_for_asr", side_effect=prepare_calls):
-                    with patch.object(legacy_app, "_safe_send", side_effect=fake_safe_send):
+                with patch.object(runtime, "_prepare_audio_for_asr", side_effect=prepare_calls):
+                    with patch.object(runtime, "_safe_send", side_effect=fake_safe_send):
                         with patch.object(
-                            legacy_app,
+                            runtime,
                             "settings",
                             SimpleNamespace(
                                 asr_model="whisper-1",
@@ -284,7 +284,7 @@ class AudioPipelineTests(unittest.TestCase):
                                 debug_chunks_dir=Path(temp_dir),
                             ),
                         ):
-                            await legacy_app._session_worker(object(), session)
+                            await runtime._session_worker(object(), session)
 
         asyncio.run(run_test())
         self.assertEqual(session.transcriber.calls, 2)

@@ -12,7 +12,7 @@ from urllib.parse import urljoin, urlsplit
 from fastapi import Request
 from fastapi.responses import Response
 
-from ..config import settings
+from .config import settings
 from ..transcript_store import resolve_transcript_path
 
 

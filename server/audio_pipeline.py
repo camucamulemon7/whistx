@@ -8,7 +8,7 @@ import wave
 from array import array
 from dataclasses import dataclass
 
-from .config import settings
+from .core.config import settings
 
 
 logger = logging.getLogger(__name__)

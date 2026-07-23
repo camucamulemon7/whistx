@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from ... import legacy_app as legacy
+from ... import runtime
 from ...core.logging import emit_container_log
 
 router = APIRouter()
@@ -16,4 +16,4 @@ logger = logging.getLogger(__name__)
 async def health() -> JSONResponse:
     emit_container_log(__name__, "debug", "health requested")
     logger.debug("health requested")
-    return await legacy.health()
+    return await runtime.health()
