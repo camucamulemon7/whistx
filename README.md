@@ -145,6 +145,12 @@ docker run --rm -v "$PWD:/workspace" -w /workspace ghcr.io/astral-sh/uv:0.8.17-p
 
 Local startup and container builds consume the runtime lock. CI consumes the development lock so all three environments resolve the same runtime versions.
 
+### Configuration registry
+
+[`server/core/config/registry.py`](./server/core/config/registry.py) is the canonical registry for application environment variables. It records each variable's type, default, accepted range, secret status, and aliases. `.env.example`, the Python loaders, and container forwarding are checked against it by the test suite.
+
+Aliases listed in `deprecated_aliases` are compatibility-only and scheduled for removal in the next major release. New deployments should use the canonical `APP_*`, `ASR_*`, `SUMMARY_*`, `PROOFREAD_*`, and `DIARIZATION_*` names.
+
 ### Podman (rootless)
 
 ```bash
