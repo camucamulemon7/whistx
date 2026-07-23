@@ -51,6 +51,8 @@ jobs:
           --strict
       - name: Check JavaScript syntax
         run: find web -type f -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Test JavaScript modules
+        run: npm run test:web
       - name: Check shell syntax
         run: git ls-files '*.sh' | xargs bash -n
       - name: Migrate and start with SQLite
