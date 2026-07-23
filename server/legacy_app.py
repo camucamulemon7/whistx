@@ -9,7 +9,6 @@ import time
 import re
 import secrets
 import zipfile
-from dataclasses import dataclass
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -17,8 +16,6 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable
 import wave
-from urllib.parse import urlencode
-from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Depends, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -66,10 +63,16 @@ from .services.history_service import (
     serialize_app_datetime,
 )
 from .services.glossary_service import apply_shared_glossary_replacements, load_shared_glossary
+from .services.oidc_service import (
+    build_authorization_url as oidc_build_authorization_url,
+    exchange_code as oidc_exchange_code,
+    fetch_discovery as oidc_fetch_discovery,
+    fetch_json as oidc_fetch_json,
+    fetch_userinfo as oidc_fetch_userinfo,
+)
 from .summarizer import OpenAISummarizer
 from .transcript_store import (
     TranscriptRecord,
-    TranscriptStore,
     build_debug_chunks_dir,
     iter_debug_chunk_dirs,
     iter_runtime_screenshot_dirs,
@@ -78,6 +81,15 @@ from .transcript_store import (
     resolve_screenshot_path,
     resolve_transcript_path,
 )
+from .transcription.factory import create_live_session
+from .transcription.messages import (
+    as_int as _as_int,
+    as_str as _as_str,
+    parse_chunk_message as _parse_chunk_message,
+    validate_chunk_order as _validate_chunk_order,
+)
+from .transcription.session import ChunkMessage, FailedPreparedChunk, LiveSession
+from .transcription.worker import WorkerDependencies, run_session_worker
 from .core.security import (
     clear_oidc_state_cookie as security_clear_oidc_state_cookie,
     clear_session_cookie as security_clear_session_cookie,
@@ -103,67 +115,6 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="whistx", version="2.0.0")
 MAX_DIARIZATION_SPEAKERS = 12
-
-
-@dataclass(slots=True)
-class ChunkMessage:
-    seq: int
-    offset_ms: int
-    duration_ms: int
-    mime_type: str
-    audio_bytes: bytes
-    speech_ratio: float = 1.0
-    active_ms: int = 0
-    silence_ms: int = 0
-    screenshot_mime_type: str | None = None
-    screenshot_bytes: bytes | None = None
-
-
-@dataclass(slots=True)
-class FailedPreparedChunk:
-    seq: int
-    offset_ms: int
-    duration_ms: int
-    audio_bytes: bytes
-    speech_ratio: float
-    active_ms: int
-    silence_ms: int
-
-
-@dataclass(slots=True)
-class LiveSession:
-    session_id: str
-    access_token: str
-    language: str | None
-    audio_source: str
-    base_prompt: str
-    shared_vocabulary: str
-    temperature: float
-    context_prompt_enabled: bool
-    context_max_chars: int
-    context_recent_lines: int
-    context_term_limit: int
-    context_history: list[str]
-    transcript_history: list[str]
-    context_terms: list[str]
-    last_emitted_text: str
-    last_emitted_ts_end: int
-    collect_audio_for_diarization: bool
-    diarization_num_speakers: int
-    diarization_min_speakers: int
-    diarization_max_speakers: int
-    audio_chunks: list[AudioChunk]
-    store: TranscriptStore
-    queue: asyncio.Queue[ChunkMessage | None]
-    transcriber: SessionTranscriber
-    overlap_tail_pcm: bytes
-    last_chunk_seq: int
-    last_chunk_offset_ms: int
-    failed_prepared_chunks: list[FailedPreparedChunk]
-    asr_input_tokens: int
-    asr_output_tokens: int
-    asr_total_tokens: int
-    asr_estimated_tokens: int
 
 
 class SummarizeRequest(BaseModel):
@@ -1249,6 +1200,38 @@ async def ws_transcribe(ws: WebSocket) -> None:
 
 
 async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
+    await run_session_worker(
+        ws,
+        session,
+        WorkerDependencies(
+            settings=settings,
+            observer=LANGFUSE_OBSERVER,
+            logger=logger,
+            prepare_audio=_prepare_audio_for_asr,
+            merge_wav_chunks=_merge_wav_chunks,
+            safe_send=_safe_send,
+            build_prompt=_build_prompt,
+            accumulate_usage=_accumulate_asr_usage,
+            retry_weird_transcription=_retry_weird_transcription_if_needed,
+            save_debug_chunk=_save_debug_audio_chunk,
+            sanitize_text=_sanitize_transcript_text,
+            trim_overlap=_trim_overlap_prefix,
+            light_proofread=_light_proofread,
+            should_drop_boundary=_should_drop_boundary_fragment,
+            is_near_duplicate=_is_near_duplicate,
+            coerce_bounds=_coerce_monotonic_bounds,
+            store_screenshot=_store_screenshot_for_chunk,
+            store_raw_audio=_store_debug_raw_audio_for_final,
+            store_asr_audio=_store_debug_audio_for_final,
+            resolve_audio_url=_resolve_existing_debug_audio_url,
+            append_context=_append_context,
+            clip_trace_text=_clip_trace_text,
+            emit_log=emit_container_log,
+        ),
+    )
+
+
+async def _legacy_session_worker(ws: WebSocket, session: LiveSession) -> None:
     emitted_segments = 0
     emitted_chars = 0
     if not hasattr(session, "failed_prepared_chunks"):
@@ -1539,70 +1522,12 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
 def _create_session(payload: dict[str, Any]) -> LiveSession:
     if TRANSCRIBER_FACTORY is None:
         raise RuntimeError("transcriber_not_ready")
-
-    base_session_id = TranscriptStore.sanitize_or_generate(_as_str(payload.get("sessionId")))
-    runtime_session_id = TranscriptStore.make_runtime_session_id(base_session_id)
-    access_token = secrets.token_urlsafe(18)
-
-    language = _normalize_asr_language(_as_str(payload.get("language")))
-    audio_source = _normalize_audio_source(_as_str(payload.get("audioSource")))
-    prompt = _as_str(payload.get("prompt")) or settings.default_prompt
-    shared_vocabulary = _as_str(payload.get("sharedVocabulary"))
-    temperature = _as_float(payload.get("temperature"), settings.default_temperature)
-    diarization_requested = _as_bool(payload.get("diarizationEnabled"), True)
-    diarization_num_speakers, diarization_min_speakers, diarization_max_speakers = (
-        _parse_diarization_speaker_params(payload)
+    return create_live_session(
+        payload,
+        settings=settings,
+        transcriber_factory=TRANSCRIBER_FACTORY,
+        diarizer_available=DIARIZER is not None,
     )
-
-    session = LiveSession(
-        session_id=runtime_session_id,
-        access_token=access_token,
-        language=language,
-        audio_source=audio_source,
-        base_prompt=prompt,
-        shared_vocabulary=shared_vocabulary,
-        temperature=temperature,
-        context_prompt_enabled=settings.context_prompt_enabled,
-        context_max_chars=settings.context_max_chars,
-        context_recent_lines=settings.context_recent_lines,
-        context_term_limit=settings.context_term_limit,
-        context_history=[],
-        transcript_history=[],
-        context_terms=[],
-        last_emitted_text="",
-        last_emitted_ts_end=0,
-        collect_audio_for_diarization=DIARIZER is not None and diarization_requested,
-        diarization_num_speakers=diarization_num_speakers,
-        diarization_min_speakers=diarization_min_speakers,
-        diarization_max_speakers=diarization_max_speakers,
-        audio_chunks=[],
-        store=TranscriptStore(settings.transcripts_dir, runtime_session_id),
-        queue=asyncio.Queue(maxsize=settings.max_queue_size),
-        transcriber=TRANSCRIBER_FACTORY(),
-        overlap_tail_pcm=b"",
-        last_chunk_seq=-1,
-        last_chunk_offset_ms=-1,
-        failed_prepared_chunks=[],
-        asr_input_tokens=0,
-        asr_output_tokens=0,
-        asr_total_tokens=0,
-        asr_estimated_tokens=0,
-    )
-    session.store.write_metadata(
-        {
-            "sessionId": runtime_session_id,
-            "accessToken": access_token,
-            "language": language,
-            "audioSource": audio_source,
-            "diarizationEnabled": session.collect_audio_for_diarization,
-            "diarizationNumSpeakers": diarization_num_speakers,
-            "diarizationMinSpeakers": diarization_min_speakers,
-            "diarizationMaxSpeakers": diarization_max_speakers,
-            "finalized": False,
-            "createdAt": datetime.now(timezone.utc).isoformat(),
-        }
-    )
-    return session
 
 
 def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
@@ -2356,77 +2281,6 @@ def _pick_speaker(turns: list[SpeakerTurn], start_ms: int, end_ms: int) -> str |
 
 
 
-def _parse_chunk_message(payload: dict[str, Any]) -> ChunkMessage | None:
-    audio_b64 = _as_str(payload.get("audio"))
-    if not audio_b64:
-        return None
-
-    try:
-        audio_bytes = base64.b64decode(audio_b64, validate=True)
-    except Exception:  # noqa: BLE001
-        return None
-
-    screenshot_b64 = _as_str(payload.get("screenshot"))
-    screenshot_bytes: bytes | None = None
-    if screenshot_b64:
-        try:
-            screenshot_bytes = base64.b64decode(screenshot_b64, validate=True)
-        except Exception:  # noqa: BLE001
-            screenshot_bytes = None
-
-    mime_type = _as_str(payload.get("mimeType")) or "audio/webm"
-    screenshot_mime_type = _as_str(payload.get("screenshotMimeType")) or None
-    seq = _as_int(payload.get("seq"), 0)
-    offset_ms = max(0, _as_int(payload.get("offsetMs"), 0))
-    duration_ms = max(200, _as_int(payload.get("durationMs"), 2000))
-    speech_ratio = max(0.0, min(1.0, _as_float(payload.get("speechRatio"), 1.0)))
-    active_ms = max(0, _as_int(payload.get("activeMs"), duration_ms))
-    silence_ms = max(0, _as_int(payload.get("silenceMs"), 0))
-
-    return ChunkMessage(
-        seq=seq,
-        offset_ms=offset_ms,
-        duration_ms=duration_ms,
-        mime_type=mime_type,
-        audio_bytes=audio_bytes,
-        speech_ratio=speech_ratio,
-        active_ms=active_ms,
-        silence_ms=silence_ms,
-        screenshot_mime_type=screenshot_mime_type,
-        screenshot_bytes=screenshot_bytes,
-    )
-
-
-def _validate_chunk_order(session: LiveSession, chunk: ChunkMessage) -> dict[str, Any] | None:
-    if chunk.seq < 0:
-        return {
-            "type": "error",
-            "message": "invalid_chunk_sequence",
-            "detail": "seq_must_be_non_negative",
-            "seq": chunk.seq,
-        }
-
-    if session.last_chunk_seq >= 0 and chunk.seq <= session.last_chunk_seq:
-        return {
-            "type": "error",
-            "message": "invalid_chunk_sequence",
-            "detail": "seq_must_strictly_increase",
-            "seq": chunk.seq,
-            "previousSeq": session.last_chunk_seq,
-        }
-
-    if session.last_chunk_offset_ms >= 0 and chunk.offset_ms < session.last_chunk_offset_ms:
-        return {
-            "type": "error",
-            "message": "invalid_chunk_offset",
-            "detail": "offset_ms_must_be_monotonic",
-            "offsetMs": chunk.offset_ms,
-            "previousOffsetMs": session.last_chunk_offset_ms,
-        }
-
-    return None
-
-
 def _store_screenshot_for_chunk(session: LiveSession, item: ChunkMessage) -> str | None:
     if not item.screenshot_bytes or not item.screenshot_mime_type:
         return None
@@ -2533,64 +2387,6 @@ def _resolve_existing_debug_audio_url(session: LiveSession, *, prefix: str, seq:
     return None
 
 
-def _clamp_diarization_speakers(value: int) -> int:
-    return max(0, min(MAX_DIARIZATION_SPEAKERS, value))
-
-
-def _parse_diarization_speaker_params(payload: dict[str, Any]) -> tuple[int, int, int]:
-    num = _clamp_diarization_speakers(
-        _as_int(payload.get("diarizationNumSpeakers"), settings.diarization_num_speakers)
-    )
-    min_speakers = _clamp_diarization_speakers(
-        _as_int(payload.get("diarizationMinSpeakers"), settings.diarization_min_speakers)
-    )
-    max_speakers = _clamp_diarization_speakers(
-        _as_int(payload.get("diarizationMaxSpeakers"), settings.diarization_max_speakers)
-    )
-
-    if num > 0:
-        return (num, 0, 0)
-
-    if min_speakers > 0 and max_speakers > 0 and min_speakers > max_speakers:
-        min_speakers, max_speakers = max_speakers, min_speakers
-
-    return (0, min_speakers, max_speakers)
-
-
-def _as_str(value: Any) -> str:
-    if isinstance(value, str):
-        return value.strip()
-    return ""
-
-
-def _as_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _as_float(value: Any, default: float) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _as_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    return default
-
-
 def _merge_wav_chunks(chunks: list[bytes]) -> bytes:
     frames: list[bytes] = []
     sample_rate = settings.asr_preprocess_sample_rate
@@ -2609,20 +2405,6 @@ def _merge_wav_chunks(chunks: list[bytes]) -> bytes:
             for frame in frames:
                 wav_out.writeframes(frame)
         return buffer.getvalue()
-
-
-def _normalize_asr_language(value: str) -> str | None:
-    lowered = (value or "").strip().lower()
-    if not lowered or lowered == "auto":
-        return None
-    return lowered
-
-
-def _normalize_audio_source(value: str) -> str:
-    lowered = (value or "").strip().lower()
-    if lowered in {"display", "both"}:
-        return lowered
-    return "mic"
 
 
 def _normalize_proofread_mode(value: str) -> str:
@@ -2703,19 +2485,17 @@ def _clear_oidc_state_cookie(response: Response, request: Request) -> None:
 
 
 def _fetch_json(url: str, *, method: str = "GET", data: bytes | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]:
-    request = UrlRequest(url, method=method, data=data, headers=headers or {})
-    with urlopen(request, timeout=10) as response:  # noqa: S310
-        payload = response.read().decode("utf-8")
-    return json.loads(payload)
+    return oidc_fetch_json(url, method=method, data=data, headers=headers)
 
 
 def _get_keycloak_discovery() -> dict[str, Any]:
     global KEYCLOAK_DISCOVERY_CACHE
     if KEYCLOAK_DISCOVERY_CACHE is not None:
         return KEYCLOAK_DISCOVERY_CACHE
-    issuer = str(settings.keycloak_issuer or "").rstrip("/")
-    discovery_url = f"{issuer}/.well-known/openid-configuration"
-    KEYCLOAK_DISCOVERY_CACHE = _fetch_json(discovery_url)
+    KEYCLOAK_DISCOVERY_CACHE = oidc_fetch_discovery(
+        str(settings.keycloak_issuer or ""),
+        fetcher=_fetch_json,
+    )
     return KEYCLOAK_DISCOVERY_CACHE
 
 
@@ -2726,16 +2506,14 @@ def _build_keycloak_authorization_url(
     state: str,
     code_challenge: str,
 ) -> str:
-    params = {
-        "client_id": settings.keycloak_client_id,
-        "redirect_uri": redirect_uri,
-        "response_type": "code",
-        "scope": settings.keycloak_scope,
-        "state": state,
-        "code_challenge": code_challenge,
-        "code_challenge_method": "S256",
-    }
-    return f"{discovery['authorization_endpoint']}?{urlencode(params)}"
+    return oidc_build_authorization_url(
+        authorization_endpoint=str(discovery["authorization_endpoint"]),
+        client_id=settings.keycloak_client_id,
+        redirect_uri=redirect_uri,
+        scope=settings.keycloak_scope,
+        state=state,
+        code_challenge=code_challenge,
+    )
 
 
 def _exchange_keycloak_code(
@@ -2744,28 +2522,22 @@ def _exchange_keycloak_code(
     redirect_uri: str,
     code_verifier: str,
 ) -> dict[str, Any]:
-    data = {
-        "grant_type": "authorization_code",
-        "client_id": settings.keycloak_client_id,
-        "code": code,
-        "redirect_uri": redirect_uri,
-        "code_verifier": code_verifier,
-    }
-    if settings.keycloak_client_secret:
-        data["client_secret"] = settings.keycloak_client_secret
-    encoded = urlencode(data).encode("utf-8")
-    return _fetch_json(
-        str(discovery["token_endpoint"]),
-        method="POST",
-        data=encoded,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    return oidc_exchange_code(
+        token_endpoint=str(discovery["token_endpoint"]),
+        client_id=settings.keycloak_client_id,
+        client_secret=settings.keycloak_client_secret,
+        code=code,
+        redirect_uri=redirect_uri,
+        code_verifier=code_verifier,
+        fetcher=_fetch_json,
     )
 
 
 def _fetch_keycloak_userinfo(discovery: dict[str, Any], access_token: str) -> dict[str, Any]:
-    return _fetch_json(
+    return oidc_fetch_userinfo(
         str(discovery["userinfo_endpoint"]),
-        headers={"Authorization": f"Bearer {access_token}"},
+        access_token,
+        fetcher=_fetch_json,
     )
 
 def _upsert_keycloak_user(db: Session, userinfo: dict[str, Any]) -> User:
