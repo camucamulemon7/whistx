@@ -386,11 +386,35 @@ function selectedLanguage() {
   return value;
 }
 
+function syncJourneyStage(stage = "") {
+  const requested = String(stage || "").toLowerCase();
+  const activeStage = requested === "recording" || requested === "stopping"
+    ? "transcript"
+    : state.segments.length > 0 || state.viewingHistoryId
+      ? "result"
+      : "record";
+  const order = ["record", "transcript", "result"];
+  const activeIndex = order.indexOf(activeStage);
+
+  document.querySelectorAll("[data-journey-step]").forEach((step) => {
+    const index = order.indexOf(String(step.dataset.journeyStep || ""));
+    const current = index === activeIndex;
+    step.classList.toggle("is-current", current);
+    step.classList.toggle("is-complete", index >= 0 && index < activeIndex);
+    if (current) {
+      step.setAttribute("aria-current", "step");
+    } else {
+      step.removeAttribute("aria-current");
+    }
+  });
+}
+
 function setStatus(text) {
   const raw = String(text || "").trim();
   state.latestStatus = raw || "idle";
   statusTextEl.textContent = formatStatusText(raw);
   statusTextEl.dataset.state = String(raw || "idle").toLowerCase();
+  syncJourneyStage(raw);
 }
 
 function applyBranding(title, tagline) {
@@ -2079,6 +2103,7 @@ function updateSegmentCount() {
   segmentCountEl.classList.remove("updated");
   void segmentCountEl.offsetWidth;
   segmentCountEl.classList.add("updated");
+  syncJourneyStage(state.recording ? "recording" : "");
 }
 
 function extractTranscriptText() {
