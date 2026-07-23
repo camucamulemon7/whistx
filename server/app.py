@@ -3,7 +3,10 @@ from __future__ import annotations
 from . import legacy_app as legacy
 from .config import settings
 from .core.application import create_app
-from .schemas import BootstrapAdminRequest, HistorySaveRequest, LoginRequest, RegisterRequest
+from .schemas import BootstrapAdminRequest as BootstrapAdminRequest
+from .schemas import HistorySaveRequest as HistorySaveRequest
+from .schemas import LoginRequest as LoginRequest
+from .schemas import RegisterRequest as RegisterRequest
 
 app = create_app()
 
