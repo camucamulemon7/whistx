@@ -80,7 +80,7 @@ Realtime ASR models are not supported in the current build. The old `server/voxt
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.12+
 - `ffmpeg`
 - Chrome or Edge recommended
 - OpenAI-compatible ASR API key
@@ -96,6 +96,9 @@ Realtime ASR models are not supported in the current build. The old `server/voxt
 cp .env.example .env
 ./run.sh
 ```
+
+`run.sh` uses `python3` by default and rejects Python versions older than 3.12.
+Set `DEV_PYTHON_BIN=python3.12` when the Python 3.12 executable is not your default `python3`.
 
 If you want local diarization support, set one of these before running:
 
