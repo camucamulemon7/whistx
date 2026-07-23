@@ -81,6 +81,7 @@ from .transcript_store import (
 from .core.security import (
     clear_oidc_state_cookie as security_clear_oidc_state_cookie,
     clear_session_cookie as security_clear_session_cookie,
+    client_ip as security_client_ip,
     external_url_for as security_external_url_for,
     read_oidc_state_cookie as security_read_oidc_state_cookie,
     runtime_access_allowed as security_runtime_access_allowed,
@@ -358,13 +359,7 @@ def _validate_runtime_configuration() -> None:
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-    if forwarded:
-        return forwarded
-    real_ip = (request.headers.get("x-real-ip") or "").strip()
-    if real_ip:
-        return real_ip
-    return request.client.host if request.client and request.client.host else "unknown"
+    return security_client_ip(request)
 
 
 def _login_rate_limit_keys(request: Request, email: str) -> tuple[str, str]:

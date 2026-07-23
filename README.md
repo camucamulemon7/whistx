@@ -164,6 +164,19 @@ To expose guest transcription, set `ALLOW_GUEST_TRANSCRIPTION=1` and review all 
 
 Unauthenticated connections are rejected with WebSocket code `4401` when guest use is disabled. Guest limit violations use `4429` for connection limits and `4408` for duration, audio, or ASR-request limits. The UI only offers guest mode when the server reports it as enabled.
 
+### Reverse proxy security
+
+For a public reverse-proxy deployment, set `APP_PUBLIC_URL` to the canonical HTTPS origin and list accepted HTTP Host values in `APP_ALLOWED_HOSTS`.
+
+Forwarded headers are ignored by default. Enable them only with both:
+
+```env
+APP_TRUST_PROXY_HEADERS=1
+APP_TRUSTED_PROXY_IPS=127.0.0.1,10.0.0.0/8
+```
+
+`APP_TRUSTED_PROXY_IPS` accepts IP addresses and CIDR networks for the direct proxy peer. When the peer is not trusted, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, and `Forwarded` do not affect client-IP rate limits, OIDC callback URLs, or Secure cookie decisions. Prefer `APP_PUBLIC_URL` for OIDC so callback construction does not depend on request headers.
+
 ### Podman (rootless)
 
 ```bash
