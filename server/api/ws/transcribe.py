@@ -7,6 +7,7 @@ from fastapi import APIRouter, WebSocket
 
 from ... import legacy_app as legacy
 from ...core.config import settings
+from ...core.security import client_ip
 from ...db import db_session
 from ...services.auth_service import get_optional_user_from_request
 
@@ -16,7 +17,7 @@ _GUEST_CONNECTIONS_TOTAL = 0
 
 
 def _client_ip(ws: WebSocket) -> str:
-    return ws.client.host if ws.client and ws.client.host else "unknown"
+    return client_ip(ws)
 
 
 async def _close_safely(ws: WebSocket, code: int, reason: str) -> None:

@@ -83,6 +83,19 @@ def make_request(client_host: str = '127.0.0.1') -> Request:
     return Request(scope)
 
 
+def make_security_settings(**overrides):
+    values = {
+        'app_public_url': None,
+        'app_trust_proxy_headers': False,
+        'app_trusted_proxy_ips': (),
+        'app_allowed_hosts': ('localhost', '127.0.0.1', 'testserver', 'internal', 'app.example.com'),
+        'app_session_secret': 'test-session-secret-abcdefghijklmnopqrstuvwxyz12',
+        'app_session_days': 7,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
 class RegressionTests(unittest.TestCase):
     def setUp(self) -> None:
         app_module.LOGIN_ATTEMPTS.clear()
@@ -1314,13 +1327,23 @@ class RegressionTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(auth_routes.router)
 
-        with patch.object(
-            legacy_app,
-            'settings',
-            SimpleNamespace(
-                keycloak_enabled=True,
-                keycloak_issuer='https://idp.example.com/realms/test',
-                keycloak_client_id='client-id',
+        with (
+            patch.object(
+                legacy_app,
+                'settings',
+                SimpleNamespace(
+                    keycloak_enabled=True,
+                    keycloak_issuer='https://idp.example.com/realms/test',
+                    keycloak_client_id='client-id',
+                ),
+            ),
+            patch.object(
+                security,
+                'settings',
+                make_security_settings(
+                    app_trust_proxy_headers=True,
+                    app_trusted_proxy_ips=('*',),
+                ),
             ),
         ):
             with patch.object(legacy_app, '_get_keycloak_discovery', return_value={'authorization_endpoint': 'https://idp.example.com/auth'}):
@@ -1362,14 +1385,79 @@ class RegressionTests(unittest.TestCase):
         )
         response = summary_routes.JSONResponse({'ok': True})
 
-        security.set_session_cookie(
-            response=response,
-            request=request,
-            cookie_name='whistx_session',
-            session_id='session-1',
-        )
+        with patch.object(
+            security,
+            'settings',
+            make_security_settings(
+                app_trust_proxy_headers=True,
+                app_trusted_proxy_ips=('127.0.0.1',),
+            ),
+        ):
+            security.set_session_cookie(
+                response=response,
+                request=request,
+                cookie_name='whistx_session',
+                session_id='session-1',
+            )
 
         self.assertIn('Secure', response.headers.get('set-cookie', ''))
+
+    def test_untrusted_forwarded_headers_are_ignored(self) -> None:
+        request = Request(
+            {
+                'type': 'http',
+                'method': 'GET',
+                'path': '/',
+                'headers': [
+                    (b'host', b'internal:8005'),
+                    (b'x-forwarded-for', b'198.51.100.7'),
+                    (b'x-forwarded-proto', b'https'),
+                    (b'x-forwarded-host', b'evil.example'),
+                ],
+                'client': ('203.0.113.10', 12345),
+                'query_string': b'',
+                'scheme': 'http',
+            }
+        )
+        with patch.object(
+            security,
+            'settings',
+            make_security_settings(
+                app_trust_proxy_headers=True,
+                app_trusted_proxy_ips=('127.0.0.1',),
+            ),
+        ):
+            self.assertEqual(security.client_ip(request), '203.0.113.10')
+            self.assertFalse(security.request_is_secure(request))
+
+    def test_public_url_is_canonical_for_oidc_urls(self) -> None:
+        app = FastAPI()
+
+        @app.get('/callback', name='callback')
+        def callback():
+            return {}
+
+        request = Request(
+            {
+                'type': 'http',
+                'method': 'GET',
+                'path': '/',
+                'headers': [(b'host', b'evil.example')],
+                'client': ('203.0.113.10', 12345),
+                'query_string': b'',
+                'scheme': 'http',
+                'router': app.router,
+            }
+        )
+        with patch.object(
+            security,
+            'settings',
+            make_security_settings(app_public_url='https://app.example.com'),
+        ):
+            self.assertEqual(
+                security.external_url_for(request, 'callback'),
+                'https://app.example.com/callback',
+            )
 
 
 if __name__ == '__main__':

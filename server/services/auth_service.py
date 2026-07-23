@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from .. import auth
 from ..config import settings
-from ..core.security import serialize_user
+from ..core.security import client_ip, serialize_user
 from ..models import User
 from ..repositories import user_repository
 
@@ -47,13 +47,7 @@ def map_keycloak_auth_error(exc: Exception) -> str:
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = (request.headers.get('x-forwarded-for') or '').split(',')[0].strip()
-    if forwarded:
-        return forwarded
-    real_ip = (request.headers.get('x-real-ip') or '').strip()
-    if real_ip:
-        return real_ip
-    return request.client.host if request.client and request.client.host else 'unknown'
+    return client_ip(request)
 
 
 def _login_rate_limit_keys(request: Request, email: str) -> tuple[str, str]:

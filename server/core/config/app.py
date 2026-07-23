@@ -22,6 +22,10 @@ class AppConfig:
     app_db_url: str
     app_session_secret: str
     app_session_days: int
+    app_public_url: str | None
+    app_trust_proxy_headers: bool
+    app_trusted_proxy_ips: tuple[str, ...]
+    app_allowed_hosts: tuple[str, ...]
     enable_self_signup: bool
     allow_guest_transcription: bool
     guest_ws_max_per_ip: int
@@ -69,6 +73,16 @@ def load_app_config() -> AppConfig:
         app_db_url=app_db_url,
         app_session_secret=app_session_secret,
         app_session_days=max(1, to_int("APP_SESSION_DAYS", 7)),
+        app_public_url=env_first_non_empty("APP_PUBLIC_URL"),
+        app_trust_proxy_headers=to_bool("APP_TRUST_PROXY_HEADERS", False),
+        app_trusted_proxy_ips=tuple(
+            item.strip() for item in (env_first_non_empty("APP_TRUSTED_PROXY_IPS") or "").split(",") if item.strip()
+        ),
+        app_allowed_hosts=tuple(
+            item.strip()
+            for item in (env_first_non_empty("APP_ALLOWED_HOSTS") or "localhost,127.0.0.1,[::1],testserver").split(",")
+            if item.strip()
+        ),
         enable_self_signup=to_bool("ENABLE_SELF_SIGNUP", False),
         allow_guest_transcription=to_bool("ALLOW_GUEST_TRANSCRIPTION", False),
         guest_ws_max_per_ip=max(1, to_int("GUEST_WS_MAX_PER_IP", 2)),

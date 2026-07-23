@@ -8,6 +8,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .. import legacy_app as legacy
 from ..api.routes import admin, auth, glossary, health, history, summary, transcript
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 def create_app() -> FastAPI:
     configure_application_logging(legacy.settings.app_log_level)
     app = FastAPI(title="whistx", version="2.0.0", lifespan=_app_lifespan)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(legacy.settings.app_allowed_hosts))
 
     @app.middleware("http")
     async def log_http_requests(request: Request, call_next):

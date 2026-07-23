@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import secrets
 from typing import Any
+from urllib.parse import urljoin
 
 from fastapi import Request
 from fastapi.responses import Response
@@ -74,7 +76,20 @@ def request_is_secure(request: Request) -> bool:
 
 def external_url_for(request: Request, route_name: str, /, **path_params: Any) -> str:
     url = request.url_for(route_name, **path_params)
+    if settings.app_public_url:
+        return urljoin(settings.app_public_url.rstrip("/") + "/", str(url.path).lstrip("/"))
     return str(url.replace(scheme=_request_external_scheme(request), netloc=_request_external_host(request)))
+
+
+def client_ip(request: Request) -> str:
+    if _proxy_is_trusted(request):
+        forwarded = _first_proxy_value(request.headers.get("x-forwarded-for"))
+        if forwarded:
+            return forwarded
+        real_ip = (request.headers.get("x-real-ip") or "").strip()
+        if real_ip:
+            return real_ip
+    return request.client.host if request.client and request.client.host else "unknown"
 
 
 def set_oidc_state_cookie(*, response: Response, request: Request, cookie_name: str, payload: dict[str, Any]) -> None:
@@ -126,28 +141,63 @@ def clear_session_cookie(*, response: Response, request: Request, cookie_name: s
 
 
 def _request_external_scheme(request: Request) -> str:
-    x_forwarded_proto = _first_proxy_value(request.headers.get("x-forwarded-proto"))
-    if x_forwarded_proto:
-        return x_forwarded_proto.lower()
-    forwarded = _parse_forwarded_header(request.headers.get("forwarded"))
-    forwarded_proto = forwarded.get("proto")
-    if forwarded_proto:
-        return forwarded_proto.lower()
+    if _proxy_is_trusted(request):
+        x_forwarded_proto = _first_proxy_value(request.headers.get("x-forwarded-proto"))
+        if x_forwarded_proto:
+            return x_forwarded_proto.lower()
+        forwarded = _parse_forwarded_header(request.headers.get("forwarded"))
+        forwarded_proto = forwarded.get("proto")
+        if forwarded_proto:
+            return forwarded_proto.lower()
     return request.url.scheme
 
 
 def _request_external_host(request: Request) -> str:
-    x_forwarded_host = _first_proxy_value(request.headers.get("x-forwarded-host"))
-    if x_forwarded_host:
-        return x_forwarded_host
-    forwarded = _parse_forwarded_header(request.headers.get("forwarded"))
-    forwarded_host = forwarded.get("host")
-    if forwarded_host:
-        return forwarded_host
+    if _proxy_is_trusted(request):
+        x_forwarded_host = _first_proxy_value(request.headers.get("x-forwarded-host"))
+        if x_forwarded_host:
+            return x_forwarded_host
+        forwarded = _parse_forwarded_header(request.headers.get("forwarded"))
+        forwarded_host = forwarded.get("host")
+        if forwarded_host:
+            return forwarded_host
     host = (request.headers.get("host") or "").strip()
-    if host:
+    if host and _host_is_allowed(host):
         return host
-    return request.url.netloc
+    return next((item for item in settings.app_allowed_hosts if item != "*"), request.url.netloc)
+
+
+def _proxy_is_trusted(request: Request) -> bool:
+    if not settings.app_trust_proxy_headers or not settings.app_trusted_proxy_ips:
+        return False
+    peer = request.client.host if request.client and request.client.host else ""
+    if "*" in settings.app_trusted_proxy_ips:
+        return True
+    try:
+        address = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    for value in settings.app_trusted_proxy_ips:
+        try:
+            if address in ipaddress.ip_network(value, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _host_is_allowed(host: str) -> bool:
+    hostname = host[1:].split("]", 1)[0] if host.startswith("[") else host.split(":", 1)[0]
+    hostname = hostname.lower()
+    for allowed in settings.app_allowed_hosts:
+        candidate = allowed.strip().lower()
+        if candidate == "*":
+            return True
+        if candidate.startswith("*.") and hostname.endswith(candidate[1:]):
+            return True
+        if hostname == candidate.strip("[]"):
+            return True
+    return False
 
 
 def _first_proxy_value(value: str | None) -> str:
