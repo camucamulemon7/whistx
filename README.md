@@ -449,6 +449,23 @@ Current accuracy-oriented measures include:
 - Rotate API keys immediately if they are exposed
 - Review any banner text or prompt templates before publishing screenshots or demos
 
+## ASR evaluation
+
+Run the reproducible smoke evaluation and compare it with the checked-in Whisper baseline:
+
+```bash
+python scripts/eval_asr.py \
+  --dataset tests/fixtures/asr_eval \
+  --baseline tests/fixtures/asr_eval/baselines/whisper.json \
+  --json-out build/asr-eval.json \
+  --csv-out build/asr-eval.csv \
+  --strict
+```
+
+The report combines WER, CER, named-entity accuracy, missing/duplicate/boundary rates, speaker error rate, end-to-end and finalize latency, API request count, estimated cost, timestamp validity, and classified failure counts. Store experiment toggles in each sample's metadata to compare VAD, chunk length, overlap, context prompt, retry, and silence-drop configurations.
+
+Whisper and Qwen3 profile baselines live under `tests/fixtures/asr_eval/baselines/`. The checked-in dataset is a synthetic CI smoke test; production model decisions must use the same consented, anonymized private audio set for every profile.
+
 ## License
 
 MIT. See [LICENSE](./LICENSE).

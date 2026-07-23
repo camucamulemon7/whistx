@@ -42,6 +42,13 @@ jobs:
         run: python -m compileall -q server tests
       - name: Unit and integration tests
         run: python -m unittest discover -s tests
+      - name: ASR evaluation regression
+        run: >-
+          python scripts/eval_asr.py
+          --dataset tests/fixtures/asr_eval
+          --baseline tests/fixtures/asr_eval/baselines/whisper.json
+          --max-regression 0.01
+          --strict
       - name: Check JavaScript syntax
         run: find web -type f -name '*.js' -print0 | xargs -0 -n1 node --check
       - name: Check shell syntax

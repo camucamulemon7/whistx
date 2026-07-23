@@ -39,6 +39,16 @@ class SampleResult:
     hyp_chars: int
     char_edits: int
     cer: float
+    named_entity_accuracy: float
+    missing_rate: float
+    duplicate_rate: float
+    boundary_fragment_rate: float
+    speaker_error_rate: float | None
+    latency_ms: float
+    finalize_latency_ms: float
+    api_requests: int
+    estimated_cost_usd: float
+    failure_categories: tuple[str, ...]
     exact_match: bool
     metadata: dict[str, Any]
 
@@ -50,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hypothesis", type=Path, help="Hypothesis transcript file for a single pair run.")
     parser.add_argument("--json-out", type=Path, help="Write JSON report to this path.")
     parser.add_argument("--csv-out", type=Path, help="Write per-sample CSV rows to this path.")
+    parser.add_argument("--baseline", type=Path, help="Fail when WER/CER regress beyond a saved JSON baseline.")
+    parser.add_argument("--max-regression", type=float, default=0.01, help="Allowed absolute WER/CER regression.")
     parser.add_argument("--strict", action="store_true", help="Fail when no sample cases are found.")
     args = parser.parse_args(argv)
 
@@ -78,6 +90,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.csv_out:
         args.csv_out.parent.mkdir(parents=True, exist_ok=True)
         write_csv(args.csv_out, results)
+
+    if args.baseline:
+        compare_baseline(summary, args.baseline, args.max_regression)
 
     return 0
 
@@ -158,6 +173,25 @@ def evaluate_case(case: SampleCase) -> SampleResult:
     char_edits = levenshtein_distance(ref_chars, hyp_chars)
     ref_word_count = len(ref_words)
     ref_char_count = len(ref_chars)
+    named_entities = [str(item) for item in case.metadata.get("namedEntities", []) if str(item).strip()]
+    normalized_hypothesis = normalize_text(case.hypothesis_text).casefold()
+    named_entity_hits = sum(normalize_text(item).casefold() in normalized_hypothesis for item in named_entities)
+    speaker_reference = list(case.metadata.get("speakerReference", []))
+    speaker_hypothesis = list(case.metadata.get("speakerHypothesis", []))
+    speaker_error_rate = sequence_error_rate(speaker_reference, speaker_hypothesis) if speaker_reference else None
+    missing_rate = rate(max(0, ref_char_count - len(hyp_chars)), ref_char_count)
+    duplicate_rate = rate(max(0, len(hyp_chars) - ref_char_count), ref_char_count)
+    boundary_count = max(1, int(case.metadata.get("boundaryCount", 1)))
+    boundary_fragment_rate = int(case.metadata.get("boundaryFragments", 0)) / boundary_count
+    failures = classify_failures(
+        reference=case.reference_text,
+        hypothesis=case.hypothesis_text,
+        cer=rate(char_edits, ref_char_count),
+        missing_rate=missing_rate,
+        duplicate_rate=duplicate_rate,
+        boundary_fragment_rate=boundary_fragment_rate,
+        metadata=case.metadata,
+    )
 
     return SampleResult(
         sample_id=case.sample_id,
@@ -172,6 +206,16 @@ def evaluate_case(case: SampleCase) -> SampleResult:
         hyp_chars=len(hyp_chars),
         char_edits=char_edits,
         cer=rate(char_edits, ref_char_count),
+        named_entity_accuracy=(named_entity_hits / len(named_entities)) if named_entities else 1.0,
+        missing_rate=missing_rate,
+        duplicate_rate=duplicate_rate,
+        boundary_fragment_rate=boundary_fragment_rate,
+        speaker_error_rate=speaker_error_rate,
+        latency_ms=float(case.metadata.get("latencyMs", 0)),
+        finalize_latency_ms=float(case.metadata.get("finalizeLatencyMs", 0)),
+        api_requests=int(case.metadata.get("apiRequests", 0)),
+        estimated_cost_usd=float(case.metadata.get("estimatedCostUsd", 0)),
+        failure_categories=tuple(failures),
         exact_match=normalize_text(case.reference_text) == normalize_text(case.hypothesis_text),
         metadata=case.metadata,
     )
@@ -228,6 +272,41 @@ def rate(errors: int, ref_count: int) -> float:
     return errors / ref_count
 
 
+def sequence_error_rate(reference: list[Any], hypothesis: list[Any]) -> float:
+    return rate(levenshtein_distance([str(item) for item in reference], [str(item) for item in hypothesis]), len(reference))
+
+
+def classify_failures(
+    *,
+    reference: str,
+    hypothesis: str,
+    cer: float,
+    missing_rate: float,
+    duplicate_rate: float,
+    boundary_fragment_rate: float,
+    metadata: dict[str, Any],
+) -> list[str]:
+    failures: list[str] = []
+    normalized_hypothesis = normalize_text(hypothesis)
+    if not normalized_hypothesis and normalize_text(reference):
+        failures.append("missing")
+    elif missing_rate >= 0.2:
+        failures.append("missing")
+    if duplicate_rate >= 0.2:
+        failures.append("duplicate")
+    if boundary_fragment_rate > 0:
+        failures.append("boundary_fragment")
+    if "\ufffd" in hypothesis:
+        failures.append("encoding")
+    if metadata.get("silence") and normalized_hypothesis:
+        failures.append("silence_hallucination")
+    if cer >= 0.5 and normalized_hypothesis:
+        failures.append("high_error")
+    if metadata.get("timestampMonotonic") is False:
+        failures.append("timestamp_inconsistent")
+    return failures
+
+
 def build_summary(results: list[SampleResult]) -> dict[str, Any]:
     sample_count = len(results)
     word_ref_total = sum(result.ref_words for result in results)
@@ -237,6 +316,7 @@ def build_summary(results: list[SampleResult]) -> dict[str, Any]:
 
     macro_wer = sum(result.wer for result in results) / sample_count if sample_count else 0.0
     macro_cer = sum(result.cer for result in results) / sample_count if sample_count else 0.0
+    speaker_rates = [result.speaker_error_rate for result in results if result.speaker_error_rate is not None]
 
     return {
         "sampleCount": sample_count,
@@ -248,7 +328,37 @@ def build_summary(results: list[SampleResult]) -> dict[str, Any]:
         "cer": rate(char_edits_total, char_ref_total),
         "macroWer": macro_wer,
         "macroCer": macro_cer,
+        "namedEntityAccuracy": average(result.named_entity_accuracy for result in results),
+        "missingRate": average(result.missing_rate for result in results),
+        "duplicateRate": average(result.duplicate_rate for result in results),
+        "boundaryFragmentRate": average(result.boundary_fragment_rate for result in results),
+        "speakerErrorRate": average(speaker_rates) if speaker_rates else None,
+        "latencyMs": average(result.latency_ms for result in results),
+        "finalizeLatencyMs": average(result.finalize_latency_ms for result in results),
+        "apiRequests": sum(result.api_requests for result in results),
+        "estimatedCostUsd": sum(result.estimated_cost_usd for result in results),
+        "failureCounts": {
+            category: sum(category in result.failure_categories for result in results)
+            for category in sorted({item for result in results for item in result.failure_categories})
+        },
     }
+
+
+def average(values) -> float:
+    items = list(values)
+    return sum(items) / len(items) if items else 0.0
+
+
+def compare_baseline(summary: dict[str, Any], path: Path, max_regression: float) -> None:
+    baseline = json.loads(path.read_text(encoding="utf-8"))
+    expected = baseline.get("summary", baseline)
+    regressions = []
+    for metric in ("wer", "cer"):
+        delta = float(summary[metric]) - float(expected[metric])
+        if delta > max_regression:
+            regressions.append(f"{metric} regressed by {delta:.4f}")
+    if regressions:
+        raise SystemExit("; ".join(regressions))
 
 
 def result_to_dict(result: SampleResult) -> dict[str, Any]:
@@ -265,6 +375,16 @@ def result_to_dict(result: SampleResult) -> dict[str, Any]:
         "hypChars": result.hyp_chars,
         "charEdits": result.char_edits,
         "cer": result.cer,
+        "namedEntityAccuracy": result.named_entity_accuracy,
+        "missingRate": result.missing_rate,
+        "duplicateRate": result.duplicate_rate,
+        "boundaryFragmentRate": result.boundary_fragment_rate,
+        "speakerErrorRate": result.speaker_error_rate,
+        "latencyMs": result.latency_ms,
+        "finalizeLatencyMs": result.finalize_latency_ms,
+        "apiRequests": result.api_requests,
+        "estimatedCostUsd": result.estimated_cost_usd,
+        "failureCategories": list(result.failure_categories),
         "exactMatch": result.exact_match,
         "metadata": result.metadata,
     }
@@ -292,6 +412,15 @@ def write_csv(path: Path, results: list[SampleResult]) -> None:
         "hypChars",
         "charEdits",
         "cer",
+        "namedEntityAccuracy",
+        "missingRate",
+        "duplicateRate",
+        "boundaryFragmentRate",
+        "speakerErrorRate",
+        "latencyMs",
+        "finalizeLatencyMs",
+        "apiRequests",
+        "estimatedCostUsd",
         "exactMatch",
     ]
     with path.open("w", encoding="utf-8", newline="") as handle:

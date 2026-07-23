@@ -1,0 +1,13 @@
+{
+  "profile": "vllm_qwen3",
+  "dataset": "synthetic-smoke-v1",
+  "summary": {
+    "wer": 0.25,
+    "cer": 0.0,
+    "namedEntityAccuracy": 0.6666666666666666,
+    "latencyMs": 840.0,
+    "apiRequests": 1,
+    "estimatedCostUsd": 0.0012
+  },
+  "note": "Replace with measurements from the same private evaluation audio before selecting a Qwen3 production model."
+}

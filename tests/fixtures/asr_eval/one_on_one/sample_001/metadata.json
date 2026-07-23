@@ -4,5 +4,16 @@
   "language": "ja",
   "audioSource": "mic",
   "model": "whisper-1",
+  "profile": "whisper",
+  "namedEntities": ["CPU", "reset", "clock tree"],
+  "boundaryCount": 2,
+  "boundaryFragments": 0,
+  "speakerReference": ["speaker_1"],
+  "speakerHypothesis": ["speaker_1"],
+  "latencyMs": 840,
+  "finalizeLatencyMs": 1020,
+  "apiRequests": 1,
+  "estimatedCostUsd": 0.0012,
+  "timestampMonotonic": true,
   "notes": "Minimal dummy sample for local evaluation."
 }
