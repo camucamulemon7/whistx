@@ -16,6 +16,7 @@ permissions:
 env:
   APP_SESSION_SECRET: ci-session-secret-abcdefghijklmnopqrstuvwxyz12
   ASR_API_KEY: ci-placeholder-key
+  DIARIZATION_FFMPEG_BIN: /bin/true
   PYTHON_VERSION: "3.12"
   TZ: Asia/Tokyo
 
@@ -33,8 +34,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
       - name: Install locked development dependencies
         run: python -m pip install --require-hashes -r requirements-dev.lock
       - name: Ruff
@@ -90,8 +89,6 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: requirements.lock
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
       - name: Install locked runtime dependencies
         run: python -m pip install --require-hashes -r requirements.lock
       - name: Migrate and start with PostgreSQL
