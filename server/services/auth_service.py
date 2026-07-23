@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import auth
-from ..config import settings
+from ..core.config import settings
 from ..core.security import client_ip, serialize_user
 from ..models import User
 from ..repositories import user_repository

@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 
-from ..config import settings
+from ..core.config import settings
 from ..models import TranscriptHistory, TranscriptSegment, User
 from ..repositories import history_repository
 from ..transcript_store import is_runtime_transcript_finalized, read_jsonl_records, resolve_transcript_path

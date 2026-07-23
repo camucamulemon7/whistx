@@ -9,7 +9,7 @@ from typing import Any
 from openai import APIConnectionError, APIStatusError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
 
 from .asr import ASRChunkResult
-from .config import settings
+from .core.config import settings
 from .core.logging import emit_container_log
 from .langfuse_observer import LangfuseObserver
 

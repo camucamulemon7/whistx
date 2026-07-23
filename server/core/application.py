@@ -11,9 +11,10 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .. import legacy_app as legacy
+from .. import runtime
 from ..api.routes import admin, auth, glossary, health, history, summary, transcript
 from ..api.ws.transcribe import router as transcribe_router
+from .config import settings
 from .logging import configure_application_logging, emit_container_log
 from .security import origin_is_allowed
 
@@ -21,9 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
-    configure_application_logging(legacy.settings.app_log_level)
+    configure_application_logging(settings.app_log_level)
     app = FastAPI(title="whistx", version="2.0.0", lifespan=_app_lifespan)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(legacy.settings.app_allowed_hosts))
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.app_allowed_hosts))
 
     @app.middleware("http")
     async def validate_mutation_origin(request: Request, call_next):
@@ -79,8 +80,8 @@ def create_app() -> FastAPI:
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    await legacy.on_startup()
+    await runtime.on_startup()
     try:
         yield
     finally:
-        await legacy.on_shutdown()
+        await runtime.on_shutdown()

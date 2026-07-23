@@ -55,7 +55,9 @@ Current backend layout after the refactor:
 - `server/services/*.py`: auth/admin/history business logic
 - `server/repositories/*.py`: SQLAlchemy access boundaries
 - `server/core/config/*.py`: split configuration modules
-- `server/legacy_app.py`: remaining transitional implementation for ws/asr/keycloak helpers
+- `server/runtime.py`: realtime resource composition and lifecycle
+- `server/transcription/*.py`: live sessions, chunk protocol, and ASR worker
+- `docs/architecture.md`: dependency direction and source-of-truth guide
 
 - FastAPI application
 - `ws://.../ws/transcribe` receives audio chunks and returns finalized transcript segments
@@ -472,8 +474,9 @@ MIT. See [LICENSE](./LICENSE).
 
 ## Refactor Notes
 
-- `server/app.py` is now the thin FastAPI entrypoint. Transitional implementation lives in `server/legacy_app.py`.
+- `server/app.py` is the only ASGI entrypoint; app wiring and lifespan live in `server/core/application.py`.
+- `server/runtime.py` owns realtime resource composition but registers no FastAPI routes.
 - Backend route registration lives in `server/core/application.py` and `server/api/routes/`.
-- Runtime configuration is split under `server/core/config/`. Add new env-backed settings there first.
+- Runtime configuration has one implementation under `server/core/config/`. Add new env-backed settings and registry entries there first.
 - `web/main.js` is now a thin module entrypoint that loads `web/src/app.js`.
 - Dependency declarations remain in `requirements*.txt`; generated `requirements*.lock` files are the reproducible install inputs. `pyproject.toml` is metadata-only for now.

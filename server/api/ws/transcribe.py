@@ -5,7 +5,7 @@ from collections import Counter
 
 from fastapi import APIRouter, WebSocket
 
-from ... import legacy_app as legacy
+from ... import runtime
 from ...core.config import settings
 from ...core.security import client_ip
 from ...db import db_session
@@ -39,7 +39,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
     if user is not None:
         ws.state.authenticated_user_id = user.id
         ws.state.rate_limit_subject = f"user:{user.id}"
-        await legacy.ws_transcribe(ws)
+        await runtime.ws_transcribe(ws)
         return
 
     if not settings.allow_guest_transcription:
@@ -59,7 +59,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
     ws.state.is_guest = True
     ws.state.rate_limit_subject = f"ip:{client_ip}"
     try:
-        await asyncio.wait_for(legacy.ws_transcribe(ws), timeout=settings.guest_ws_max_duration_seconds)
+        await asyncio.wait_for(runtime.ws_transcribe(ws), timeout=settings.guest_ws_max_duration_seconds)
     except TimeoutError:
         await _close_safely(ws, 4408, "guest_duration_limit")
     finally:
