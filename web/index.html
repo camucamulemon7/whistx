@@ -23,10 +23,11 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="/style.css?v=20260322c" />
-    <script type="module" src="/main.js?v=20260322c"></script>
+    <link rel="stylesheet" href="/style.css?v=20260724" />
+    <script type="module" src="/main.js?v=20260724"></script>
   </head>
   <body>
+    <a class="skip-link" href="#workspaceMain">文字起こし画面へ移動</a>
     <div class="app">
       <header class="header glass-panel">
         <div class="header-content">
@@ -107,8 +108,27 @@
         </div>
       </header>
 
-      <main class="main-content">
+      <main id="workspaceMain" class="main-content" tabindex="-1">
         <section id="bannersContainer" class="banners-container reveal" aria-label="お知らせ" hidden></section>
+
+        <nav class="journey-guide glass-panel reveal" aria-label="文字起こしの進め方">
+          <ol class="journey-list">
+            <li class="journey-step is-current" data-journey-step="record" aria-current="step">
+              <span class="journey-number">1</span>
+              <span><strong>入力して録音</strong><small>言語と音声を選ぶ</small></span>
+            </li>
+            <li class="journey-connector" aria-hidden="true"></li>
+            <li class="journey-step" data-journey-step="transcript">
+              <span class="journey-number">2</span>
+              <span><strong>内容を確認</strong><small>文字起こしを整える</small></span>
+            </li>
+            <li class="journey-connector" aria-hidden="true"></li>
+            <li class="journey-step" data-journey-step="result">
+              <span class="journey-number">3</span>
+              <span><strong>活用して保存</strong><small>校正・要約・書き出し</small></span>
+            </li>
+          </ol>
+        </nav>
 
         <section id="workspaceShell" class="workspace-shell">
           <aside class="history-rail glass-panel reveal delay-2" aria-label="履歴一覧">
@@ -144,6 +164,20 @@
 
           <div class="workspace-main">
             <section class="settings-panel glass-panel reveal" aria-label="入力設定">
+              <div class="settings-intro">
+                <div>
+                  <span class="section-kicker">STEP 1 · RECORD</span>
+                  <h2 class="settings-intro-title">会話を文字にする</h2>
+                  <p class="settings-intro-description">入力を選び、録音を開始してください。録音中も設定と進行状況を確認できます。</p>
+                </div>
+                <span class="permission-note">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    <path d="m9 12 2 2 4-4"/>
+                  </svg>
+                  音声は録音開始時に許可
+                </span>
+              </div>
               <div class="settings-layout">
                 <div class="record-hero record-hero-inline">
                   <div id="audioLevelIndicator" class="audio-level-indicator" hidden>
@@ -299,7 +333,7 @@
               aria-label="文字起こしとAI結果"
               style="--panel-left: 1.35fr; --panel-center: 0.95fr; --panel-right: 0.9fr;"
             >
-              <section class="transcript-panel glass-panel" aria-label="文字起こし結果">
+              <section class="transcript-panel glass-panel" aria-labelledby="transcriptPanelTitle">
                 <header class="panel-header">
                   <div class="panel-title-group">
                     <div class="panel-icon transcript-icon">
@@ -310,7 +344,10 @@
                         <line x1="16" y1="17" x2="8" y2="17"/>
                       </svg>
                     </div>
-                    <h2 class="panel-title">文字起こし</h2>
+                    <div>
+                      <span class="panel-kicker">STEP 2 · TRANSCRIPT</span>
+                      <h2 id="transcriptPanelTitle" class="panel-title">文字起こし</h2>
+                    </div>
                     <span id="segmentCount" class="panel-badge">0</span>
                   </div>
                   <div class="panel-actions">
@@ -335,7 +372,7 @@
                   </div>
                 </header>
 
-                <div id="log" class="log-container" role="log" aria-live="polite" aria-relevant="additions">
+                <div id="log" class="log-container" role="log" aria-live="polite" aria-relevant="additions" tabindex="0" aria-label="文字起こし本文">
                   <div class="empty-state">
                     <div class="empty-icon">
                       <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -380,7 +417,7 @@
 
               <div class="panel-resizer" data-resizer="left" aria-hidden="true"></div>
 
-              <section class="proofread-panel glass-panel" aria-label="AI結果: 校正">
+              <section class="proofread-panel glass-panel" aria-labelledby="proofreadPanelTitle">
                 <header class="panel-header">
                   <div class="panel-title-group">
                     <div class="panel-icon proofread-icon">
@@ -389,7 +426,10 @@
                         <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
                       </svg>
                     </div>
-                    <h2 class="panel-title">校正</h2>
+                    <div>
+                      <span class="panel-kicker">STEP 3 · REFINE</span>
+                      <h2 id="proofreadPanelTitle" class="panel-title">校正</h2>
+                    </div>
                     <span id="proofreadMeta" class="panel-badge">未生成</span>
                   </div>
                   <div class="ai-result-tabs" aria-label="AI結果の切り替え">
@@ -433,7 +473,7 @@
 
               <div class="panel-resizer" data-resizer="right" aria-hidden="true"></div>
 
-              <section class="summary-panel glass-panel" aria-label="AI結果: 要約">
+              <section class="summary-panel glass-panel" aria-labelledby="summaryPanelTitle">
                 <header class="panel-header">
                   <div class="panel-title-group">
                     <div class="panel-icon summary-icon">
@@ -444,7 +484,10 @@
                         <polyline points="10,17 8,17 8,17"/>
                       </svg>
                     </div>
-                    <h2 class="panel-title">要約</h2>
+                    <div>
+                      <span class="panel-kicker">STEP 3 · SUMMARIZE</span>
+                      <h2 id="summaryPanelTitle" class="panel-title">要約</h2>
+                    </div>
                     <span id="summaryMeta" class="panel-badge">未生成</span>
                   </div>
                   <div class="ai-result-tabs" aria-label="AI結果の切り替え">
