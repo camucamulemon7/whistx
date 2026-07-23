@@ -38,6 +38,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
         return
     if user is not None:
         ws.state.authenticated_user_id = user.id
+        ws.state.rate_limit_subject = f"user:{user.id}"
         await legacy.ws_transcribe(ws)
         return
 
@@ -56,6 +57,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
     _GUEST_CONNECTIONS_TOTAL += 1
     _GUEST_CONNECTIONS_BY_IP[client_ip] += 1
     ws.state.is_guest = True
+    ws.state.rate_limit_subject = f"ip:{client_ip}"
     try:
         await asyncio.wait_for(legacy.ws_transcribe(ws), timeout=settings.guest_ws_max_duration_seconds)
     except TimeoutError:

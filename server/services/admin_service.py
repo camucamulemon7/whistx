@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -8,6 +9,8 @@ from ..auth import approve_user
 from ..core.security import serialize_user
 from ..models import User
 from ..repositories import user_repository
+
+logger = logging.getLogger(__name__)
 
 
 class AdminServiceError(Exception):
@@ -60,12 +63,15 @@ def update_user_role(db: Session, *, user_id: int, role: str) -> dict[str, Any]:
     normalized = str(role or '').strip().lower()
     if normalized not in {'admin', 'member'}:
         raise AdminServiceError('invalid_role', 400)
+    locked_admins = user_repository.lock_admin_users(db)
     target = user_repository.get_user_by_id(db, user_id)
     if target is None:
         raise AdminServiceError('user_not_found', 404)
     make_admin = normalized == 'admin'
-    if not make_admin and target.is_admin and user_repository.count_admin_users(db) <= 1:
+    if not make_admin and target.is_admin and len(locked_admins) <= 1:
+        logger.warning("last administrator demotion rejected: user_id=%s", user_id)
         raise AdminServiceError('last_admin_forbidden', 409)
     target.is_admin = make_admin
     db.commit()
+    logger.warning("user role changed: user_id=%s role=%s", user_id, normalized)
     return {'ok': True, 'user': serialize_user(target)}

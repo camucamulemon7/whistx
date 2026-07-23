@@ -28,6 +28,11 @@ def count_admin_users(db: Session) -> int:
     return int(db.scalar(stmt) or 0)
 
 
+def lock_admin_users(db: Session) -> list[User]:
+    stmt = select(User).where(User.is_admin.is_(True)).with_for_update()
+    return list(db.scalars(stmt).all())
+
+
 def count_pending_users(db: Session) -> int:
     stmt = (
         select(func.count())

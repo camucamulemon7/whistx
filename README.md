@@ -177,6 +177,17 @@ APP_TRUSTED_PROXY_IPS=127.0.0.1,10.0.0.0/8
 
 `APP_TRUSTED_PROXY_IPS` accepts IP addresses and CIDR networks for the direct proxy peer. When the peer is not trusted, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, and `Forwarded` do not affect client-IP rate limits, OIDC callback URLs, or Secure cookie decisions. Prefer `APP_PUBLIC_URL` for OIDC so callback construction does not depend on request headers.
 
+### Session and costly API protection
+
+- Session cookies contain a random token; only an HMAC-SHA256 digest is stored in the database.
+- `POST /api/auth/password` changes the password, invalidates every prior session, and rotates the current cookie.
+- `POST /api/auth/sessions/revoke-all` invalidates every session for the current user.
+- Cross-origin state-changing `/api/*` requests are rejected when an `Origin` header is present.
+- ASR, summary, and proofread limits are tracked separately per authenticated user (or guest IP) with `COSTLY_API_RATE_LIMIT_REQUESTS` and `COSTLY_API_RATE_LIMIT_WINDOW_SECONDS`.
+- Administrator demotion locks current administrator rows before enforcing the last-admin rule.
+
+Password changes, session revocation, rate-limit rejection, and protected administrator operations emit audit-friendly server logs without including secrets.
+
 ### Podman (rootless)
 
 ```bash

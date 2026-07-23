@@ -31,3 +31,7 @@ def delete_session(db: Session, session_id: str | None) -> None:
     session = db.get(UserSession, session_id)
     if session is not None:
         db.delete(session)
+
+
+def delete_sessions_for_user(db: Session, user_id: int) -> None:
+    db.execute(delete(UserSession).where(UserSession.user_id == user_id))
