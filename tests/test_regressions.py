@@ -1244,9 +1244,11 @@ class RegressionTests(unittest.TestCase):
         self.assertIn('shouldCutChunkOnSilence({ relaxed: elapsedMs >= state.chunkMs })', source)
 
     def test_frontend_ws_url_uses_server_capability_path(self) -> None:
-        source = (ROOT / 'web' / 'src' / 'app.js').read_text(encoding='utf-8')
-        self.assertIn('state.wsPath = normalizeWsPath(health.wsPath || state.wsPath);', source)
-        self.assertIn('return `${proto}://${location.host}${normalizeWsPath(state.wsPath)}`;', source)
+        app_source = (ROOT / 'web' / 'src' / 'app.js').read_text(encoding='utf-8')
+        protocol_source = (ROOT / 'web' / 'src' / 'transcription' / 'websocket.js').read_text(encoding='utf-8')
+        self.assertIn('state.wsPath = normalizeWsPath(health.wsPath || state.wsPath);', app_source)
+        self.assertIn('return buildWebSocketUrl(location, state.wsPath);', app_source)
+        self.assertIn('normalizeWsPath(path)', protocol_source)
 
     def test_history_ui_shows_retention_countdown_and_no_header_toggle(self) -> None:
         app_source = (ROOT / 'web' / 'src' / 'app.js').read_text(encoding='utf-8')
