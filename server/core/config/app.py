@@ -23,6 +23,12 @@ class AppConfig:
     app_session_secret: str
     app_session_days: int
     enable_self_signup: bool
+    allow_guest_transcription: bool
+    guest_ws_max_per_ip: int
+    guest_ws_max_connections: int
+    guest_ws_max_duration_seconds: int
+    guest_ws_max_audio_bytes: int
+    guest_ws_max_asr_requests: int
     history_retention_days: int
     runtime_transcript_retention_hours: int
     debug_chunks_retention_hours: int
@@ -64,6 +70,12 @@ def load_app_config() -> AppConfig:
         app_session_secret=app_session_secret,
         app_session_days=max(1, to_int("APP_SESSION_DAYS", 7)),
         enable_self_signup=to_bool("ENABLE_SELF_SIGNUP", False),
+        allow_guest_transcription=to_bool("ALLOW_GUEST_TRANSCRIPTION", False),
+        guest_ws_max_per_ip=max(1, to_int("GUEST_WS_MAX_PER_IP", 2)),
+        guest_ws_max_connections=max(1, to_int("GUEST_WS_MAX_CONNECTIONS", 10)),
+        guest_ws_max_duration_seconds=max(1, to_int("GUEST_WS_MAX_DURATION_SECONDS", 900)),
+        guest_ws_max_audio_bytes=max(1024, to_int("GUEST_WS_MAX_AUDIO_BYTES", 100 * 1024 * 1024)),
+        guest_ws_max_asr_requests=max(1, to_int("GUEST_WS_MAX_ASR_REQUESTS", 120)),
         history_retention_days=max(1, to_int("HISTORY_RETENTION_DAYS", 7)),
         runtime_transcript_retention_hours=max(1, to_int("RUNTIME_TRANSCRIPT_RETENTION_HOURS", 24)),
         debug_chunks_retention_hours=max(1, to_int("DEBUG_CHUNKS_RETENTION_HOURS", 24)),

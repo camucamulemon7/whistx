@@ -511,6 +511,64 @@ class RegressionTests(unittest.TestCase):
 
         self.assertEqual(getattr(ctx.exception, 'code', None), 4401)
 
+    def test_ws_transcribe_allows_authenticated_active_user(self) -> None:
+        app = FastAPI()
+        app.include_router(ws_routes.router)
+        client = TestClient(app)
+        user = SimpleNamespace(id=42, is_active=True)
+
+        async def accept_and_close(ws):
+            await ws.accept()
+            await ws.close()
+
+        with (
+            patch.object(ws_routes, 'get_optional_user_from_request', return_value=user),
+            patch.object(ws_routes.legacy, 'ws_transcribe', side_effect=accept_and_close) as handler,
+        ):
+            with client.websocket_connect('/ws/transcribe'):
+                pass
+
+        handler.assert_called_once()
+
+    def test_ws_transcribe_allows_bounded_guest_when_enabled(self) -> None:
+        app = FastAPI()
+        app.include_router(ws_routes.router)
+        client = TestClient(app)
+        guest_settings = SimpleNamespace(
+            allow_guest_transcription=True,
+            guest_ws_max_connections=10,
+            guest_ws_max_per_ip=2,
+            guest_ws_max_duration_seconds=30,
+        )
+
+        async def accept_and_close(ws):
+            self.assertTrue(ws.state.is_guest)
+            await ws.accept()
+            await ws.close()
+
+        with (
+            patch.object(ws_routes, 'settings', guest_settings),
+            patch.object(ws_routes, 'get_optional_user_from_request', return_value=None),
+            patch.object(ws_routes.legacy, 'ws_transcribe', side_effect=accept_and_close) as handler,
+        ):
+            with client.websocket_connect('/ws/transcribe'):
+                pass
+
+        handler.assert_called_once()
+
+    def test_ws_transcribe_rejects_inactive_user(self) -> None:
+        app = FastAPI()
+        app.include_router(ws_routes.router)
+        client = TestClient(app)
+        user = SimpleNamespace(id=42, is_active=False)
+
+        with patch.object(ws_routes, 'get_optional_user_from_request', return_value=user):
+            with self.assertRaises(Exception) as ctx:
+                with client.websocket_connect('/ws/transcribe'):
+                    pass
+
+        self.assertEqual(getattr(ctx.exception, 'code', None), 4403)
+
     def test_load_app_config_rejects_default_or_short_session_secret(self) -> None:
         with patch.dict(os.environ, {'APP_SESSION_SECRET': 'change-me'}, clear=False):
             with self.assertRaises(RuntimeError):

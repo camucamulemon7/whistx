@@ -363,6 +363,7 @@ const state = {
     pendingApprovalCount: 0,
     keycloakEnabled: false,
     keycloakButtonLabel: "Keycloakでログイン",
+    guestTranscriptionAllowed: false,
     historyRetentionDays: 7,
   },
   history: {
@@ -2088,6 +2089,9 @@ function renderAuthState() {
   }
   if (authGuestViewEl) {
     authGuestViewEl.hidden = workspaceEnabled;
+  }
+  if (guestLoginBtn) {
+    guestLoginBtn.hidden = !state.auth.guestTranscriptionAllowed;
   }
   if (authUserViewEl) {
     authUserViewEl.hidden = !workspaceEnabled;
@@ -4846,17 +4850,18 @@ async function loadAuthState() {
     if (!payload?.authenticated) {
       state.auth.bootstrapAdminRequired = !!payload?.bootstrapAdminRequired;
       state.selfSignupEnabled = !!payload?.selfSignupEnabled;
+      state.auth.guestTranscriptionAllowed = !!payload?.guestTranscriptionAllowed;
       state.auth.profileEditorOpen = false;
       state.auth.profileSaving = false;
       state.auth.historyRetentionDays = Math.max(1, Number(payload?.historyRetentionDays || 7));
       state.auth.keycloakEnabled = !!payload?.keycloakEnabled;
       state.auth.keycloakButtonLabel = String(payload?.keycloakButtonLabel || "Keycloakでログイン");
       try {
-        state.auth.isGuest = readGuestMode();
+        state.auth.isGuest = state.auth.guestTranscriptionAllowed && readGuestMode();
       } catch {
         state.auth.isGuest = false;
       }
-      if (!state.auth.isGuest && !state.auth.bootstrapAdminRequired) {
+      if (state.auth.guestTranscriptionAllowed && !state.auth.isGuest && !state.auth.bootstrapAdminRequired) {
         state.auth.isGuest = true;
         persistGuestMode(true);
       }
@@ -4871,6 +4876,7 @@ async function loadAuthState() {
     state.auth.profileEditorOpen = false;
     state.auth.profileSaving = false;
     state.selfSignupEnabled = !!payload.selfSignupEnabled;
+    state.auth.guestTranscriptionAllowed = !!payload.guestTranscriptionAllowed;
     state.auth.historyRetentionDays = Math.max(1, Number(payload.historyRetentionDays || 7));
     state.auth.bootstrapAdminRequired = !!payload.bootstrapAdminRequired;
     state.auth.pendingApprovalCount = Number(payload.pendingApprovalCount || 0);
@@ -4880,7 +4886,7 @@ async function loadAuthState() {
       persistGuestMode(false);
     } else {
       try {
-        state.auth.isGuest = readGuestMode();
+        state.auth.isGuest = state.auth.guestTranscriptionAllowed && readGuestMode();
       } catch {
         state.auth.isGuest = false;
       }
@@ -4914,8 +4920,11 @@ async function loadAuthState() {
   } catch {
     // ignore auth bootstrap errors
     try {
-      state.auth.isGuest = readGuestMode();
-      if (!state.auth.isGuest && !state.auth.bootstrapAdminRequired) {
+      state.auth.isGuest = false;
+      if (state.auth.guestTranscriptionAllowed) {
+        state.auth.isGuest = readGuestMode();
+      }
+      if (state.auth.guestTranscriptionAllowed && !state.auth.isGuest && !state.auth.bootstrapAdminRequired) {
         state.auth.isGuest = true;
         persistGuestMode(true);
       }
@@ -5074,6 +5083,10 @@ async function logout() {
 }
 
 function loginAsGuest() {
+  if (!state.auth.guestTranscriptionAllowed) {
+    showToast("ゲスト文字起こしは無効です", "error");
+    return;
+  }
   state.auth.authenticated = false;
   state.auth.isGuest = true;
   state.auth.user = null;
