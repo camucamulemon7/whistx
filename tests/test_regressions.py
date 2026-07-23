@@ -46,6 +46,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from server import app as app_module
+from server import auth as auth_module
 from server import legacy_app
 from server import openai_whisper
 from server import summarizer as summarizer_module
@@ -59,8 +60,9 @@ from server.core import application as application_core
 from server.core.config.app import load_app_config
 from server.core.config.asr import load_asr_config
 from server.core import security
+from server.core import rate_limit
 from server.models import TranscriptHistory, TranscriptSegment, User
-from server.repositories import session_repository
+from server.repositories import session_repository, user_repository
 from server.services import admin_service, auth_service, glossary_service, history_service
 from server.deps import get_current_user
 from server.transcript_store import read_jsonl_records
@@ -99,6 +101,7 @@ def make_security_settings(**overrides):
 class RegressionTests(unittest.TestCase):
     def setUp(self) -> None:
         app_module.LOGIN_ATTEMPTS.clear()
+        rate_limit.clear()
 
     def test_login_route_rate_limits_after_repeated_failures(self) -> None:
         payload = LoginRequest(email='user@example.com', password='wrongpass')
@@ -1429,6 +1432,96 @@ class RegressionTests(unittest.TestCase):
         ):
             self.assertEqual(security.client_ip(request), '203.0.113.10')
             self.assertFalse(security.request_is_secure(request))
+
+    def test_session_tokens_are_hashed_before_database_storage(self) -> None:
+        class CaptureDB:
+            stored = None
+
+            def execute(self, _statement):
+                return None
+
+            def add(self, value):
+                self.stored = value
+
+            def flush(self):
+                return None
+
+        db = CaptureDB()
+        raw_token = auth_module.create_user_session(
+            db,
+            user=SimpleNamespace(id=7),
+            user_agent='test',
+            ip_address='127.0.0.1',
+        )
+
+        self.assertNotEqual(raw_token, db.stored.id)
+        self.assertEqual(db.stored.id, auth_module.hash_session_id(raw_token))
+        self.assertEqual(len(db.stored.id), 64)
+
+    def test_session_lookup_hashes_cookie_token(self) -> None:
+        with patch.object(session_repository, 'get_user_by_session_id', return_value=None) as lookup:
+            auth_module.get_user_by_session_id(SimpleNamespace(), 'raw-cookie-token')
+
+        self.assertEqual(lookup.call_args.args[1], auth_module.hash_session_id('raw-cookie-token'))
+
+    def test_origin_validation_rejects_cross_origin_mutation(self) -> None:
+        request = Request(
+            {
+                'type': 'http',
+                'method': 'POST',
+                'path': '/api/summarize',
+                'headers': [(b'host', b'app.example.com'), (b'origin', b'https://evil.example')],
+                'client': ('127.0.0.1', 12345),
+                'query_string': b'',
+                'scheme': 'https',
+            }
+        )
+        with patch.object(
+            security,
+            'settings',
+            make_security_settings(app_public_url='https://app.example.com'),
+        ):
+            self.assertFalse(security.origin_is_allowed(request))
+
+    def test_costly_api_rate_limit_is_per_user_and_bucket(self) -> None:
+        self.assertTrue(rate_limit.consume(bucket='summary', subject='user:1', limit=1, window_seconds=60))
+        self.assertFalse(rate_limit.consume(bucket='summary', subject='user:1', limit=1, window_seconds=60))
+        self.assertTrue(rate_limit.consume(bucket='proofread', subject='user:1', limit=1, window_seconds=60))
+        self.assertTrue(rate_limit.consume(bucket='summary', subject='user:2', limit=1, window_seconds=60))
+
+    def test_password_change_revokes_sessions_and_rotates_cookie_token(self) -> None:
+        user = SimpleNamespace(id=7, password_hash='old-hash')
+        request = make_request()
+        db = SimpleNamespace(commit=lambda: None)
+        with (
+            patch.object(auth_module, 'verify_password', return_value=True),
+            patch.object(auth_module, 'hash_password', return_value='new-hash'),
+            patch.object(auth_module, 'delete_all_user_sessions') as revoke,
+            patch.object(auth_module, 'create_user_session', return_value='new-cookie-token'),
+        ):
+            token = auth_service.change_password(
+                user=user,
+                current_password='old-password',
+                new_password='new-password',
+                request=request,
+                db=db,
+            )
+
+        self.assertEqual(user.password_hash, 'new-hash')
+        self.assertEqual(token, 'new-cookie-token')
+        revoke.assert_called_once_with(db, 7)
+
+    def test_last_admin_check_locks_admin_rows(self) -> None:
+        admin = SimpleNamespace(id=1, is_admin=True)
+        with (
+            patch.object(user_repository, 'lock_admin_users', return_value=[admin]) as lock_admins,
+            patch.object(user_repository, 'get_user_by_id', return_value=admin),
+        ):
+            with self.assertRaises(admin_service.AdminServiceError) as ctx:
+                admin_service.update_user_role(SimpleNamespace(), user_id=1, role='member')
+
+        self.assertEqual(ctx.exception.code, 'last_admin_forbidden')
+        lock_admins.assert_called_once()
 
     def test_public_url_is_canonical_for_oidc_urls(self) -> None:
         app = FastAPI()

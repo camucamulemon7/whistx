@@ -12,14 +12,16 @@ from ...core.security import clear_session_cookie, set_session_cookie, serialize
 from ...db import get_db
 from ...deps import get_current_user
 from ...models import User
-from ...schemas import BootstrapAdminRequest, LoginRequest, RegisterRequest, UpdateDisplayNameRequest
+from ...schemas import BootstrapAdminRequest, ChangePasswordRequest, LoginRequest, RegisterRequest, UpdateDisplayNameRequest
 from ...services.auth_service import (
     AuthServiceError,
     build_auth_me_payload,
     bootstrap_admin,
+    change_password,
     login_user,
     logout_user,
     register_user,
+    revoke_all_sessions,
     update_display_name,
 )
 
@@ -98,3 +100,39 @@ async def auth_update_profile(
 ) -> JSONResponse:
     updated_user = update_display_name(user=user, display_name=payload.display_name, db=db)
     return JSONResponse({'ok': True, 'user': serialize_user(updated_user)})
+
+
+@router.post('/api/auth/password')
+async def auth_change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    try:
+        session_id = change_password(
+            user=user,
+            current_password=payload.current_password,
+            new_password=payload.new_password,
+            request=request,
+            db=db,
+        )
+    except AuthServiceError as exc:
+        return JSONResponse(status_code=exc.status_code, content={'error': exc.code})
+    logger.warning("password changed and sessions revoked: user_id=%s", user.id)
+    response = JSONResponse({'ok': True})
+    set_session_cookie(response=response, request=request, cookie_name='whistx_session', session_id=session_id)
+    return response
+
+
+@router.post('/api/auth/sessions/revoke-all')
+async def auth_revoke_all_sessions(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    revoke_all_sessions(user=user, db=db)
+    logger.warning("all sessions revoked: user_id=%s", user.id)
+    response = JSONResponse({'ok': True})
+    clear_session_cookie(response=response, request=request, cookie_name='whistx_session')
+    return response

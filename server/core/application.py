@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -14,6 +15,7 @@ from .. import legacy_app as legacy
 from ..api.routes import admin, auth, glossary, health, history, summary, transcript
 from ..api.ws.transcribe import router as transcribe_router
 from .logging import configure_application_logging, emit_container_log
+from .security import origin_is_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,14 @@ def create_app() -> FastAPI:
     configure_application_logging(legacy.settings.app_log_level)
     app = FastAPI(title="whistx", version="2.0.0", lifespan=_app_lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(legacy.settings.app_allowed_hosts))
+
+    @app.middleware("http")
+    async def validate_mutation_origin(request: Request, call_next):
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and request.url.path.startswith("/api/"):
+            if not origin_is_allowed(request):
+                logger.warning("request origin rejected: method=%s path=%s", request.method, request.url.path)
+                return JSONResponse(status_code=403, content={"error": "origin_not_allowed"})
+        return await call_next(request)
 
     @app.middleware("http")
     async def log_http_requests(request: Request, call_next):

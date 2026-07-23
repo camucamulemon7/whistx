@@ -129,14 +129,14 @@ def login_user(payload, request: Request, db: Session) -> AuthResult:
     for key in rate_limit_keys:
         _clear_failed_login(key)
     user.last_login_at = datetime.now(timezone.utc)
-    session = auth.create_user_session(
+    session_id = auth.create_user_session(
         db,
         user=user,
         user_agent=request.headers.get('user-agent'),
-        ip_address=request.client.host if request.client else None,
+        ip_address=client_ip(request),
     )
     db.commit()
-    return AuthResult(user=user, session_id=session.id)
+    return AuthResult(user=user, session_id=session_id)
 
 
 def bootstrap_admin(payload, request: Request, db: Session) -> AuthResult:
@@ -156,14 +156,14 @@ def bootstrap_admin(payload, request: Request, db: Session) -> AuthResult:
         )
         user.approved_by_user_id = user.id
         user.last_login_at = datetime.now(timezone.utc)
-        session = auth.create_user_session(
+        session_id = auth.create_user_session(
             db,
             user=user,
             user_agent=request.headers.get('user-agent'),
-            ip_address=request.client.host if request.client else None,
+            ip_address=client_ip(request),
         )
         db.commit()
-        return AuthResult(user=user, session_id=session.id)
+        return AuthResult(user=user, session_id=session_id)
     except ValueError:
         db.rollback()
         raise AuthServiceError('password_too_short', 400) from None
@@ -210,6 +210,28 @@ def update_display_name(*, user: User, display_name: str | None, db: Session) ->
     user.display_name = (display_name or '').strip() or None
     db.commit()
     return user
+
+
+def revoke_all_sessions(*, user: User, db: Session) -> None:
+    auth.delete_all_user_sessions(db, user.id)
+    db.commit()
+
+
+def change_password(*, user: User, current_password: str, new_password: str, request: Request, db: Session) -> str:
+    if not auth.verify_password(user.password_hash, current_password):
+        raise AuthServiceError('invalid_current_password', 403)
+    if len(new_password) < 8:
+        raise AuthServiceError('password_too_short', 400)
+    user.password_hash = auth.hash_password(new_password)
+    auth.delete_all_user_sessions(db, user.id)
+    session_id = auth.create_user_session(
+        db,
+        user=user,
+        user_agent=request.headers.get('user-agent'),
+        ip_address=client_ip(request),
+    )
+    db.commit()
+    return session_id
 
 
 def upsert_keycloak_user(db: Session, userinfo: dict[str, Any]) -> User:

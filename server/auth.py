@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import secrets
+import hashlib
+import hmac
 from datetime import datetime, timedelta, timezone
 
 from argon2 import PasswordHasher
@@ -113,10 +115,11 @@ def create_user_session(
     user: User,
     user_agent: str | None,
     ip_address: str | None,
-) -> UserSession:
+) -> str:
     session_repository.prune_expired_sessions(db, now=utcnow())
+    raw_session_id = secrets.token_urlsafe(32)
     session = UserSession(
-        id=secrets.token_urlsafe(32),
+        id=hash_session_id(raw_session_id),
         user_id=user.id,
         created_at=utcnow(),
         expires_at=utcnow() + timedelta(days=settings.app_session_days),
@@ -125,7 +128,15 @@ def create_user_session(
     )
     db.add(session)
     db.flush()
-    return session
+    return raw_session_id
+
+
+def hash_session_id(session_id: str) -> str:
+    return hmac.new(
+        settings.app_session_secret.encode("utf-8"),
+        session_id.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def prune_expired_sessions(db: Session) -> None:
@@ -133,8 +144,13 @@ def prune_expired_sessions(db: Session) -> None:
 
 
 def get_user_by_session_id(db: Session, session_id: str | None) -> User | None:
-    return session_repository.get_user_by_session_id(db, session_id, now=utcnow())
+    hashed = hash_session_id(session_id) if session_id else None
+    return session_repository.get_user_by_session_id(db, hashed, now=utcnow())
 
 
 def delete_user_session(db: Session, session_id: str | None) -> None:
-    session_repository.delete_session(db, session_id)
+    session_repository.delete_session(db, hash_session_id(session_id) if session_id else None)
+
+
+def delete_all_user_sessions(db: Session, user_id: int) -> None:
+    session_repository.delete_sessions_for_user(db, user_id)

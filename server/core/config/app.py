@@ -33,6 +33,8 @@ class AppConfig:
     guest_ws_max_duration_seconds: int
     guest_ws_max_audio_bytes: int
     guest_ws_max_asr_requests: int
+    costly_api_rate_limit_requests: int
+    costly_api_rate_limit_window_seconds: int
     history_retention_days: int
     runtime_transcript_retention_hours: int
     debug_chunks_retention_hours: int
@@ -90,6 +92,8 @@ def load_app_config() -> AppConfig:
         guest_ws_max_duration_seconds=max(1, to_int("GUEST_WS_MAX_DURATION_SECONDS", 900)),
         guest_ws_max_audio_bytes=max(1024, to_int("GUEST_WS_MAX_AUDIO_BYTES", 100 * 1024 * 1024)),
         guest_ws_max_asr_requests=max(1, to_int("GUEST_WS_MAX_ASR_REQUESTS", 120)),
+        costly_api_rate_limit_requests=max(1, to_int("COSTLY_API_RATE_LIMIT_REQUESTS", 60)),
+        costly_api_rate_limit_window_seconds=max(1, to_int("COSTLY_API_RATE_LIMIT_WINDOW_SECONDS", 60)),
         history_retention_days=max(1, to_int("HISTORY_RETENTION_DAYS", 7)),
         runtime_transcript_retention_hours=max(1, to_int("RUNTIME_TRANSCRIPT_RETENTION_HOURS", 24)),
         debug_chunks_retention_hours=max(1, to_int("DEBUG_CHUNKS_RETENTION_HOURS", 24)),

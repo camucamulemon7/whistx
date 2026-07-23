@@ -92,6 +92,7 @@ from .core.security import (
     unsigned_payload as security_unsigned_payload,
 )
 from .core.logging import emit_container_log, is_debug_logging_enabled
+from .core.rate_limit import consume as consume_rate_limit
 
 
 logging.basicConfig(
@@ -448,16 +449,16 @@ async def auth_login(
         _clear_failed_login(key)
     user.last_login_at = datetime.now(timezone.utc)
 
-    session = create_user_session(
+    session_id = create_user_session(
         db,
         user=user,
         user_agent=request.headers.get("user-agent"),
-        ip_address=request.client.host if request.client else None,
+        ip_address=security_client_ip(request),
     )
     db.commit()
 
     response = JSONResponse({"ok": True, "user": _serialize_user(user)})
-    _set_session_cookie(response, request, session.id)
+    _set_session_cookie(response, request, session_id)
     return response
 
 
@@ -486,11 +487,11 @@ async def auth_bootstrap_admin(
         )
         user.approved_by_user_id = user.id
         user.last_login_at = datetime.now(timezone.utc)
-        session = create_user_session(
+        session_id = create_user_session(
             db,
             user=user,
             user_agent=request.headers.get("user-agent"),
-            ip_address=request.client.host if request.client else None,
+            ip_address=security_client_ip(request),
         )
         db.commit()
     except ValueError:
@@ -501,7 +502,7 @@ async def auth_bootstrap_admin(
         return JSONResponse(status_code=409, content={"error": "email_already_exists"})
 
     response = JSONResponse({"ok": True, "user": _serialize_user(user)})
-    _set_session_cookie(response, request, session.id)
+    _set_session_cookie(response, request, session_id)
     return response
 
 
@@ -562,11 +563,11 @@ async def auth_keycloak_callback(
         userinfo = await asyncio.to_thread(_fetch_keycloak_userinfo, discovery, str(token_payload.get("access_token") or ""))
         user = _upsert_keycloak_user(db, userinfo)
         user.last_login_at = datetime.now(timezone.utc)
-        session = create_user_session(
+        session_id = create_user_session(
             db,
             user=user,
             user_agent=request.headers.get("user-agent"),
-            ip_address=request.client.host if request.client else None,
+            ip_address=security_client_ip(request),
         )
         db.commit()
     except PermissionError:
@@ -579,7 +580,7 @@ async def auth_keycloak_callback(
         _response.headers["Location"] = f"/?authError={_map_keycloak_auth_error(exc)}"
         return _response
 
-    _set_session_cookie(_response, request, session.id)
+    _set_session_cookie(_response, request, session_id)
     _response.headers["Location"] = "/"
     return _response
 
@@ -1116,6 +1117,17 @@ async def ws_transcribe(ws: WebSocket) -> None:
                 if is_guest and guest_asr_requests >= settings.guest_ws_max_asr_requests:
                     await _safe_send(ws, {"type": "error", "message": "guest_asr_request_limit"})
                     await ws.close(code=4408, reason="guest_asr_request_limit")
+                    break
+                rate_limit_subject = str(getattr(ws.state, "rate_limit_subject", "unknown"))
+                if not consume_rate_limit(
+                    bucket="asr",
+                    subject=rate_limit_subject,
+                    limit=settings.costly_api_rate_limit_requests,
+                    window_seconds=settings.costly_api_rate_limit_window_seconds,
+                ):
+                    logger.warning("ASR rate limit exceeded: subject=%s", rate_limit_subject)
+                    await _safe_send(ws, {"type": "error", "message": "rate_limit_exceeded"})
+                    await ws.close(code=4429, reason="asr_rate_limit")
                     break
 
                 try:

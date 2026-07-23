@@ -7,7 +7,7 @@ import ipaddress
 import json
 import secrets
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from fastapi import Request
 from fastapi.responses import Response
@@ -90,6 +90,22 @@ def client_ip(request: Request) -> str:
         if real_ip:
             return real_ip
     return request.client.host if request.client and request.client.host else "unknown"
+
+
+def origin_is_allowed(request: Request) -> bool:
+    origin = (request.headers.get("origin") or "").strip()
+    if not origin:
+        return True
+    configured = settings.app_public_url or f"{_request_external_scheme(request)}://{_request_external_host(request)}"
+    parsed_origin = urlsplit(origin)
+    parsed_configured = urlsplit(configured)
+    return (
+        parsed_origin.scheme.lower(),
+        parsed_origin.netloc.lower(),
+    ) == (
+        parsed_configured.scheme.lower(),
+        parsed_configured.netloc.lower(),
+    )
 
 
 def set_oidc_state_cookie(*, response: Response, request: Request, cookie_name: str, payload: dict[str, Any]) -> None:
