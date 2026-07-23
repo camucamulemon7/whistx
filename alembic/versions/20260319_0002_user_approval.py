@@ -32,7 +32,7 @@ def upgrade():
                 ["id"],
                 ondelete="SET NULL",
             )
-    op.execute("UPDATE users SET approved_at = created_at WHERE is_active = 1 AND approved_at IS NULL")
+    op.execute("UPDATE users SET approved_at = created_at WHERE is_active = TRUE AND approved_at IS NULL")
 
 
 def downgrade():
