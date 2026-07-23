@@ -1015,6 +1015,9 @@ async def ws_transcribe(ws: WebSocket) -> None:
 
     session: LiveSession | None = None
     worker_task: asyncio.Task[None] | None = None
+    is_guest = bool(getattr(ws.state, "is_guest", False))
+    guest_audio_bytes = 0
+    guest_asr_requests = 0
 
     try:
         while True:
@@ -1111,10 +1114,22 @@ async def ws_transcribe(ws: WebSocket) -> None:
                     )
                     continue
 
+                if is_guest and guest_audio_bytes + len(chunk.audio_bytes) > settings.guest_ws_max_audio_bytes:
+                    await _safe_send(ws, {"type": "error", "message": "guest_audio_limit"})
+                    await ws.close(code=4408, reason="guest_audio_limit")
+                    break
+                if is_guest and guest_asr_requests >= settings.guest_ws_max_asr_requests:
+                    await _safe_send(ws, {"type": "error", "message": "guest_asr_request_limit"})
+                    await ws.close(code=4408, reason="guest_asr_request_limit")
+                    break
+
                 try:
                     session.queue.put_nowait(chunk)
                     session.last_chunk_seq = chunk.seq
                     session.last_chunk_offset_ms = chunk.offset_ms
+                    if is_guest:
+                        guest_audio_bytes += len(chunk.audio_bytes)
+                        guest_asr_requests += 1
                     logger.debug(
                         "ws chunk queued: session=%s seq=%s duration_ms=%s queue=%s",
                         session.session_id,

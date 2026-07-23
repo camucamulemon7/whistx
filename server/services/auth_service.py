@@ -107,6 +107,7 @@ def build_auth_me_payload(request: Request, db: Session) -> dict[str, Any]:
         'authenticated': user is not None,
         'user': serialize_user(user) if user is not None else None,
         'selfSignupEnabled': settings.enable_self_signup,
+        'guestTranscriptionAllowed': bool(getattr(settings, 'allow_guest_transcription', False)),
         'historyRetentionDays': settings.history_retention_days,
         'bootstrapAdminRequired': not auth.has_admin_account(db),
         'pendingApprovalCount': user_repository.count_pending_users(db) if user is not None and user.is_admin else 0,

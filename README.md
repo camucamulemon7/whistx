@@ -151,6 +151,19 @@ Local startup and container builds consume the runtime lock. CI consumes the dev
 
 Aliases listed in `deprecated_aliases` are compatibility-only and scheduled for removal in the next major release. New deployments should use the canonical `APP_*`, `ASR_*`, `SUMMARY_*`, `PROOFREAD_*`, and `DIARIZATION_*` names.
 
+### Guest transcription
+
+Guest WebSocket transcription is disabled by default. Authenticated, active users are not subject to guest quotas; missing, expired, or inactive sessions do not count as authenticated.
+
+To expose guest transcription, set `ALLOW_GUEST_TRANSCRIPTION=1` and review all of these limits:
+
+- `GUEST_WS_MAX_PER_IP` and `GUEST_WS_MAX_CONNECTIONS`
+- `GUEST_WS_MAX_DURATION_SECONDS`
+- `GUEST_WS_MAX_AUDIO_BYTES`
+- `GUEST_WS_MAX_ASR_REQUESTS`
+
+Unauthenticated connections are rejected with WebSocket code `4401` when guest use is disabled. Guest limit violations use `4429` for connection limits and `4408` for duration, audio, or ASR-request limits. The UI only offers guest mode when the server reports it as enabled.
+
 ### Podman (rootless)
 
 ```bash
