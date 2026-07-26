@@ -256,9 +256,18 @@ const recordingMocks = String.raw`
       trackStops: 0,
       contextCloses: 0,
       historyDetailRequests: 0,
+      clipboardWrites: [],
       socket: null,
       sockets: []
     };
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        async writeText(text) {
+          window.__recordingTest.clipboardWrites.push(String(text));
+        }
+      }
+    });
 
     const jsonResponse = (payload) => Promise.resolve(new Response(JSON.stringify(payload), {
       status: 200,
@@ -474,6 +483,7 @@ async function verifyRecordingStartIsSingleFlight(client) {
     if (unlocked) break;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+  await verifyEmptySummaryIsNotCopied(client);
 
   await evaluate(
     client,
@@ -513,6 +523,34 @@ async function verifyRecordingStartIsSingleFlight(client) {
   assert.equal(result.disabled, false, "record button should be enabled after startup");
   assert.equal(result.busy, "false", "record button should clear aria-busy after startup");
   assert.equal(result.pressed, "true", "record button should enter recording state");
+}
+
+async function verifyEmptySummaryIsNotCopied(client) {
+  await evaluate(
+    client,
+    `(() => {
+      window.__summaryClipboardWrites = [];
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          async writeText(text) {
+            window.__summaryClipboardWrites.push(String(text));
+          }
+        }
+      });
+      document.querySelector("#copySummaryBtn").click();
+    })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const result = await evaluate(
+    client,
+    `({
+      clipboardWrites: window.__summaryClipboardWrites,
+      toast: document.querySelector("#toastContainer .toast:last-child")?.textContent || ""
+    })`,
+  );
+  assert.deepEqual(result.clipboardWrites, [], "empty summary placeholder must not be written to the clipboard");
+  assert.match(result.toast, /要約がありません/, "empty summary copy should explain that no result exists");
 }
 
 async function verifyDestructiveActionsAreLocked(client) {

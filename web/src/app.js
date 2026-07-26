@@ -2218,7 +2218,7 @@ async function copySummaryText() {
     loginEmailEl?.focus();
     return;
   }
-  const text = String(state.summary || summaryTextEl?.textContent || "").trim();
+  const text = String(state.summary || "").trim();
   if (!text) {
     showToast("要約がありません", "error");
     return;
