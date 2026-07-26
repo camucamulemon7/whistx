@@ -182,6 +182,7 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
                     {
                         "type": "error",
                         "message": "transcription_failed",
+                        "sessionId": session.session_id,
                         "seq": item.seq,
                         "buffered": True,
                         "bufferedCount": len(session.failed_prepared_chunks),
@@ -196,7 +197,10 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
             if bool(getattr(deps.settings, "asr_light_proofread_enabled", True)):
                 text = deps.light_proofread(text, language=session.language)
             if not text:
-                await deps.safe_send(ws, {"type": "ack", "seq": item.seq, "empty": True})
+                await deps.safe_send(
+                    ws,
+                    {"type": "ack", "sessionId": session.session_id, "seq": item.seq, "empty": True},
+                )
                 continue
             if deps.should_drop_boundary(
                 text,
@@ -206,7 +210,14 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
             ):
                 await deps.safe_send(
                     ws,
-                    {"type": "ack", "seq": item.seq, "empty": True, "skipped": True, "reason": "boundary_fragment"},
+                    {
+                        "type": "ack",
+                        "sessionId": session.session_id,
+                        "seq": item.seq,
+                        "empty": True,
+                        "skipped": True,
+                        "reason": "boundary_fragment",
+                    },
                 )
                 continue
 
@@ -217,7 +228,10 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
                 current_start_ms=current_start_hint,
                 previous_end_ms=session.last_emitted_ts_end,
             ):
-                await deps.safe_send(ws, {"type": "ack", "seq": item.seq, "duplicate": True})
+                await deps.safe_send(
+                    ws,
+                    {"type": "ack", "sessionId": session.session_id, "seq": item.seq, "duplicate": True},
+                )
                 continue
 
             ts_base_offset = max(0, effective_offset_ms - prepared.overlap_ms_used)
@@ -265,6 +279,7 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
                 ws,
                 {
                     "type": "final",
+                    "sessionId": session.session_id,
                     "segmentId": record.segmentId,
                     "seq": record.seq,
                     "text": record.text,

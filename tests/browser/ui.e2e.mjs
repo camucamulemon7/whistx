@@ -255,7 +255,8 @@ const recordingMocks = String.raw`
       stopMessages: 0,
       trackStops: 0,
       contextCloses: 0,
-      socket: null
+      socket: null,
+      sockets: []
     };
 
     const jsonResponse = (payload) => Promise.resolve(new Response(JSON.stringify(payload), {
@@ -374,6 +375,7 @@ const recordingMocks = String.raw`
         super();
         this.readyState = WebSocketMock.CONNECTING;
         window.__recordingTest.socket = this;
+        window.__recordingTest.sockets.push(this);
         queueMicrotask(() => {
           this.readyState = WebSocketMock.OPEN;
           this.dispatchEvent(new Event("open"));
@@ -383,13 +385,47 @@ const recordingMocks = String.raw`
         const message = JSON.parse(raw);
         if (message.type === "start") {
           window.__recordingTest.startMessages += 1;
+          this.sessionId = "browser-test-" + window.__recordingTest.startMessages;
           setTimeout(() => {
             const event = new Event("message");
-            event.data = JSON.stringify({ type: "info", message: "ready", sessionId: "browser-test" });
+            event.data = JSON.stringify({
+              type: "info",
+              message: "ready",
+              sessionId: this.sessionId
+            });
             this.dispatchEvent(event);
           }, 60);
         } else if (message.type === "stop") {
           window.__recordingTest.stopMessages += 1;
+          const stopping = new Event("message");
+          stopping.data = JSON.stringify({
+            type: "info",
+            message: "stopping",
+            sessionId: this.sessionId
+          });
+          this.dispatchEvent(stopping);
+          setTimeout(() => {
+            const final = new Event("message");
+            final.data = JSON.stringify({
+              type: "final",
+              sessionId: this.sessionId,
+              text: "停止直前の文字起こし",
+              tsStart: 1000,
+              tsEnd: 2000,
+              seq: 2
+            });
+            this.dispatchEvent(final);
+          }, 35);
+          setTimeout(() => {
+            const finalized = new Event("message");
+            finalized.data = JSON.stringify({
+              type: "info",
+              message: "finalized",
+              state: "completed",
+              sessionId: this.sessionId
+            });
+            this.dispatchEvent(finalized);
+          }, 90);
         }
       }
       close() {
@@ -483,6 +519,92 @@ async function verifySocketLossStopsRecording(client) {
   assert.equal(result.pressed, "false", "socket loss should leave recording UI");
   assert.equal(result.label, "録音開始", "socket loss should restore the start action");
   assert.equal(result.status, "接続切断・録音終了", "socket loss should explain why recording stopped");
+}
+
+async function verifyGracefulStopIsSerialized(client) {
+  await evaluate(
+    client,
+    `(() => {
+      const button = document.querySelector("#startBtn");
+      button.click();
+      button.click();
+    })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const finalizing = await evaluate(
+    client,
+    `({
+      startMessages: window.__recordingTest.startMessages,
+      stopMessages: window.__recordingTest.stopMessages,
+      disabled: document.querySelector("#startBtn").disabled,
+      busy: document.querySelector("#startBtn").getAttribute("aria-busy"),
+      label: document.querySelector("#startBtn .record-label").textContent
+    })`,
+  );
+  assert.equal(finalizing.startMessages, 1, "stop/start click sequence must not start a second session");
+  assert.equal(finalizing.stopMessages, 1, "graceful stop should send one stop message");
+  assert.equal(finalizing.disabled, true, "record action should remain locked during server finalization");
+  assert.equal(finalizing.busy, "true", "finalization should remain exposed as busy");
+  assert.equal(finalizing.label, "最終処理中...", "finalization should have a distinct action label");
+
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const completed = await evaluate(
+    client,
+    `({
+      startMessages: window.__recordingTest.startMessages,
+      disabled: document.querySelector("#startBtn").disabled,
+      busy: document.querySelector("#startBtn").getAttribute("aria-busy"),
+      label: document.querySelector("#startBtn .record-label").textContent,
+      status: document.querySelector("#statusText").textContent,
+      transcript: [...document.querySelectorAll(".log-row .text")].map((node) => node.textContent)
+    })`,
+  );
+  assert.equal(completed.startMessages, 1, "server finalization must finish before another start");
+  assert.equal(completed.disabled, false, "record action should unlock after finalized acknowledgement");
+  assert.equal(completed.busy, "false", "completed recording should clear busy state");
+  assert.equal(completed.label, "録音開始", "completed recording should restore start label");
+  assert.equal(completed.status, "録音完了", "normal stop should be distinct from disconnect");
+  assert.ok(
+    completed.transcript.includes("停止直前の文字起こし"),
+    "final segment arriving before finalized acknowledgement should remain in the completed session",
+  );
+}
+
+async function startSecondRecordingAndRejectStaleMessages(client) {
+  await evaluate(
+    client,
+    `(() => {
+      window.confirm = () => true;
+      document.querySelector("#startBtn").click();
+    })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  await evaluate(
+    client,
+    `(() => {
+      const stale = new Event("message");
+      stale.data = JSON.stringify({
+        type: "final",
+        sessionId: "browser-test-1",
+        text: "混入してはいけない旧セッション",
+        tsStart: 0,
+        tsEnd: 1000,
+        seq: 99
+      });
+      window.__recordingTest.sockets[0].dispatchEvent(stale);
+    })()`,
+  );
+  const result = await evaluate(
+    client,
+    `({
+      startMessages: window.__recordingTest.startMessages,
+      pressed: document.querySelector("#startBtn").getAttribute("aria-pressed"),
+      transcript: document.querySelector("#log").textContent
+    })`,
+  );
+  assert.equal(result.startMessages, 2, "new recording should start only after previous finalization");
+  assert.equal(result.pressed, "true", "second recording should be active");
+  assert.doesNotMatch(result.transcript, /混入してはいけない旧セッション/, "stale session messages must be ignored");
 }
 
 async function verifyFailedStartPreservesTranscript(client) {
@@ -650,6 +772,8 @@ try {
     await verifyHistoryDrawerAtWidth(client, width);
   }
   await verifyRecordingStartIsSingleFlight(client);
+  await verifyGracefulStopIsSerialized(client);
+  await startSecondRecordingAndRejectStaleMessages(client);
   await verifySocketLossStopsRecording(client);
   await verifyFailedStartPreservesTranscript(client);
   process.stdout.write("Browser UI and recording lifecycle checks passed.\n");

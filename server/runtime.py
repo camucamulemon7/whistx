@@ -937,6 +937,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
     is_guest = bool(getattr(ws.state, "is_guest", False))
     guest_audio_bytes = 0
     guest_asr_requests = 0
+    stop_requested = False
 
     try:
         while True:
@@ -1142,7 +1143,15 @@ async def ws_transcribe(ws: WebSocket) -> None:
             if msg_type == "stop":
                 logger.info("ws stop received: session=%s", session.session_id if session is not None else "unknown")
                 emit_container_log(__name__, "info", "ws stop received: session=%s", session.session_id if session is not None else "unknown")
-                await _safe_send(ws, {"type": "info", "message": "stopping"})
+                stop_requested = True
+                await _safe_send(
+                    ws,
+                    {
+                        "type": "info",
+                        "message": "stopping",
+                        "sessionId": session.session_id if session is not None else None,
+                    },
+                )
                 break
 
             if msg_type == "ping":
@@ -1166,6 +1175,16 @@ async def ws_transcribe(ws: WebSocket) -> None:
         if session is not None:
             await _run_diarization_for_session(ws, session)
             _mark_session_finalized(session)
+            if stop_requested:
+                await _safe_send(
+                    ws,
+                    {
+                        "type": "info",
+                        "message": "finalized",
+                        "state": "completed",
+                        "sessionId": session.session_id,
+                    },
+                )
 
         ACTIVE_SOCKETS.discard(ws)
         await _broadcast_conn_count()
@@ -1837,7 +1856,10 @@ async def _run_diarization_for_session(ws: WebSocket, session: LiveSession) -> N
         session.store.cleanup_chunks()
         return
 
-    await _safe_send(ws, {"type": "info", "message": "diarization_started"})
+    await _safe_send(
+        ws,
+        {"type": "info", "message": "diarization_started", "sessionId": session.session_id},
+    )
 
     try:
         patch_map = await asyncio.to_thread(_apply_diarization_labels, session)
@@ -1848,6 +1870,7 @@ async def _run_diarization_for_session(ws: WebSocket, session: LiveSession) -> N
             {
                 "type": "error",
                 "message": "diarization_failed",
+                "sessionId": session.session_id,
                 "detail": str(exc),
             },
         )
@@ -1859,11 +1882,15 @@ async def _run_diarization_for_session(ws: WebSocket, session: LiveSession) -> N
             ws,
             {
                 "type": "speaker_patch",
+                "sessionId": session.session_id,
                 "segments": payload,
             },
         )
 
-    await _safe_send(ws, {"type": "info", "message": "diarization_done"})
+    await _safe_send(
+        ws,
+        {"type": "info", "message": "diarization_done", "sessionId": session.session_id},
+    )
     if not settings.diarization_keep_chunks:
         session.store.cleanup_chunks()
 

@@ -25,6 +25,7 @@ import {
   buildWebSocketUrl,
   normalizeWsPath,
   waitForOpen,
+  waitForSessionFinalized,
   waitForSessionReady,
 } from "./transcription/websocket.js";
 import {
@@ -1858,7 +1859,7 @@ function updateSaveControls() {
   const isGuest = !!state.auth.isGuest;
   const saved = !!state.savedHistoryId;
   const viewingHistory = !!state.viewingHistoryId;
-  const recordingLocked = !!state.recording || !!state.finalizingStop;
+  const recordingLocked = state.recordingPhase !== "idle" || !!state.finalizingStop;
 
   if (saveBtn) {
     saveBtn.disabled =
@@ -2549,6 +2550,17 @@ function setUiRecordingStarting() {
   setStatus("starting");
 }
 
+function setUiRecordingStopping(finalizing = false) {
+  state.recordingPhase = finalizing ? "finalizing" : "stopping";
+  startBtn.disabled = true;
+  startBtn.querySelector(".record-label").textContent = finalizing ? "最終処理中..." : "停止中...";
+  startBtn.setAttribute("aria-pressed", "false");
+  startBtn.setAttribute("aria-label", finalizing ? "録音の最終処理中" : "録音を停止中");
+  startBtn.setAttribute("aria-busy", "true");
+  setStatus(finalizing ? "finalizing" : "stopping");
+  updateSaveControls();
+}
+
 function resetRuntimeSessionState() {
   state.runtimeSessionId = "";
   state.runtimeSessionToken = "";
@@ -3049,6 +3061,21 @@ async function ensureSocket() {
     }
 
     logWsEvent("message", { type: data.type, message: data.message || "", seq: data.seq ?? null });
+    const incomingSessionId = String(data.sessionId || "");
+    const isReadyMessage = data.type === "info" && data.message === "ready";
+    if (
+      incomingSessionId &&
+      !isReadyMessage &&
+      state.runtimeSessionId &&
+      incomingSessionId !== state.runtimeSessionId
+    ) {
+      logWsEvent("ignore_stale_message", {
+        incomingSessionId,
+        currentSessionId: state.runtimeSessionId,
+        type: data.type,
+      });
+      return;
+    }
 
     if (data.type === "conn") {
       return;
@@ -3105,6 +3132,12 @@ async function ensureSocket() {
 
   ws.addEventListener("close", () => {
     logWsEvent("close");
+    if (ws.__whistxGracefulStop) {
+      if (state.ws === ws) {
+        state.ws = null;
+      }
+      return;
+    }
     abortRecordingAfterSocketLoss(ws, "connection_lost");
   });
 
@@ -3494,6 +3527,9 @@ function startRecorderCycle() {
     if (state.recorder === recorder) {
       state.recorder = null;
     }
+    if (recorder.__whistxAbortWithoutFinalize) {
+      return;
+    }
     if (state.recording) {
       startRecorderCycle();
       return;
@@ -3508,16 +3544,33 @@ function startRecorderCycle() {
 async function finalizeStop() {
   if (state.finalizingStop) return;
   state.finalizingStop = true;
+  setUiRecordingStopping(true);
   clearChunkTimer();
+  let completed = false;
+  let finalizeError = null;
 
   try {
     await state.pendingSendChain;
+    const ws = state.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      throw new Error("websocket_unavailable_before_finalize");
+    }
+    ws.__whistxGracefulStop = true;
+    const finalized = waitForSessionFinalized(ws, state.runtimeSessionId);
+    ws.send(JSON.stringify({ type: "stop" }));
+    logWsEvent("send_stop", { sessionId: state.runtimeSessionId || "" });
+    await finalized;
+    completed = true;
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close(1000, "session_finalized");
+    }
+    if (state.ws === ws) {
+      state.ws = null;
+    }
+  } catch (error) {
+    finalizeError = error;
   } finally {
     state.pendingSendChain = Promise.resolve();
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      state.ws.send(JSON.stringify({ type: "stop" }));
-      logWsEvent("send_stop", { sessionId: state.runtimeSessionId || "" });
-    }
     cleanupMedia();
     setUiRecording(false);
     state.segmentStartedAt = 0;
@@ -3528,6 +3581,13 @@ async function finalizeStop() {
     updateRecordingTelemetry();
     state.finalizingStop = false;
     updateSaveControls();
+    if (completed) {
+      setStatus("completed");
+      showToast("録音の最終処理が完了しました", "success");
+    } else {
+      setStatus("finalize_failed");
+      showToast(`録音の最終処理に失敗しました: ${finalizeError?.message || "unknown"}`, "error", 7000);
+    }
   }
 }
 
@@ -3670,8 +3730,8 @@ async function startRecording() {
 
 function stopRecording() {
   if (!state.recording) return;
-  setStatus("stopping");
   state.recording = false;
+  setUiRecordingStopping(false);
   clearChunkTimer();
 
   try {
@@ -3707,6 +3767,7 @@ function abortRecordingAfterSocketLoss(ws, reason) {
   const recorder = state.recorder;
   if (recorder?.state === "recording") {
     try {
+      recorder.__whistxAbortWithoutFinalize = true;
       recorder.stop();
     } catch {
       // Continue with media cleanup even when recorder shutdown fails.

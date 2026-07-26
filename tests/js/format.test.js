@@ -23,6 +23,9 @@ test("UI formatters produce stable Japanese labels", () => {
 
 test("recording connection states are presented in Japanese", () => {
   assert.equal(formatStatusText("starting"), "録音準備中");
+  assert.equal(formatStatusText("finalizing"), "最終処理中");
+  assert.equal(formatStatusText("completed"), "録音完了");
+  assert.equal(formatStatusText("finalize_failed"), "最終処理失敗");
   assert.equal(formatStatusText("connection_lost"), "接続切断・録音終了");
   assert.equal(formatStatusText("socket_error"), "接続エラー・録音終了");
 });

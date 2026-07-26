@@ -5,6 +5,9 @@ export function formatStatusText(text) {
   if (normalized === "starting") return "録音準備中";
   if (normalized.startsWith("recording")) return "録音中";
   if (normalized === "stopping") return "停止処理中";
+  if (normalized === "finalizing") return "最終処理中";
+  if (normalized === "completed") return "録音完了";
+  if (normalized === "finalize_failed") return "最終処理失敗";
   if (normalized === "connection_lost") return "接続切断・録音終了";
   if (normalized === "disconnected") return "未接続";
   if (normalized === "socket_error") return "接続エラー・録音終了";
