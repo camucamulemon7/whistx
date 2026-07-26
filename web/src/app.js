@@ -243,6 +243,7 @@ const state = {
   chunkTimer: null,
   finalizingStop: false,
   recording: false,
+  recordingPhase: "idle",
   historyDrawerOpen: false,
   recordingAudioSource: "mic",
   recordingRequestedAudioSource: "mic",
@@ -2505,6 +2506,7 @@ function applyChunkSeconds(value) {
 
 function setUiRecording(active) {
   state.recording = active;
+  state.recordingPhase = active ? "recording" : "idle";
 
   if (audioLevelIndicatorEl) {
     audioLevelIndicatorEl.hidden = !active;
@@ -2518,11 +2520,13 @@ function setUiRecording(active) {
     startBtn.querySelector(".record-label").textContent = "停止";
     startBtn.setAttribute("aria-pressed", "true");
     startBtn.setAttribute("aria-label", "録音を停止");
+    startBtn.setAttribute("aria-busy", "false");
   } else {
     startBtn.classList.remove("is-recording");
     startBtn.querySelector(".record-label").textContent = "録音開始";
     startBtn.setAttribute("aria-pressed", "false");
     startBtn.setAttribute("aria-label", "録音を開始");
+    startBtn.setAttribute("aria-busy", "false");
 
     if (state.log.length > 0) {
       startBtn.classList.add("is-complete");
@@ -2532,6 +2536,17 @@ function setUiRecording(active) {
 
   startBtn.disabled = false;
   updateSaveControls();
+}
+
+function setUiRecordingStarting() {
+  state.recordingPhase = "starting";
+  startBtn.disabled = true;
+  startBtn.classList.remove("is-recording");
+  startBtn.querySelector(".record-label").textContent = "準備中...";
+  startBtn.setAttribute("aria-pressed", "false");
+  startBtn.setAttribute("aria-label", "録音を準備中");
+  startBtn.setAttribute("aria-busy", "true");
+  setStatus("starting");
 }
 
 function resetRuntimeSessionState() {
@@ -3501,13 +3516,15 @@ async function finalizeStop() {
 }
 
 async function startRecording() {
-  if (state.recording) return;
+  if (state.recordingPhase !== "idle" || state.finalizingStop) return;
   if (!canUseWorkspace()) {
     showToast("ログインが必要です", "error");
     setAppLocked(true);
     loginEmailEl?.focus();
     return;
   }
+  setUiRecordingStarting();
+  let startSent = false;
 
   const selectedChunkSeconds = applyChunkSeconds(chunkSecondsEl.value || CHUNK_DEFAULT_SECONDS);
   state.chunkMs = selectedChunkSeconds * 1000;
@@ -3577,6 +3594,7 @@ async function startRecording() {
       diarizationMaxSpeakers: diarizationOptions.diarizationMaxSpeakers,
     };
     ws.send(JSON.stringify(startPayload));
+    startSent = true;
     logWsEvent("send_start", {
       sessionId: startPayload.sessionId,
       language: startPayload.language || "auto",
@@ -3617,6 +3635,10 @@ async function startRecording() {
       setStatus("start_failed: /api/health で ASR モデルが確認できません");
     } else {
       setStatus(`start_failed: ${message}`);
+    }
+    if (startSent && state.ws?.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ type: "stop" }));
+      logWsEvent("send_stop_after_start_failure");
     }
     cleanupMedia();
     setUiRecording(false);
@@ -4036,9 +4058,9 @@ presetButtons.forEach((button) => {
 });
 
 startBtn.addEventListener("click", () => {
-  if (state.recording) {
+  if (state.recordingPhase === "recording") {
     stopRecording();
-  } else {
+  } else if (state.recordingPhase === "idle" && !state.finalizingStop) {
     startRecording();
   }
 });
@@ -5124,6 +5146,7 @@ applyActiveAiPanel(state.activeAiPanel);
 applySidebarOpen(false);
 applyHistoryDrawerOpen(false);
 setStatus("idle");
+document.documentElement.dataset.whistxReady = "true";
 
 // Show initial empty state for transcript
 if (logEl && !logEl.querySelector(".log-row")) {

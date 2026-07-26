@@ -57,10 +57,7 @@ export function waitForSessionReady(ws) {
       if (data.type === "info" && data.message === "ready") {
         cleanup();
         resolve(data);
-      } else if (
-        data.type === "error" &&
-        (data.message === "session_create_failed" || data.message === "not_started")
-      ) {
+      } else if (data.type === "error") {
         cleanup();
         reject(new Error(String(data.detail || data.message || "session_start_failed")));
       }

@@ -155,7 +155,7 @@ async function waitForApp(client) {
       `Boolean(
         document.querySelector("#historyDrawerOpen") &&
         document.querySelector("#historyRail") &&
-        document.body.classList.contains("whistx-auth-locked")
+        document.documentElement.dataset.whistxReady === "true"
       )`,
     );
     if (ready) return;
@@ -168,7 +168,7 @@ async function waitForApp(client) {
       readyState: document.readyState,
       scripts: [...document.scripts].map((script) => script.src || "inline"),
       resources: performance.getEntriesByType("resource").map((entry) => entry.name),
-      authInitialized: document.body.classList.contains("whistx-auth-locked")
+      appReady: document.documentElement.dataset.whistxReady
     })`,
   );
   const exceptions = client.events
@@ -247,6 +247,203 @@ async function verifyHistoryDrawerAtWidth(client, width) {
   assert.equal(state.railOpen, false, `${width}px: close button should close the drawer`);
 }
 
+const recordingMocks = String.raw`
+  (() => {
+    window.__recordingTest = { mediaRequests: 0, startMessages: 0, stopMessages: 0 };
+
+    const jsonResponse = (payload) => Promise.resolve(new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    }));
+    window.fetch = (input) => {
+      const url = String(input);
+      if (url.includes("/api/health")) {
+        return jsonResponse({
+          asrReady: true,
+          model: "browser-test",
+          wsPath: "/ws/transcribe",
+          diarizationEnabled: false,
+          proofreadModel: ""
+        });
+      }
+      if (url.includes("/api/auth/me")) {
+        return jsonResponse({
+          authenticated: false,
+          guestTranscriptionAllowed: true,
+          bootstrapAdminRequired: false,
+          selfSignupEnabled: false
+        });
+      }
+      if (url.includes("/api/glossary/shared")) {
+        return jsonResponse({ text: "" });
+      }
+      return jsonResponse({});
+    };
+
+    const audioTrack = {
+      id: "audio-track",
+      kind: "audio",
+      stop() {},
+      addEventListener() {},
+      getSettings() { return {}; }
+    };
+    const stream = {
+      getTracks() { return [audioTrack]; },
+      getAudioTracks() { return [audioTrack]; },
+      getVideoTracks() { return []; }
+    };
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        async getUserMedia() {
+          window.__recordingTest.mediaRequests += 1;
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          return stream;
+        }
+      }
+    });
+
+    class AudioNodeMock {
+      connect() {}
+      disconnect() {}
+    }
+    class GainNodeMock extends AudioNodeMock {
+      constructor() {
+        super();
+        this.gain = {
+          cancelScheduledValues() {},
+          setTargetAtTime() {}
+        };
+      }
+    }
+    class AnalyserMock extends AudioNodeMock {
+      constructor() {
+        super();
+        this.fftSize = 2048;
+        this.smoothingTimeConstant = 0;
+      }
+      getFloatTimeDomainData(buffer) {
+        buffer.fill(0);
+      }
+    }
+    class AudioContextMock {
+      constructor() {
+        this.state = "running";
+        this.currentTime = 0;
+      }
+      async resume() {}
+      async close() {}
+      createMediaStreamDestination() { return { stream }; }
+      createMediaStreamSource() { return new AudioNodeMock(); }
+      createGain() { return new GainNodeMock(); }
+      createAnalyser() { return new AnalyserMock(); }
+    }
+    window.AudioContext = AudioContextMock;
+    window.webkitAudioContext = AudioContextMock;
+
+    class MediaRecorderMock extends EventTarget {
+      constructor() {
+        super();
+        this.state = "inactive";
+      }
+      start() {
+        this.state = "recording";
+      }
+      stop() {
+        if (this.state === "inactive") return;
+        this.state = "inactive";
+        queueMicrotask(() => this.dispatchEvent(new Event("stop")));
+      }
+    }
+    MediaRecorderMock.isTypeSupported = () => true;
+    window.MediaRecorder = MediaRecorderMock;
+
+    class WebSocketMock extends EventTarget {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+      constructor() {
+        super();
+        this.readyState = WebSocketMock.CONNECTING;
+        queueMicrotask(() => {
+          this.readyState = WebSocketMock.OPEN;
+          this.dispatchEvent(new Event("open"));
+        });
+      }
+      send(raw) {
+        const message = JSON.parse(raw);
+        if (message.type === "start") {
+          window.__recordingTest.startMessages += 1;
+          setTimeout(() => {
+            const event = new Event("message");
+            event.data = JSON.stringify({ type: "info", message: "ready", sessionId: "browser-test" });
+            this.dispatchEvent(event);
+          }, 60);
+        } else if (message.type === "stop") {
+          window.__recordingTest.stopMessages += 1;
+        }
+      }
+      close() {
+        this.readyState = WebSocketMock.CLOSED;
+        this.dispatchEvent(new Event("close"));
+      }
+    }
+    window.WebSocket = WebSocketMock;
+  })();
+`;
+
+async function verifyRecordingStartIsSingleFlight(client) {
+  await client.send("Page.addScriptToEvaluateOnNewDocument", { source: recordingMocks });
+  await client.send("Page.reload", { ignoreCache: true });
+  await waitForApp(client);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const unlocked = await evaluate(client, `!document.body.classList.contains("whistx-auth-locked")`);
+    if (unlocked) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  await evaluate(
+    client,
+    `(() => {
+      const button = document.querySelector("#startBtn");
+      button.click();
+      button.click();
+    })()`,
+  );
+
+  const starting = await evaluate(
+    client,
+    `({
+      disabled: document.querySelector("#startBtn").disabled,
+      busy: document.querySelector("#startBtn").getAttribute("aria-busy"),
+      label: document.querySelector("#startBtn .record-label").textContent
+    })`,
+  );
+  assert.deepEqual(
+    starting,
+    { disabled: true, busy: "true", label: "準備中..." },
+    "record button should expose and lock the starting state",
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const result = await evaluate(
+    client,
+    `({
+      ...window.__recordingTest,
+      disabled: document.querySelector("#startBtn").disabled,
+      busy: document.querySelector("#startBtn").getAttribute("aria-busy"),
+      pressed: document.querySelector("#startBtn").getAttribute("aria-pressed")
+    })`,
+  );
+  assert.equal(result.mediaRequests, 1, "double click should request one input stream");
+  assert.equal(result.startMessages, 1, "double click should send one WebSocket start message");
+  assert.equal(result.disabled, false, "record button should be enabled after startup");
+  assert.equal(result.busy, "false", "record button should clear aria-busy after startup");
+  assert.equal(result.pressed, "true", "record button should enter recording state");
+  await evaluate(client, `document.querySelector("#startBtn").click()`);
+}
+
 const chrome = await findChrome();
 const profileDir = await mkdtemp(path.join(os.tmpdir(), "whistx-chrome-"));
 const { server, url } = await startStaticServer();
@@ -280,7 +477,8 @@ try {
   for (const width of [390, 640, 1100]) {
     await verifyHistoryDrawerAtWidth(client, width);
   }
-  process.stdout.write("Browser UI checks passed at 390px, 640px, and 1100px.\n");
+  await verifyRecordingStartIsSingleFlight(client);
+  process.stdout.write("Browser UI and recording single-flight checks passed.\n");
 } finally {
   client?.close();
   if (chromeProcess.exitCode === null) {

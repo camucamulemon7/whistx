@@ -37,6 +37,16 @@ test("WebSocket lifecycle helpers resolve on protocol readiness", async () => {
   assert.equal((await ready).sessionId, "session-1");
 });
 
+test("session readiness rejects every server error including duplicate starts", async () => {
+  const ws = new EventTarget();
+  const ready = waitForSessionReady(ws);
+  const event = new Event("message");
+  event.data = JSON.stringify({ type: "error", message: "already_started" });
+  ws.dispatchEvent(event);
+
+  await assert.rejects(ready, /already_started/);
+});
+
 test("SSE JSON parser handles events split across chunks", async () => {
   const encoder = new TextEncoder();
   const chunks = [encoder.encode('data: {"text":"hel'), encoder.encode('lo"}\n\ndata: {"done":true}\n\n')];
