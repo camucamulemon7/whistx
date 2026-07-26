@@ -364,6 +364,7 @@ const recordingMocks = String.raw`
     window.__recordingTest = {
       mediaRequests: 0,
       startMessages: 0,
+      startPayloads: [],
       stopMessages: 0,
       trackStops: 0,
       contextCloses: 0,
@@ -534,6 +535,7 @@ const recordingMocks = String.raw`
         const message = JSON.parse(raw);
         if (message.type === "start") {
           window.__recordingTest.startMessages += 1;
+          window.__recordingTest.startPayloads.push(message);
           this.sessionId = "browser-test-" + window.__recordingTest.startMessages;
           setTimeout(() => {
             const event = new Event("message");
@@ -1125,6 +1127,52 @@ async function verifyFailedStartPreservesTranscript(client) {
   );
 }
 
+async function verifyEffectiveAudioSourceFallback(client) {
+  await client.send("Page.reload", { ignoreCache: true });
+  await waitForApp(client);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const unlocked = await evaluate(client, `!document.body.classList.contains("whistx-auth-locked")`);
+    if (unlocked) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  await evaluate(
+    client,
+    `(() => {
+      const displayWithoutAudio = {
+        getTracks() { return []; },
+        getAudioTracks() { return []; },
+        getVideoTracks() { return []; }
+      };
+      navigator.mediaDevices.getDisplayMedia = async () => displayWithoutAudio;
+      const source = document.querySelector("#audioSource");
+      source.value = "both";
+      source.dispatchEvent(new Event("change", { bubbles: true }));
+      document.querySelector("#startBtn").click();
+    })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 220));
+  const result = await evaluate(
+    client,
+    `({
+      payload: window.__recordingTest.startPayloads[0],
+      pressed: document.querySelector("#startBtn").getAttribute("aria-pressed"),
+      telemetry: document.querySelector("#recordTelemetry").textContent
+    })`,
+  );
+  assert.equal(result.pressed, "true", "fallback recording should still start");
+  assert.equal(result.payload.audioSource, "mic", "server payload should use the effective microphone source");
+  assert.equal(result.payload.requestedAudioSource, "both", "payload should preserve the requested mixed source");
+  assert.equal(
+    result.payload.audioSourceFallbackReason,
+    "display_audio_not_found",
+    "payload should expose why the effective source changed",
+  );
+  assert.match(result.telemetry, /両方 → マイク/, "UI telemetry should distinguish requested and effective sources");
+
+  await evaluate(client, `document.querySelector("#startBtn").click()`);
+  await new Promise((resolve) => setTimeout(resolve, 140));
+}
+
 const chrome = await findChrome();
 const profileDir = await mkdtemp(path.join(os.tmpdir(), "whistx-chrome-"));
 const { server, url } = await startStaticServer();
@@ -1167,6 +1215,7 @@ try {
   await startSecondRecordingAndRejectStaleMessages(client);
   await verifySocketLossStopsRecording(client);
   await verifyFailedStartPreservesTranscript(client);
+  await verifyEffectiveAudioSourceFallback(client);
   process.stdout.write("Browser UI and recording lifecycle checks passed.\n");
 } finally {
   client?.close();

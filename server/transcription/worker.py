@@ -49,6 +49,8 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
                 "sessionId": session.session_id,
                 "language": session.language or "",
                 "audioSource": session.audio_source,
+                "requestedAudioSource": session.requested_audio_source,
+                "audioSourceFallbackReason": session.audio_source_fallback_reason,
                 "model": deps.settings.asr_model,
                 "diarizationEnabled": session.collect_audio_for_diarization,
             },

@@ -3813,13 +3813,16 @@ async function startRecording() {
     state.recorderMimeType = mimeType || "audio/webm";
     state.recorderOptions = mimeType ? { mimeType } : {};
     const diarizationOptions = resolveDiarizationStartOptions();
+    const effectiveAudioSource = normalizeAudioSource(state.recordingAudioSource || selectedAudioSource);
 
     const readyPromise = waitForSessionReady(ws);
     const startPayload = {
       type: "start",
       sessionId: generateSessionSeed(),
       language: selectedLanguage(),
-      audioSource: selectedAudioSource,
+      audioSource: effectiveAudioSource,
+      requestedAudioSource: selectedAudioSource,
+      audioSourceFallbackReason: state.recordingFallbackReason || "",
       prompt: promptEl.value.trim(),
       sharedVocabulary: String(sharedVocabularyEl?.value || state.sharedVocabulary || "").trim(),
       diarizationEnabled: !!(state.diarizationAvailable && state.diarizationEnabled),
@@ -3833,12 +3836,13 @@ async function startRecording() {
       sessionId: startPayload.sessionId,
       language: startPayload.language || "auto",
       audioSource: startPayload.audioSource,
+      requestedAudioSource: startPayload.requestedAudioSource,
+      audioSourceFallbackReason: startPayload.audioSourceFallbackReason,
     });
     await readyPromise;
 
     state.recordingStartedAt = performance.now();
     setUiRecording(true);
-    const effectiveAudioSource = normalizeAudioSource(state.recordingAudioSource || selectedAudioSource);
     updateRecordingTelemetry();
     if (effectiveAudioSource === "display") {
       setStatus("recording_display_audio");

@@ -24,6 +24,8 @@ def create_live_session(
 
     language = normalize_asr_language(as_str(payload.get("language")))
     audio_source = normalize_audio_source(as_str(payload.get("audioSource")))
+    requested_audio_source = normalize_audio_source(as_str(payload.get("requestedAudioSource")) or audio_source)
+    audio_source_fallback_reason = as_str(payload.get("audioSourceFallbackReason"))
     prompt = as_str(payload.get("prompt")) or settings.default_prompt
     shared_vocabulary = as_str(payload.get("sharedVocabulary"))
     temperature = as_float(payload.get("temperature"), settings.default_temperature)
@@ -63,6 +65,8 @@ def create_live_session(
         asr_output_tokens=0,
         asr_total_tokens=0,
         asr_estimated_tokens=0,
+        requested_audio_source=requested_audio_source,
+        audio_source_fallback_reason=audio_source_fallback_reason,
     )
     session.store.write_metadata(
         {
@@ -70,6 +74,8 @@ def create_live_session(
             "accessToken": access_token,
             "language": language,
             "audioSource": audio_source,
+            "requestedAudioSource": requested_audio_source,
+            "audioSourceFallbackReason": audio_source_fallback_reason,
             "diarizationEnabled": session.collect_audio_for_diarization,
             "diarizationNumSpeakers": speaker_counts[0],
             "diarizationMinSpeakers": speaker_counts[1],
