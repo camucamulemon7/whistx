@@ -21,6 +21,12 @@ test("UI formatters produce stable Japanese labels", () => {
   assert.equal(formatTimestamp(125000), "02:05");
 });
 
+test("recording connection states are presented in Japanese", () => {
+  assert.equal(formatStatusText("starting"), "録音準備中");
+  assert.equal(formatStatusText("connection_lost"), "接続切断・録音終了");
+  assert.equal(formatStatusText("socket_error"), "接続エラー・録音終了");
+});
+
 test("UI values are escaped and normalized", () => {
   assert.equal(escapeHtml(`<a title="'">&`), "&lt;a title=&quot;&#39;&quot;&gt;&amp;");
   assert.equal(normalizeBannerType("ERROR"), "error");

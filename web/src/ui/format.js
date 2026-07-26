@@ -2,8 +2,12 @@ export function formatStatusText(text) {
   const raw = String(text || "").trim();
   const normalized = raw.toLowerCase();
   if (!raw || normalized === "idle") return "待機中";
+  if (normalized === "starting") return "録音準備中";
   if (normalized.startsWith("recording")) return "録音中";
   if (normalized === "stopping") return "停止処理中";
+  if (normalized === "connection_lost") return "接続切断・録音終了";
+  if (normalized === "disconnected") return "未接続";
+  if (normalized === "socket_error") return "接続エラー・録音終了";
   if (normalized.startsWith("start_failed")) return "開始失敗";
   if (normalized.includes("proofread")) return normalized.includes("error") ? "校正失敗" : "校正処理";
   if (normalized.includes("summary")) return normalized.includes("error") ? "要約失敗" : "要約処理";

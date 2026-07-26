@@ -249,7 +249,14 @@ async function verifyHistoryDrawerAtWidth(client, width) {
 
 const recordingMocks = String.raw`
   (() => {
-    window.__recordingTest = { mediaRequests: 0, startMessages: 0, stopMessages: 0 };
+    window.__recordingTest = {
+      mediaRequests: 0,
+      startMessages: 0,
+      stopMessages: 0,
+      trackStops: 0,
+      contextCloses: 0,
+      socket: null
+    };
 
     const jsonResponse = (payload) => Promise.resolve(new Response(JSON.stringify(payload), {
       status: 200,
@@ -283,7 +290,7 @@ const recordingMocks = String.raw`
     const audioTrack = {
       id: "audio-track",
       kind: "audio",
-      stop() {},
+      stop() { window.__recordingTest.trackStops += 1; },
       addEventListener() {},
       getSettings() { return {}; }
     };
@@ -332,7 +339,7 @@ const recordingMocks = String.raw`
         this.currentTime = 0;
       }
       async resume() {}
-      async close() {}
+      async close() { window.__recordingTest.contextCloses += 1; }
       createMediaStreamDestination() { return { stream }; }
       createMediaStreamSource() { return new AudioNodeMock(); }
       createGain() { return new GainNodeMock(); }
@@ -366,6 +373,7 @@ const recordingMocks = String.raw`
       constructor() {
         super();
         this.readyState = WebSocketMock.CONNECTING;
+        window.__recordingTest.socket = this;
         queueMicrotask(() => {
           this.readyState = WebSocketMock.OPEN;
           this.dispatchEvent(new Event("open"));
@@ -441,7 +449,26 @@ async function verifyRecordingStartIsSingleFlight(client) {
   assert.equal(result.disabled, false, "record button should be enabled after startup");
   assert.equal(result.busy, "false", "record button should clear aria-busy after startup");
   assert.equal(result.pressed, "true", "record button should enter recording state");
-  await evaluate(client, `document.querySelector("#startBtn").click()`);
+}
+
+async function verifySocketLossStopsRecording(client) {
+  await evaluate(client, `window.__recordingTest.socket.close()`);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const result = await evaluate(
+    client,
+    `({
+      trackStops: window.__recordingTest.trackStops,
+      contextCloses: window.__recordingTest.contextCloses,
+      pressed: document.querySelector("#startBtn").getAttribute("aria-pressed"),
+      label: document.querySelector("#startBtn .record-label").textContent,
+      status: document.querySelector("#statusText").textContent
+    })`,
+  );
+  assert.ok(result.trackStops >= 1, "socket loss should stop captured media tracks");
+  assert.ok(result.contextCloses >= 2, "socket loss should close capture and VAD audio contexts");
+  assert.equal(result.pressed, "false", "socket loss should leave recording UI");
+  assert.equal(result.label, "録音開始", "socket loss should restore the start action");
+  assert.equal(result.status, "接続切断・録音終了", "socket loss should explain why recording stopped");
 }
 
 const chrome = await findChrome();
@@ -478,7 +505,8 @@ try {
     await verifyHistoryDrawerAtWidth(client, width);
   }
   await verifyRecordingStartIsSingleFlight(client);
-  process.stdout.write("Browser UI and recording single-flight checks passed.\n");
+  await verifySocketLossStopsRecording(client);
+  process.stdout.write("Browser UI, recording single-flight, and socket-loss checks passed.\n");
 } finally {
   client?.close();
   if (chromeProcess.exitCode === null) {

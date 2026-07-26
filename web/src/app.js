@@ -3085,16 +3085,13 @@ async function ensureSocket() {
   });
 
   ws.addEventListener("close", () => {
-    state.ws = null;
     logWsEvent("close");
-    if (!state.recording) {
-      setStatus("disconnected");
-    }
+    abortRecordingAfterSocketLoss(ws, "connection_lost");
   });
 
   ws.addEventListener("error", () => {
     logWsEvent("error");
-    setStatus("socket_error");
+    abortRecordingAfterSocketLoss(ws, "socket_error");
   });
 
   await waitForOpen(ws);
@@ -3661,6 +3658,52 @@ function stopRecording() {
   } catch {
     finalizeStop();
   }
+}
+
+function abortRecordingAfterSocketLoss(ws, reason) {
+  if (ws.__whistxConnectionLossHandled) return;
+  ws.__whistxConnectionLossHandled = true;
+  if (state.ws === ws) {
+    state.ws = null;
+  }
+
+  const wasActive =
+    state.recordingPhase === "starting" ||
+    state.recordingPhase === "recording" ||
+    state.finalizingStop;
+  if (!wasActive) {
+    setStatus(reason === "socket_error" ? "socket_error" : "disconnected");
+    return;
+  }
+
+  state.recording = false;
+  state.recordingPhase = "stopping";
+  clearChunkTimer();
+  const recorder = state.recorder;
+  if (recorder?.state === "recording") {
+    try {
+      recorder.stop();
+    } catch {
+      // Continue with media cleanup even when recorder shutdown fails.
+    }
+  }
+  cleanupMedia();
+  state.pendingSendChain = Promise.resolve();
+  state.pendingOutboundChunks = 0;
+  state.finalizingStop = false;
+  state.segmentStartedAt = 0;
+  state.recordingStartedAt = 0;
+  state.recordedChunkCount = 0;
+  setUiRecording(false);
+  updateRecordingTelemetry();
+  setStatus(reason);
+  showToast(
+    reason === "socket_error"
+      ? "サーバー接続エラーのため録音を終了しました。未送信の音声は保存されません"
+      : "サーバーとの接続が切れたため録音を終了しました。未送信の音声は保存されません",
+    "error",
+    7000
+  );
 }
 
 function cleanupMedia() {
