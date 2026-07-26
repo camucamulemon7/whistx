@@ -269,6 +269,8 @@ const state = {
   savedHistoryId: null,
   viewingHistoryId: null,
   historyDetailRequestVersion: 0,
+  historyListController: null,
+  historyDetailController: null,
   saveInFlight: false,
   seq: 0,
   offsetMs: 0,
@@ -281,6 +283,9 @@ const state = {
   asrAvailable: true,
   proofreadAvailable: true,
   proofreadInFlight: false,
+  proofreadController: null,
+  summaryInFlight: false,
+  summaryController: null,
   proofreadMode: "proofread",
   activeAiPanel: "proofread",
   advancedSettingsOpen: false,
@@ -442,11 +447,12 @@ function applyBranding(title, tagline) {
 
 function setProofreadButtonBusy(busy) {
   if (!proofreadBtn) return;
-  proofreadBtn.disabled = busy;
+  proofreadBtn.disabled = false;
   if (proofreadBtnLabelEl) {
-    proofreadBtnLabelEl.textContent = busy ? "生成中..." : "生成";
+    proofreadBtnLabelEl.textContent = busy ? "キャンセル" : "生成";
   }
   proofreadBtn.setAttribute("aria-busy", busy ? "true" : "false");
+  proofreadBtn.setAttribute("aria-label", busy ? `${proofreadActionLabel()}をキャンセル` : `${proofreadActionLabel()}を開始`);
 }
 
 function proofreadActionLabel() {
@@ -2753,6 +2759,9 @@ function resetRuntimeSessionState() {
 }
 
 function commitNewRecordingWorkspace() {
+  state.historyDetailController?.abort("workspace_changed");
+  state.historyDetailController = null;
+  state.historyDetailRequestVersion += 1;
   state.history.selectedId = null;
   state.savedHistoryId = null;
   state.viewingHistoryId = null;
@@ -4076,6 +4085,7 @@ async function copyProofread() {
 
 async function proofreadAll() {
   if (state.proofreadInFlight) {
+    state.proofreadController?.abort("user_cancelled");
     return;
   }
   if (!canUseWorkspace()) {
@@ -4106,7 +4116,12 @@ async function proofreadAll() {
   setStatus("proofreading");
   showToast(`${proofreadActionLabel()}中...`, "default", 5000);
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 300000);
+  state.proofreadController = controller;
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort("request_timeout");
+  }, 300000);
   const proofreadStartedAt = performance.now();
 
   try {
@@ -4213,18 +4228,40 @@ async function proofreadAll() {
       loginEmailEl?.focus();
       return;
     }
-    const message = err?.name === "AbortError" ? "request_timeout" : err?.message || "unknown_error";
-    showToast(`${proofreadActionLabel()}に失敗: ${message}`, "error");
-    setProofread(`${proofreadActionLabel()}に失敗しました。\n${message}`, "エラー");
-    setStatus(`proofread_failed: ${message}`);
+    const message = err?.name === "AbortError"
+      ? timedOut
+        ? "request_timeout"
+        : "request_cancelled"
+      : err?.message || "unknown_error";
+    if (message === "request_cancelled") {
+      showToast(`${proofreadActionLabel()}をキャンセルしました`, "default");
+      proofreadMetaEl.textContent = "キャンセル";
+      setStatus("proofread_cancelled");
+    } else {
+      showToast(
+        message === "request_timeout"
+          ? `${proofreadActionLabel()}がタイムアウトしました`
+          : `${proofreadActionLabel()}に失敗: ${message}`,
+        "error"
+      );
+      setProofread(`${proofreadActionLabel()}に失敗しました。\n${message}`, "エラー");
+      setStatus(`proofread_failed: ${message}`);
+    }
   } finally {
     clearTimeout(timeoutId);
+    if (state.proofreadController === controller) {
+      state.proofreadController = null;
+    }
     state.proofreadInFlight = false;
     setProofreadButtonBusy(false);
   }
 }
 
 async function summarizeAll() {
+  if (state.summaryInFlight) {
+    state.summaryController?.abort("user_cancelled");
+    return;
+  }
   if (!canUseWorkspace()) {
     showToast("ログインが必要です", "error");
     setAppLocked(true);
@@ -4238,9 +4275,14 @@ async function summarizeAll() {
     return;
   }
 
-  summaryBtn.disabled = true;
+  const controller = new AbortController();
+  state.summaryController = controller;
+  state.summaryInFlight = true;
+  summaryBtn.disabled = false;
+  summaryBtn.setAttribute("aria-busy", "true");
+  summaryBtn.setAttribute("aria-label", "要約生成をキャンセル");
   if (summaryBtnLabelEl) {
-    summaryBtnLabelEl.textContent = "生成中...";
+    summaryBtnLabelEl.textContent = "キャンセル";
   }
   setStatus("summarizing");
   showToast("要約を生成中...", "default", 5000);
@@ -4254,6 +4296,8 @@ async function summarizeAll() {
         language: selectedLanguage(),
         prompt: String(summaryPromptEl?.value || "").trim(),
       }),
+      signal: controller.signal,
+      timeoutMs: 120000,
     });
     const summaryText = String(payload.summary || "").trim();
     if (!summaryText) {
@@ -4281,10 +4325,32 @@ async function summarizeAll() {
       loginEmailEl?.focus();
       return;
     }
-    showToast(`要約に失敗: ${err.message}`, "error");
-    setStatus(`summary_failed: ${err.message}`);
+    const message = err?.code === "timeout"
+      ? "request_timeout"
+      : err?.code === "aborted"
+        ? "request_cancelled"
+        : err?.code === "offline"
+          ? "offline"
+          : err?.message || "unknown_error";
+    showToast(
+      message === "request_cancelled"
+        ? "要約をキャンセルしました"
+        : message === "request_timeout"
+          ? "要約がタイムアウトしました"
+          : message === "offline"
+            ? "オフラインのため要約できません"
+            : `要約に失敗: ${message}`,
+      message === "request_cancelled" ? "default" : "error"
+    );
+    setStatus(message === "request_cancelled" ? "summary_cancelled" : `summary_failed: ${message}`);
   } finally {
+    if (state.summaryController === controller) {
+      state.summaryController = null;
+    }
+    state.summaryInFlight = false;
     summaryBtn.disabled = false;
+    summaryBtn.setAttribute("aria-busy", "false");
+    summaryBtn.setAttribute("aria-label", "要約を開始");
     if (summaryBtnLabelEl) {
       summaryBtnLabelEl.textContent = "生成";
     }
@@ -4318,6 +4384,8 @@ function clearView(options = {}) {
     return;
   }
   state.historyDetailRequestVersion += 1;
+  state.historyDetailController?.abort("workspace_cleared");
+  state.historyDetailController = null;
   state.log = [];
   state.segments = [];
   state.logAutoScrollEnabled = true;
@@ -4687,6 +4755,13 @@ window.addEventListener("resize", () => {
   }
   applyHistoryCollapsed(state.historyCollapsed, { persist: false });
   applyActiveAiPanel(state.activeAiPanel);
+});
+
+window.addEventListener("pagehide", () => {
+  state.summaryController?.abort("page_hidden");
+  state.proofreadController?.abort("page_hidden");
+  state.historyListController?.abort("page_hidden");
+  state.historyDetailController?.abort("page_hidden");
 });
 
 setupWorkspaceResizers();
@@ -5368,18 +5443,27 @@ async function loadHistoryList() {
   }
 
   logClientEvent("history.load.start", { query: state.history.query, offset: state.history.offset, limit: state.history.limit });
+  state.historyListController?.abort("history_request_replaced");
+  const controller = new AbortController();
+  state.historyListController = controller;
   try {
     const payload = await fetchHistoryListRequest({
       limit: state.history.limit,
       offset: state.history.offset,
       query: state.history.query,
+      signal: controller.signal,
     });
     applyHistoryListPayload(state, payload);
     renderHistoryList();
     logClientEvent("history.load.success", { total: state.history.total, items: state.history.items.length });
-  } catch {
+  } catch (error) {
+    if (error?.code === "aborted") return;
     updateHistoryEmptyState("履歴の取得に失敗しました");
     logClientEvent("history.load.failed");
+  } finally {
+    if (state.historyListController === controller) {
+      state.historyListController = null;
+    }
   }
 }
 
@@ -5427,8 +5511,11 @@ async function openHistoryDetail(historyId) {
   const requestVersion = state.historyDetailRequestVersion + 1;
   state.historyDetailRequestVersion = requestVersion;
   const runtimeSessionIdAtRequest = state.runtimeSessionId;
+  state.historyDetailController?.abort("history_request_replaced");
+  const controller = new AbortController();
+  state.historyDetailController = controller;
   try {
-    const payload = await fetchHistoryDetail(historyId);
+    const payload = await fetchHistoryDetail(historyId, { signal: controller.signal });
     if (
       requestVersion !== state.historyDetailRequestVersion ||
       isRecordingInteractionLocked() ||
@@ -5440,8 +5527,13 @@ async function openHistoryDetail(historyId) {
     if (window.innerWidth <= 1100) {
       applyHistoryDrawerOpen(false);
     }
-  } catch {
+  } catch (error) {
+    if (error?.code === "aborted") return;
     showToast("履歴の取得に失敗しました", "error");
+  } finally {
+    if (state.historyDetailController === controller) {
+      state.historyDetailController = null;
+    }
   }
 }
 

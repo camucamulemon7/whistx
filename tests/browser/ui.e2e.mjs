@@ -786,7 +786,10 @@ async function verifyModalKeyboardManagement(client) {
   assert.equal(state.bodyLocked, true, "open modal should lock background scrolling");
 
   await evaluate(client, `document.querySelector(".log-screenshot-link").click()`);
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await evaluate(client, `document.activeElement?.id === "screenshotModalClose"`)) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   state = await evaluate(
     client,
     `({
@@ -1056,6 +1059,104 @@ async function verifyIdleDestructiveActions(client) {
   assert.equal(result.downloadHref, "/api/history/history-1/download.txt", "selected history should expose its artifact");
 }
 
+async function verifySummaryCanBeCancelled(client) {
+  await evaluate(
+    client,
+    `(() => {
+      const originalFetch = window.fetch;
+      window.__restoreSummaryFetch = () => {
+        window.fetch = originalFetch;
+      };
+      window.fetch = (input, options = {}) => {
+        if (!String(input).includes("/api/summarize")) {
+          return originalFetch(input, options);
+        }
+        return new Promise((_resolve, reject) => {
+          options.signal?.addEventListener("abort", () => {
+            reject(new DOMException("aborted", "AbortError"));
+          }, { once: true });
+        });
+      };
+      document.querySelector("#summaryBtn").click();
+    })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  let result = await evaluate(
+    client,
+    `({
+      label: document.querySelector("#summaryBtnLabel").textContent,
+      busy: document.querySelector("#summaryBtn").getAttribute("aria-busy"),
+      disabled: document.querySelector("#summaryBtn").disabled
+    })`,
+  );
+  assert.deepEqual(
+    result,
+    { label: "キャンセル", busy: "true", disabled: false },
+    "hung summary should expose a usable cancel action",
+  );
+
+  await evaluate(client, `document.querySelector("#summaryBtn").click()`);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  result = await evaluate(
+    client,
+    `({
+      label: document.querySelector("#summaryBtnLabel").textContent,
+      busy: document.querySelector("#summaryBtn").getAttribute("aria-busy"),
+      disabled: document.querySelector("#summaryBtn").disabled,
+      status: document.querySelector("#statusText").textContent,
+      toast: document.querySelector("#toastContainer .toast:last-child")?.textContent || ""
+    })`,
+  );
+  await evaluate(client, `window.__restoreSummaryFetch()`);
+  assert.equal(result.label, "生成", "cancelled summary should restore its action label");
+  assert.equal(result.busy, "false", "cancelled summary should clear busy state");
+  assert.equal(result.disabled, false, "cancelled summary should remain usable");
+  assert.equal(result.status, "要約キャンセル", "cancelled summary should leave processing state");
+  assert.match(result.toast, /要約をキャンセルしました/, "cancellation should be explained to the user");
+
+  await evaluate(
+    client,
+    `(() => {
+      const originalFetch = window.fetch;
+      const originalSetTimeout = window.setTimeout;
+      window.__restoreSummaryTimeoutTest = () => {
+        window.fetch = originalFetch;
+        window.setTimeout = originalSetTimeout;
+      };
+      window.setTimeout = (callback, delay, ...args) =>
+        originalSetTimeout(callback, delay === 120000 ? 10 : delay, ...args);
+      window.fetch = (input, options = {}) => {
+        if (!String(input).includes("/api/summarize")) {
+          return originalFetch(input, options);
+        }
+        return new Promise((_resolve, reject) => {
+          options.signal?.addEventListener("abort", () => {
+            reject(new DOMException("aborted", "AbortError"));
+          }, { once: true });
+        });
+      };
+      document.querySelector("#summaryBtn").click();
+    })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  result = await evaluate(
+    client,
+    `({
+      label: document.querySelector("#summaryBtnLabel").textContent,
+      busy: document.querySelector("#summaryBtn").getAttribute("aria-busy"),
+      disabled: document.querySelector("#summaryBtn").disabled,
+      status: document.querySelector("#statusText").textContent,
+      toast: document.querySelector("#toastContainer .toast:last-child")?.textContent || ""
+    })`,
+  );
+  await evaluate(client, `window.__restoreSummaryTimeoutTest()`);
+  assert.equal(result.label, "生成", "timed-out summary should restore its action label");
+  assert.equal(result.busy, "false", "timed-out summary should clear busy state");
+  assert.equal(result.disabled, false, "timed-out summary should remain usable");
+  assert.equal(result.status, "要約失敗", "timed-out summary should leave processing state");
+  assert.match(result.toast, /要約がタイムアウトしました/, "timeout should be distinguished from cancellation");
+}
+
 async function verifyFailedStartPreservesTranscript(client) {
   await evaluate(
     client,
@@ -1272,6 +1373,7 @@ try {
   await verifyModalKeyboardManagement(client);
   await verifyGracefulStopIsSerialized(client);
   await verifyIdleDestructiveActions(client);
+  await verifySummaryCanBeCancelled(client);
   await startSecondRecordingAndRejectStaleMessages(client);
   await verifySocketLossStopsRecording(client);
   await verifyFailedStartPreservesTranscript(client);
