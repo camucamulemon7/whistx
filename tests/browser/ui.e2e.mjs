@@ -385,6 +385,7 @@ const recordingMocks = String.raw`
       contextCloses: 0,
       historyDetailRequests: 0,
       clipboardWrites: [],
+      authRequests: [],
       socket: null,
       sockets: []
     };
@@ -401,7 +402,7 @@ const recordingMocks = String.raw`
       status: 200,
       headers: { "Content-Type": "application/json" }
     }));
-    window.fetch = (input) => {
+    window.fetch = (input, options = {}) => {
       const url = String(input);
       if (url.includes("/api/health")) {
         return jsonResponse({
@@ -413,6 +414,10 @@ const recordingMocks = String.raw`
         });
       }
       if (url.includes("/api/auth/me")) {
+        window.__recordingTest.authRequests.push({
+          cache: options.cache || "",
+          credentials: options.credentials || ""
+        });
         return jsonResponse({
           authenticated: true,
           user: {
@@ -614,6 +619,11 @@ async function verifyRecordingStartIsSingleFlight(client) {
   }
   await verifyEmptySummaryIsNotCopied(client);
   await verifyEmptyDownloadsAreDisabled(client);
+  assert.deepEqual(
+    await evaluate(client, `window.__recordingTest.authRequests[0]`),
+    { cache: "no-store", credentials: "same-origin" },
+    "browser auth bootstrap should bypass caches and send same-origin credentials",
+  );
   assert.deepEqual(
     await unloadProtectionState(client),
     { dirty: "false", prevented: false, dispatched: true },

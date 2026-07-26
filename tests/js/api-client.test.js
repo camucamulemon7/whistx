@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { fetchJson } from "../../web/src/api/client.js";
+import { fetchAuthState } from "../../web/src/auth/api.js";
 
 test("fetchJson aborts a hung request at the configured timeout", async (t) => {
   const originalFetch = globalThis.fetch;
@@ -48,4 +49,24 @@ test("fetchJson distinguishes caller cancellation from timeout", async (t) => {
     request,
     (error) => error.name === "AbortError" && error.code === "aborted" && error.message === "request_cancelled",
   );
+});
+
+test("auth state requests bypass browser caches and include same-origin credentials", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  let request;
+  globalThis.fetch = async (url, options) => {
+    request = { url, options };
+    return new Response(JSON.stringify({ authenticated: false }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  await fetchAuthState();
+  assert.equal(request.url, "/api/auth/me");
+  assert.equal(request.options.cache, "no-store");
+  assert.equal(request.options.credentials, "same-origin");
 });

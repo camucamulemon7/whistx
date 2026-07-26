@@ -1,7 +1,10 @@
 import { fetchJson } from "../api/client.js";
 
 export function fetchAuthState() {
-  return fetchJson("/api/auth/me");
+  return fetchJson("/api/auth/me", {
+    cache: "no-store",
+    credentials: "same-origin",
+  });
 }
 
 export function loginRequest({ email, password }) {

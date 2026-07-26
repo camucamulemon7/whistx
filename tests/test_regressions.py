@@ -1026,6 +1026,9 @@ class RegressionTests(unittest.TestCase):
         with patch.object(auth_routes, 'build_auth_me_payload', return_value=payload):
             response = TestClient(app).get('/api/auth/me', cookies={'whistx_session': 'stale-session'})
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get('cache-control'), 'no-store, private')
+        self.assertEqual(response.headers.get('pragma'), 'no-cache')
+        self.assertEqual(response.headers.get('vary'), 'Cookie')
         self.assertIn('whistx_session=', response.headers.get('set-cookie', ''))
         self.assertIn('Max-Age=0', response.headers.get('set-cookie', ''))
 
