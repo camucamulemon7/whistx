@@ -393,7 +393,7 @@ const recordingMocks = String.raw`
           asrReady: true,
           model: "browser-test",
           wsPath: "/ws/transcribe",
-          diarizationEnabled: false,
+          diarizationEnabled: true,
           proofreadModel: ""
         });
       }
@@ -614,12 +614,36 @@ async function verifyRecordingStartIsSingleFlight(client) {
     `({
       disabled: document.querySelector("#startBtn").disabled,
       busy: document.querySelector("#startBtn").getAttribute("aria-busy"),
-      label: document.querySelector("#startBtn .record-label").textContent
+      label: document.querySelector("#startBtn .record-label").textContent,
+      settings: {
+        language: document.querySelector("#language").disabled,
+        audioSource: document.querySelector("#audioSource").disabled,
+        chunkSeconds: document.querySelector("#chunkSeconds").disabled,
+        prompt: document.querySelector("#prompt").disabled,
+        sharedVocabulary: document.querySelector("#sharedVocabulary").disabled,
+        chunkPreset: document.querySelector("[data-chunk-preset]").disabled,
+        promptTemplate: document.querySelector(".prompt-template-btn").disabled,
+        diarization: document.querySelector("#diarizationEnabled").disabled
+      }
     })`,
   );
   assert.deepEqual(
     starting,
-    { disabled: true, busy: "true", label: "準備中..." },
+    {
+      disabled: true,
+      busy: "true",
+      label: "準備中...",
+      settings: {
+        language: true,
+        audioSource: true,
+        chunkSeconds: true,
+        prompt: true,
+        sharedVocabulary: true,
+        chunkPreset: true,
+        promptTemplate: true,
+        diarization: true,
+      },
+    },
     "record button should expose and lock the starting state",
   );
 
@@ -632,7 +656,18 @@ async function verifyRecordingStartIsSingleFlight(client) {
       busy: document.querySelector("#startBtn").getAttribute("aria-busy"),
       pressed: document.querySelector("#startBtn").getAttribute("aria-pressed"),
       downloadHref: document.querySelector("#dlTxt").getAttribute("href"),
-      downloadDisabled: document.querySelector("#dlTxt").getAttribute("aria-disabled")
+      downloadDisabled: document.querySelector("#dlTxt").getAttribute("aria-disabled"),
+      settingsLocked: [
+        "#language",
+        "#audioSource",
+        "#chunkSeconds",
+        "#prompt",
+        "#sharedVocabulary",
+        "[data-chunk-preset]",
+        ".prompt-template-btn",
+        "#diarizationEnabled",
+        "#diarizationSpeakerMode"
+      ].every((selector) => document.querySelector(selector).disabled)
     })`,
   );
   assert.equal(result.mediaRequests, 1, "double click should request one input stream");
@@ -642,6 +677,7 @@ async function verifyRecordingStartIsSingleFlight(client) {
   assert.equal(result.pressed, "true", "record button should enter recording state");
   assert.equal(result.downloadHref, null, "recording should not expose a partial artifact URL");
   assert.equal(result.downloadDisabled, "true", "recording exports should remain disabled");
+  assert.equal(result.settingsLocked, true, "session settings should remain locked while recording");
 }
 
 async function verifyEmptyDownloadsAreDisabled(client) {
@@ -876,7 +912,18 @@ async function verifyGracefulStopIsSerialized(client) {
       historyDisabled: document.querySelector(".history-item-main").getAttribute("aria-disabled"),
       historyDetailRequests: window.__recordingTest.historyDetailRequests,
       downloadHref: document.querySelector("#dlTxt").getAttribute("href"),
-      downloadDisabled: document.querySelector("#dlTxt").getAttribute("aria-disabled")
+      downloadDisabled: document.querySelector("#dlTxt").getAttribute("aria-disabled"),
+      settingsLocked: [
+        "#language",
+        "#audioSource",
+        "#chunkSeconds",
+        "#prompt",
+        "#sharedVocabulary",
+        "[data-chunk-preset]",
+        ".prompt-template-btn",
+        "#diarizationEnabled",
+        "#diarizationSpeakerMode"
+      ].every((selector) => document.querySelector(selector).disabled)
     })`,
   );
   assert.equal(finalizing.startMessages, 1, "stop/start click sequence must not start a second session");
@@ -889,6 +936,7 @@ async function verifyGracefulStopIsSerialized(client) {
   assert.equal(finalizing.historyDetailRequests, 0, "finalization must not load another history view");
   assert.equal(finalizing.downloadHref, null, "finalization must not expose an unfinished artifact");
   assert.equal(finalizing.downloadDisabled, "true", "finalization exports should remain disabled");
+  assert.equal(finalizing.settingsLocked, true, "session settings should remain locked during finalization");
 
   await new Promise((resolve) => setTimeout(resolve, 120));
   const completed = await evaluate(
@@ -903,6 +951,17 @@ async function verifyGracefulStopIsSerialized(client) {
       historyDisabled: document.querySelector(".history-item-main").getAttribute("aria-disabled"),
       downloadHref: document.querySelector("#dlTxt").getAttribute("href"),
       downloadDisabled: document.querySelector("#dlTxt").getAttribute("aria-disabled"),
+      settingsUnlocked: [
+        "#language",
+        "#audioSource",
+        "#chunkSeconds",
+        "#prompt",
+        "#sharedVocabulary",
+        "[data-chunk-preset]",
+        ".prompt-template-btn",
+        "#diarizationEnabled",
+        "#diarizationSpeakerMode"
+      ].every((selector) => !document.querySelector(selector).disabled),
       transcript: [...document.querySelectorAll(".log-row .text")].map((node) => node.textContent)
     })`,
   );
@@ -919,6 +978,7 @@ async function verifyGracefulStopIsSerialized(client) {
     "finalized runtime session should expose its TXT artifact",
   );
   assert.equal(completed.downloadDisabled, "false", "exports should unlock after finalization");
+  assert.equal(completed.settingsUnlocked, true, "session settings should unlock after finalization");
   assert.ok(
     completed.transcript.includes("停止直前の文字起こし"),
     "final segment arriving before finalized acknowledgement should remain in the completed session",

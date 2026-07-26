@@ -1704,9 +1704,10 @@ function clampSpeakerCount(value) {
 function updateDiarizationSpeakerUi() {
   const available = !!state.diarizationAvailable;
   const enabled = !!state.diarizationEnabled;
+  const locked = isRecordingInteractionLocked();
   const mode = normalizeSpeakerMode(state.diarizationSpeakerMode);
-  const controlsEnabled = available && enabled;
-  const visible = controlsEnabled;
+  const visible = available && enabled;
+  const controlsEnabled = visible && !locked;
 
   const autoMode = mode === "auto";
   const fixedMode = mode === "fixed";
@@ -1996,6 +1997,40 @@ function updateSaveControls() {
     saved ? "保存済み" : recordingLocked ? "録音中は保存不可" : isGuest ? "ゲストでは保存不可" : authenticated ? "未保存" : "ログインが必要",
     saved
   );
+}
+
+function setSessionSettingsLocked(locked = isRecordingInteractionLocked()) {
+  const sessionInputs = [
+    languageEl,
+    audioSourceEl,
+    chunkSecondsEl,
+    promptEl,
+    sharedVocabularyEl,
+  ];
+  sessionInputs.forEach((element) => {
+    if (!element) return;
+    element.disabled = !!locked;
+    element.title = locked ? "録音中・停止処理中は変更できません" : "";
+  });
+  presetButtons.forEach((button) => {
+    button.disabled = !!locked;
+    button.title = locked ? "録音中・停止処理中は変更できません" : "";
+  });
+  promptTemplateButtonsEl?.querySelectorAll("button").forEach((button) => {
+    button.disabled = !!locked;
+    button.title = locked ? "録音中・停止処理中は変更できません" : "";
+  });
+  if (diarizationToggleEl) {
+    diarizationToggleEl.disabled = !!locked || !state.diarizationAvailable;
+    diarizationToggleEl.title = locked
+      ? "録音中・停止処理中は変更できません"
+      : state.diarizationAvailable
+        ? "話者分離を有効/無効"
+        : "サーバーで話者分離は無効";
+  }
+  document.body.classList.toggle("session-settings-locked", !!locked);
+  updateDiarizationSpeakerUi();
+  updateSharedVocabularyMeta();
 }
 
 function formatHistoryMeta(item) {
@@ -2678,6 +2713,7 @@ function setUiRecording(active) {
   startBtn.disabled = false;
   updateSaveControls();
   updateDownloadLinks();
+  setSessionSettingsLocked();
   renderHistoryList();
 }
 
@@ -2692,6 +2728,7 @@ function setUiRecordingStarting() {
   setStatus("starting");
   updateSaveControls();
   updateDownloadLinks();
+  setSessionSettingsLocked(true);
   renderHistoryList();
 }
 
@@ -2705,6 +2742,7 @@ function setUiRecordingStopping(finalizing = false) {
   setStatus(finalizing ? "finalizing" : "stopping");
   updateSaveControls();
   updateDownloadLinks();
+  setSessionSettingsLocked(true);
   renderHistoryList();
 }
 
@@ -3736,6 +3774,7 @@ async function finalizeStop() {
     state.finalizingStop = false;
     updateSaveControls();
     updateDownloadLinks();
+    setSessionSettingsLocked(false);
     renderHistoryList();
     if (completed) {
       setStatus("completed");
@@ -4733,7 +4772,13 @@ function renderPromptTemplateButtons(rawTemplates) {
     button.type = "button";
     button.className = "prompt-template-btn";
     button.textContent = label;
+    button.disabled = isRecordingInteractionLocked();
+    button.title = button.disabled ? "録音中・停止処理中は変更できません" : "";
     button.addEventListener("click", () => {
+      if (isRecordingInteractionLocked()) {
+        showRecordingInteractionBlocked("プロンプトを変更することが");
+        return;
+      }
       promptEl.value = content;
       promptEl.dispatchEvent(new Event("input", { bubbles: true }));
       promptEl.focus();
@@ -4758,10 +4803,17 @@ function applySharedVocabulary(payload, options = {}) {
 function updateSharedVocabularyMeta() {
   const authenticated = !!state.auth.authenticated;
   const isGuest = !!state.auth.isGuest;
+  const recordingLocked = isRecordingInteractionLocked();
   if (sharedVocabularySaveBtn) {
-    sharedVocabularySaveBtn.disabled = !authenticated || isGuest || state.sharedVocabularySaving;
+    sharedVocabularySaveBtn.disabled = !authenticated || isGuest || recordingLocked || state.sharedVocabularySaving;
     sharedVocabularySaveBtn.textContent = state.sharedVocabularySaving ? "保存中..." : "全体に保存";
-    sharedVocabularySaveBtn.title = isGuest ? "ゲストでは全体用語辞典を更新できません" : authenticated ? "" : "ログインが必要です";
+    sharedVocabularySaveBtn.title = recordingLocked
+      ? "録音中・停止処理中は変更できません"
+      : isGuest
+        ? "ゲストでは全体用語辞典を更新できません"
+        : authenticated
+          ? ""
+          : "ログインが必要です";
   }
   if (!sharedVocabularyMetaEl) return;
   if (!state.sharedVocabulary) {
@@ -4791,6 +4843,10 @@ async function loadSharedGlossary() {
 }
 
 async function saveSharedGlossary() {
+  if (isRecordingInteractionLocked()) {
+    showRecordingInteractionBlocked("全体用語辞典を変更することが");
+    return;
+  }
   if (state.auth.isGuest) {
     showToast("ゲストでは全体用語辞典を更新できません", "error");
     return;
@@ -4956,10 +5012,13 @@ async function loadCapabilities() {
     }
 
     if (diarizationToggleEl) {
-      diarizationToggleEl.disabled = !state.diarizationAvailable;
-      diarizationToggleEl.title = state.diarizationAvailable
-        ? "話者分離を有効/無効"
-        : "サーバーで話者分離は無効";
+      const recordingLocked = isRecordingInteractionLocked();
+      diarizationToggleEl.disabled = recordingLocked || !state.diarizationAvailable;
+      diarizationToggleEl.title = recordingLocked
+        ? "録音中・停止処理中は変更できません"
+        : state.diarizationAvailable
+          ? "話者分離を有効/無効"
+          : "サーバーで話者分離は無効";
     }
     state.diarizationSpeakerCap = Math.max(
       DIARIZATION_SPEAKER_MIN,
