@@ -1968,9 +1968,13 @@ body.is-resizing-panels {
 
 /* Log Container */
 .log-container {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   min-height: 280px;
-  overflow: visible;
+  max-height: min(62vh, 720px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: var(--space-4);
   display: flex;
   flex-direction: column;

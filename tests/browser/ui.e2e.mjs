@@ -934,6 +934,116 @@ async function verifyTranscriptMediaResponsive(client) {
   }
 }
 
+async function verifyTranscriptAutoScroll(client) {
+  await evaluate(
+    client,
+    `(() => {
+      for (let index = 0; index < 36; index += 1) {
+        const event = new Event("message");
+        event.data = JSON.stringify({
+          type: "final",
+          sessionId: "browser-test-1",
+          text: \`自動スクロール確認用の文字起こし \${index + 1}\`,
+          tsStart: (index + 3) * 1000,
+          tsEnd: (index + 4) * 1000,
+          seq: index + 4
+        });
+        window.__recordingTest.socket.dispatchEvent(event);
+      }
+    })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  for (const width of [1440, 390]) {
+    await client.send("Emulation.setDeviceMetricsOverride", {
+      width,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: width <= 640,
+    });
+    await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
+
+    let result = await evaluate(
+      client,
+      `(() => {
+        const log = document.querySelector("#log");
+        const downloads = document.querySelector(".downloads-bar");
+        log.scrollTop = log.scrollHeight;
+        log.dispatchEvent(new Event("scroll"));
+        return {
+          scrollable: log.scrollHeight > log.clientHeight + 10,
+          downloadsAfterLog: downloads.getBoundingClientRect().top >= log.getBoundingClientRect().bottom - 1,
+          horizontalOverflow: log.scrollWidth - log.clientWidth
+        };
+      })()`,
+    );
+    assert.equal(result.scrollable, true, `${width}px: transcript must have its own vertical scroll area`);
+    assert.equal(result.downloadsAfterLog, true, `${width}px: save and export controls must remain outside the transcript scroll area`);
+    assert.ok(result.horizontalOverflow <= 1, `${width}px: scrollable transcript must not overflow horizontally`);
+
+    await evaluate(
+      client,
+      `(() => {
+        const event = new Event("message");
+        event.data = JSON.stringify({
+          type: "final",
+          sessionId: "browser-test-1",
+          text: "末尾追従確認 ${width}px",
+          tsStart: ${width} * 1000,
+          tsEnd: (${width} + 1) * 1000,
+          seq: ${width}
+        });
+        window.__recordingTest.socket.dispatchEvent(event);
+      })()`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    result = await evaluate(
+      client,
+      `(() => {
+        const log = document.querySelector("#log");
+        return {
+          distanceFromBottom: log.scrollHeight - log.clientHeight - log.scrollTop,
+          hasLatest: log.textContent.includes("末尾追従確認 ${width}px")
+        };
+      })()`,
+    );
+    assert.ok(result.distanceFromBottom <= 2, `${width}px: new transcript rows should follow the bottom`);
+    assert.equal(result.hasLatest, true, `${width}px: followed transcript row should be rendered`);
+
+    await evaluate(
+      client,
+      `(() => {
+        const log = document.querySelector("#log");
+        log.scrollTop = 0;
+        log.dispatchEvent(new Event("scroll"));
+        const event = new Event("message");
+        event.data = JSON.stringify({
+          type: "final",
+          sessionId: "browser-test-1",
+          text: "過去閲覧位置維持 ${width}px",
+          tsStart: (${width} + 2) * 1000,
+          tsEnd: (${width} + 3) * 1000,
+          seq: ${width} + 1
+        });
+        window.__recordingTest.socket.dispatchEvent(event);
+      })()`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    result = await evaluate(
+      client,
+      `(() => {
+        const log = document.querySelector("#log");
+        return {
+          scrollTop: log.scrollTop,
+          hasLatest: log.textContent.includes("過去閲覧位置維持 ${width}px")
+        };
+      })()`,
+    );
+    assert.equal(result.scrollTop, 0, `${width}px: new rows must not steal the position while reading older transcript`);
+    assert.equal(result.hasLatest, true, `${width}px: transcript should still update while auto-follow is paused`);
+  }
+}
+
 async function verifyModalKeyboardManagement(client) {
   await evaluate(
     client,
@@ -1671,6 +1781,7 @@ try {
   await verifyRecordingStartIsSingleFlight(client);
   await verifyDestructiveActionsAreLocked(client);
   await verifyTranscriptMediaResponsive(client);
+  await verifyTranscriptAutoScroll(client);
   await verifyModalKeyboardManagement(client);
   await verifyGracefulStopIsSerialized(client);
   await verifyIdleDestructiveActions(client);
