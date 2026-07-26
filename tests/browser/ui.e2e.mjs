@@ -834,13 +834,37 @@ async function verifyDestructiveActionsAreLocked(client) {
       event.data = JSON.stringify({
         type: "final",
         sessionId: "browser-test-1",
-        text: "録音中に保持する文字起こし",
+        text: "録音中に保持する文字起こし https://example.com/very/long/path/that/must/wrap/without/causing/horizontal/overflow/abcdefghijklmnopqrstuvwxyz0123456789",
         tsStart: 0,
         tsEnd: 1000,
         seq: 1,
-        screenshotPath: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+        screenshotPath: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
+        rawAudioPath: "data:audio/wav;base64,UklGRg==",
+        audioPath: "data:audio/wav;base64,UklGRg=="
       });
       window.__recordingTest.socket.dispatchEvent(event);
+      const audioOnly = new Event("message");
+      audioOnly.data = JSON.stringify({
+        type: "final",
+        sessionId: "browser-test-1",
+        text: "音声のみの行",
+        tsStart: 1000,
+        tsEnd: 2000,
+        seq: 2,
+        rawAudioPath: "data:audio/wav;base64,UklGRg=="
+      });
+      window.__recordingTest.socket.dispatchEvent(audioOnly);
+      const imageOnly = new Event("message");
+      imageOnly.data = JSON.stringify({
+        type: "final",
+        sessionId: "browser-test-1",
+        text: "画像のみの行",
+        tsStart: 2000,
+        tsEnd: 3000,
+        seq: 3,
+        screenshotPath: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+      });
+      window.__recordingTest.socket.dispatchEvent(imageOnly);
       document.querySelector("#clearBtn").click();
       document.querySelector(".history-item-main").click();
     })()`,
@@ -859,6 +883,55 @@ async function verifyDestructiveActionsAreLocked(client) {
   assert.equal(result.historyDisabled, "true", "history switching must be marked disabled while recording");
   assert.equal(result.historyDetailRequests, 0, "recording must block history detail requests");
   assert.match(result.transcript, /録音中に保持する文字起こし/, "blocked clear must preserve the transcript");
+}
+
+async function verifyTranscriptMediaResponsive(client) {
+  for (const width of [390, 640, 768, 900]) {
+    await client.send("Emulation.setDeviceMetricsOverride", {
+      width,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: width <= 640,
+    });
+    await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
+    const result = await evaluate(
+      client,
+      `(() => {
+        document.querySelectorAll(".log-inline-audio").forEach((audio) => {
+          audio.hidden = false;
+        });
+        const log = document.querySelector("#log");
+        const logRect = log.getBoundingClientRect();
+        const rows = [...document.querySelectorAll(".log-row")];
+        return {
+          logOverflow: log.scrollWidth - log.clientWidth,
+          rowOverflows: rows.map((row) => row.scrollWidth - row.clientWidth),
+          outsideRows: rows.filter((row) => row.getBoundingClientRect().right > logRect.right + 1).length,
+          outsideMedia: [...document.querySelectorAll(".log-media-group")].filter(
+            (media) => media.getBoundingClientRect().right > logRect.right + 1
+          ).length,
+          bodyDirections: [...document.querySelectorAll(".log-body")].map(
+            (body) => getComputedStyle(body).flexDirection
+          ),
+          mediaTypes: [...document.querySelectorAll(".log-media-group")].map(
+            (media) => [media.dataset.hasAudio, media.dataset.hasScreenshot].join("/")
+          ),
+          textWidths: [...document.querySelectorAll(".log-row .text")].map(
+            (text) => text.getBoundingClientRect().width
+          )
+        };
+      })()`,
+    );
+    assert.ok(result.logOverflow <= 1, `${width}px: transcript container must not overflow horizontally`);
+    assert.ok(result.rowOverflows.every((overflow) => overflow <= 1), `${width}px: rows must stay within their width`);
+    assert.equal(result.outsideRows, 0, `${width}px: rows must stay inside the transcript panel`);
+    assert.equal(result.outsideMedia, 0, `${width}px: media controls must stay inside the transcript panel`);
+    assert.ok(result.bodyDirections.every((direction) => direction === "column"), `${width}px: text and media should stack`);
+    assert.ok(result.textWidths.every((textWidth) => textWidth > 80), `${width}px: transcript text needs readable width`);
+    assert.ok(result.mediaTypes.includes("true/true"), `${width}px: audio+image row should be covered`);
+    assert.ok(result.mediaTypes.includes("true/false"), `${width}px: audio-only row should be covered`);
+    assert.ok(result.mediaTypes.includes("false/true"), `${width}px: image-only row should be covered`);
+  }
 }
 
 async function verifyModalKeyboardManagement(client) {
@@ -1597,6 +1670,7 @@ try {
   }
   await verifyRecordingStartIsSingleFlight(client);
   await verifyDestructiveActionsAreLocked(client);
+  await verifyTranscriptMediaResponsive(client);
   await verifyModalKeyboardManagement(client);
   await verifyGracefulStopIsSerialized(client);
   await verifyIdleDestructiveActions(client);
