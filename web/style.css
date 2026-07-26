@@ -2228,6 +2228,20 @@ body.is-transcript-audio-hidden .log-media-group[data-has-audio="true"][data-has
   color: var(--accent-500);
 }
 
+.download-link.is-disabled,
+.download-link.is-disabled:hover,
+.download-link.is-disabled:active {
+  opacity: 0.5;
+  color: var(--text-tertiary);
+  background: transparent;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.export-menu.is-disabled > summary {
+  opacity: 0.58;
+}
+
 .download-link:active {
   transform: scale(0.95);
 }

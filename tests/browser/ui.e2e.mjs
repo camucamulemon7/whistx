@@ -596,6 +596,7 @@ async function verifyRecordingStartIsSingleFlight(client) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   await verifyEmptySummaryIsNotCopied(client);
+  await verifyEmptyDownloadsAreDisabled(client);
 
   await evaluate(
     client,
@@ -627,7 +628,9 @@ async function verifyRecordingStartIsSingleFlight(client) {
       ...window.__recordingTest,
       disabled: document.querySelector("#startBtn").disabled,
       busy: document.querySelector("#startBtn").getAttribute("aria-busy"),
-      pressed: document.querySelector("#startBtn").getAttribute("aria-pressed")
+      pressed: document.querySelector("#startBtn").getAttribute("aria-pressed"),
+      downloadHref: document.querySelector("#dlTxt").getAttribute("href"),
+      downloadDisabled: document.querySelector("#dlTxt").getAttribute("aria-disabled")
     })`,
   );
   assert.equal(result.mediaRequests, 1, "double click should request one input stream");
@@ -635,6 +638,28 @@ async function verifyRecordingStartIsSingleFlight(client) {
   assert.equal(result.disabled, false, "record button should be enabled after startup");
   assert.equal(result.busy, "false", "record button should clear aria-busy after startup");
   assert.equal(result.pressed, "true", "record button should enter recording state");
+  assert.equal(result.downloadHref, null, "recording should not expose a partial artifact URL");
+  assert.equal(result.downloadDisabled, "true", "recording exports should remain disabled");
+}
+
+async function verifyEmptyDownloadsAreDisabled(client) {
+  const beforeUrl = await evaluate(client, `location.href`);
+  await evaluate(client, `document.querySelector("#dlTxt").click()`);
+  const result = await evaluate(
+    client,
+    `({
+      href: document.querySelector("#dlTxt").getAttribute("href"),
+      disabled: document.querySelector("#dlTxt").getAttribute("aria-disabled"),
+      downloaded: document.querySelector("#dlTxt").classList.contains("is-downloaded"),
+      url: location.href,
+      toast: document.querySelector("#toastContainer .toast:last-child")?.textContent || ""
+    })`,
+  );
+  assert.equal(result.href, null, "empty workspace exports should have no href");
+  assert.equal(result.disabled, "true", "empty workspace exports should be exposed as disabled");
+  assert.equal(result.downloaded, false, "disabled export must not show success feedback");
+  assert.equal(result.url, beforeUrl, "disabled export must not navigate the current page");
+  assert.match(result.toast, /書き出せる文字起こしがありません/, "disabled export should explain why");
 }
 
 async function verifyEmptySummaryIsNotCopied(client) {
@@ -753,7 +778,9 @@ async function verifyGracefulStopIsSerialized(client) {
       label: document.querySelector("#startBtn .record-label").textContent,
       clearDisabled: document.querySelector("#clearBtn").disabled,
       historyDisabled: document.querySelector(".history-item-main").getAttribute("aria-disabled"),
-      historyDetailRequests: window.__recordingTest.historyDetailRequests
+      historyDetailRequests: window.__recordingTest.historyDetailRequests,
+      downloadHref: document.querySelector("#dlTxt").getAttribute("href"),
+      downloadDisabled: document.querySelector("#dlTxt").getAttribute("aria-disabled")
     })`,
   );
   assert.equal(finalizing.startMessages, 1, "stop/start click sequence must not start a second session");
@@ -764,6 +791,8 @@ async function verifyGracefulStopIsSerialized(client) {
   assert.equal(finalizing.clearDisabled, true, "clear must remain disabled during server finalization");
   assert.equal(finalizing.historyDisabled, "true", "history switching must remain disabled during finalization");
   assert.equal(finalizing.historyDetailRequests, 0, "finalization must not load another history view");
+  assert.equal(finalizing.downloadHref, null, "finalization must not expose an unfinished artifact");
+  assert.equal(finalizing.downloadDisabled, "true", "finalization exports should remain disabled");
 
   await new Promise((resolve) => setTimeout(resolve, 120));
   const completed = await evaluate(
@@ -776,6 +805,8 @@ async function verifyGracefulStopIsSerialized(client) {
       status: document.querySelector("#statusText").textContent,
       clearDisabled: document.querySelector("#clearBtn").disabled,
       historyDisabled: document.querySelector(".history-item-main").getAttribute("aria-disabled"),
+      downloadHref: document.querySelector("#dlTxt").getAttribute("href"),
+      downloadDisabled: document.querySelector("#dlTxt").getAttribute("aria-disabled"),
       transcript: [...document.querySelectorAll(".log-row .text")].map((node) => node.textContent)
     })`,
   );
@@ -786,6 +817,12 @@ async function verifyGracefulStopIsSerialized(client) {
   assert.equal(completed.status, "録音完了", "normal stop should be distinct from disconnect");
   assert.equal(completed.clearDisabled, false, "clear should unlock after finalization");
   assert.equal(completed.historyDisabled, "false", "history switching should unlock after finalization");
+  assert.equal(
+    completed.downloadHref,
+    "/api/transcript/browser-test-1.txt",
+    "finalized runtime session should expose its TXT artifact",
+  );
+  assert.equal(completed.downloadDisabled, "false", "exports should unlock after finalization");
   assert.ok(
     completed.transcript.includes("停止直前の文字起こし"),
     "final segment arriving before finalized acknowledgement should remain in the completed session",
@@ -841,7 +878,8 @@ async function verifyIdleDestructiveActions(client) {
     client,
     `({
       transcript: document.querySelector("#log").textContent,
-      historyDetailRequests: window.__recordingTest.historyDetailRequests
+      historyDetailRequests: window.__recordingTest.historyDetailRequests,
+      downloadHref: document.querySelector("#dlTxt").getAttribute("href")
     })`,
   );
   assert.match(result.transcript, /停止直前の文字起こし/, "cancelled clear must preserve completed transcript");
@@ -853,11 +891,13 @@ async function verifyIdleDestructiveActions(client) {
     client,
     `({
       transcript: document.querySelector("#log").textContent,
-      historyDetailRequests: window.__recordingTest.historyDetailRequests
+      historyDetailRequests: window.__recordingTest.historyDetailRequests,
+      downloadHref: document.querySelector("#dlTxt").getAttribute("href")
     })`,
   );
   assert.equal(result.historyDetailRequests, 1, "history should load only after recording finalization");
   assert.match(result.transcript, /履歴の文字起こし/, "unlocked history action should render the selected history");
+  assert.equal(result.downloadHref, "/api/history/history-1/download.txt", "selected history should expose its artifact");
 }
 
 async function verifyFailedStartPreservesTranscript(client) {

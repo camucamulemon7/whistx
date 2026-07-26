@@ -263,6 +263,7 @@ const state = {
   recordedChunkCount: 0,
   runtimeSessionId: "",
   runtimeSessionToken: "",
+  runtimeSessionFinalized: false,
   savedHistoryId: null,
   viewingHistoryId: null,
   historyDetailRequestVersion: 0,
@@ -2178,24 +2179,41 @@ function extractTranscriptText() {
 }
 
 function updateDownloadLinks() {
-  if (state.viewingHistoryId) {
-    dlTxt.href = `/api/history/${state.viewingHistoryId}/download.txt`;
-    dlJsonl.href = `/api/history/${state.viewingHistoryId}/download.jsonl`;
-    dlZip.href = `/api/history/${state.viewingHistoryId}/download.zip`;
-    return;
-  }
-
-  if (!state.runtimeSessionId) {
-    dlTxt.href = "#";
-    dlJsonl.href = "#";
-    dlZip.href = "#";
-    return;
-  }
-
+  const links = [
+    [dlTxt, "txt"],
+    [dlJsonl, "jsonl"],
+    [dlZip, "zip"],
+  ];
+  const locked = isRecordingInteractionLocked();
+  const historyId = !locked ? state.viewingHistoryId : "";
+  const runtimeId = !locked && state.runtimeSessionFinalized ? state.runtimeSessionId : "";
   const suffix = state.runtimeSessionToken ? `?token=${encodeURIComponent(state.runtimeSessionToken)}` : "";
-  dlTxt.href = `/api/transcript/${state.runtimeSessionId}.txt${suffix}`;
-  dlJsonl.href = `/api/transcript/${state.runtimeSessionId}.jsonl${suffix}`;
-  dlZip.href = `/api/transcript/${state.runtimeSessionId}.zip${suffix}`;
+
+  links.forEach(([link, extension]) => {
+    const href = historyId
+      ? `/api/history/${historyId}/download.${extension}`
+      : runtimeId
+        ? `/api/transcript/${runtimeId}.${extension}${suffix}`
+        : "";
+    if (href) {
+      link.setAttribute("href", href);
+      link.setAttribute("aria-disabled", "false");
+      link.removeAttribute("tabindex");
+      link.classList.remove("is-disabled");
+      link.title = `${extension.toUpperCase()}を書き出す`;
+      return;
+    }
+    link.removeAttribute("href");
+    link.setAttribute("aria-disabled", "true");
+    link.setAttribute("tabindex", "-1");
+    link.classList.add("is-disabled");
+    link.classList.remove("is-downloaded");
+    link.title = locked ? "録音の完了後に書き出せます" : "書き出せる文字起こしがありません";
+  });
+
+  const exportMenu = dlTxt?.closest(".export-menu");
+  exportMenu?.classList.toggle("is-disabled", !historyId && !runtimeId);
+  exportMenu?.querySelector("summary")?.setAttribute("aria-disabled", String(!historyId && !runtimeId));
 }
 
 function setSummary(text, meta) {
@@ -2563,6 +2581,7 @@ function setUiRecording(active) {
 
   startBtn.disabled = false;
   updateSaveControls();
+  updateDownloadLinks();
   renderHistoryList();
 }
 
@@ -2576,6 +2595,7 @@ function setUiRecordingStarting() {
   startBtn.setAttribute("aria-busy", "true");
   setStatus("starting");
   updateSaveControls();
+  updateDownloadLinks();
   renderHistoryList();
 }
 
@@ -2588,12 +2608,14 @@ function setUiRecordingStopping(finalizing = false) {
   startBtn.setAttribute("aria-busy", "true");
   setStatus(finalizing ? "finalizing" : "stopping");
   updateSaveControls();
+  updateDownloadLinks();
   renderHistoryList();
 }
 
 function resetRuntimeSessionState() {
   state.runtimeSessionId = "";
   state.runtimeSessionToken = "";
+  state.runtimeSessionFinalized = false;
 }
 
 function commitNewRecordingWorkspace() {
@@ -3116,8 +3138,13 @@ async function ensureSocket() {
       if (data.sessionId) {
         state.runtimeSessionId = String(data.sessionId);
         state.runtimeSessionToken = String(data.sessionToken || "");
-        updateDownloadLinks();
       }
+      if (data.message === "ready") {
+        state.runtimeSessionFinalized = false;
+      } else if (data.message === "finalized") {
+        state.runtimeSessionFinalized = true;
+      }
+      updateDownloadLinks();
       return;
     }
 
@@ -3600,6 +3627,7 @@ async function finalizeStop() {
   } catch (error) {
     finalizeError = error;
   } finally {
+    state.runtimeSessionFinalized = completed;
     state.pendingSendChain = Promise.resolve();
     cleanupMedia();
     setUiRecording(false);
@@ -3611,6 +3639,7 @@ async function finalizeStop() {
     updateRecordingTelemetry();
     state.finalizingStop = false;
     updateSaveControls();
+    updateDownloadLinks();
     renderHistoryList();
     if (completed) {
       setStatus("completed");
@@ -3644,6 +3673,7 @@ async function startRecording() {
   let startSent = false;
   const previousRuntimeSessionId = state.runtimeSessionId;
   const previousRuntimeSessionToken = state.runtimeSessionToken;
+  const previousRuntimeSessionFinalized = state.runtimeSessionFinalized;
 
   const selectedChunkSeconds = applyChunkSeconds(chunkSecondsEl.value || CHUNK_DEFAULT_SECONDS);
   state.chunkMs = selectedChunkSeconds * 1000;
@@ -3752,6 +3782,7 @@ async function startRecording() {
     cleanupMedia();
     state.runtimeSessionId = previousRuntimeSessionId;
     state.runtimeSessionToken = previousRuntimeSessionToken;
+    state.runtimeSessionFinalized = previousRuntimeSessionFinalized;
     state.recordingStartedAt = 0;
     setUiRecording(false);
     updateDownloadLinks();
@@ -4154,6 +4185,7 @@ function clearView(options = {}) {
   state.history.selectedId = null;
   state.viewingHistoryId = null;
   state.savedHistoryId = null;
+  resetRuntimeSessionState();
 
   renderEmptyTranscriptState();
 
@@ -4669,12 +4701,20 @@ async function saveSharedGlossary() {
 
 // Download link feedback
 [dlTxt, dlJsonl, dlZip].forEach((link) => {
-  link.addEventListener("click", () => {
-    const format = link.textContent;
-    if (link.href && link.href !== "#") {
-      link.classList.add("is-downloaded");
-      setTimeout(() => link.classList.remove("is-downloaded"), 800);
+  link.addEventListener("click", (event) => {
+    const href = link.getAttribute("href");
+    if (link.getAttribute("aria-disabled") === "true" || !href) {
+      event.preventDefault();
+      showToast(
+        isRecordingInteractionLocked()
+          ? "録音の最終処理が完了してから書き出してください"
+          : "書き出せる文字起こしがありません",
+        "error"
+      );
+      return;
     }
+    link.classList.add("is-downloaded");
+    setTimeout(() => link.classList.remove("is-downloaded"), 800);
   });
 });
 
