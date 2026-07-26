@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:web": "node --test tests/js/*.test.js"
+    "test:web": "node --test tests/js/*.test.js",
+    "test:browser": "node tests/browser/ui.e2e.mjs"
   }
 }

@@ -54,6 +54,21 @@
           </div>
 
           <div class="header-actions-group">
+            <button
+              id="historyDrawerOpen"
+              type="button"
+              class="header-action-btn history-drawer-toggle"
+              aria-label="履歴を開く"
+              aria-controls="historyRail"
+              aria-expanded="false"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M3 12a9 9 0 1 0 3-6.7"/>
+                <polyline points="3 3 3 9 9 9"/>
+                <path d="M12 7v5l3 2"/>
+              </svg>
+              <span>履歴</span>
+            </button>
             <button id="helpBtn" type="button" class="header-action-btn header-link-btn" aria-label="説明を開く">説明</button>
             <button id="sidebarToggle" type="button" class="header-action-btn header-settings-btn" aria-label="詳細設定を開く" title="詳細設定">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -131,7 +146,7 @@
         </nav>
 
         <section id="workspaceShell" class="workspace-shell">
-          <aside class="history-rail glass-panel reveal delay-2" aria-label="履歴一覧">
+          <aside id="historyRail" class="history-rail glass-panel reveal delay-2" aria-label="履歴一覧" tabindex="-1">
             <div class="history-rail-header">
               <div class="history-rail-copy">
                 <h2 class="history-rail-title">履歴</h2>
@@ -545,6 +560,7 @@
       <div id="toastContainer" class="toast-container" role="alert" aria-live="assertive"></div>
     </div>
 
+    <div id="historyDrawerBackdrop" class="history-drawer-backdrop" hidden></div>
     <div id="sidebarBackdrop" class="sidebar-backdrop" hidden></div>
     <aside id="sidePanel" class="side-panel" aria-label="詳細設定" aria-hidden="true">
       <div class="side-panel-header">

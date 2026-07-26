@@ -114,7 +114,9 @@ const authProfileDisplayNameEl = $("#authProfileDisplayName");
 const authProfileSaveBtn = $("#authProfileSaveBtn");
 const authProfileCancelBtn = $("#authProfileCancelBtn");
 const historyCollapseBtn = $("#historyCollapseBtn");
+const historyDrawerOpenEl = $("#historyDrawerOpen");
 const historyDrawerCloseEl = document.querySelector("#historyDrawerClose");
+const historyDrawerBackdropEl = $("#historyDrawerBackdrop");
 const authUserLabelEl = document.querySelector("#authUserLabel");
 const authGuestViewEl = $("#authGuestView");
 const authUserViewEl = $("#authUserView");
@@ -241,6 +243,7 @@ const state = {
   chunkTimer: null,
   finalizingStop: false,
   recording: false,
+  historyDrawerOpen: false,
   recordingAudioSource: "mic",
   recordingRequestedAudioSource: "mic",
   recordingFallbackReason: "",
@@ -481,10 +484,34 @@ function applyHistoryDrawerOpen(open) {
   if (!historyRailEl) return;
   const isMobile = window.innerWidth <= 1100;
   const isOpen = !!open && isMobile;
+  const wasOpen = state.historyDrawerOpen;
+  state.historyDrawerOpen = isOpen;
   historyRailEl.classList.toggle("is-open", isOpen);
+  historyRailEl.classList.toggle("is-collapsed", !isMobile && state.historyCollapsed);
   historyRailEl.setAttribute("aria-hidden", isMobile ? (isOpen ? "false" : "true") : "false");
+  if (isMobile) {
+    historyRailEl.setAttribute("role", "dialog");
+    historyRailEl.setAttribute("aria-modal", "true");
+  } else {
+    historyRailEl.removeAttribute("role");
+    historyRailEl.removeAttribute("aria-modal");
+  }
+  if (historyDrawerOpenEl) {
+    historyDrawerOpenEl.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  }
+  if (historyDrawerBackdropEl) {
+    historyDrawerBackdropEl.hidden = !isOpen;
+    historyDrawerBackdropEl.classList.toggle("is-open", isOpen);
+  }
   document.body.classList.toggle("is-history-drawer-open", isOpen);
   updateHistoryControls();
+  if (isOpen && !wasOpen) {
+    requestAnimationFrame(() => {
+      historyDrawerCloseEl?.focus();
+    });
+  } else if (!isOpen && wasOpen && isMobile) {
+    historyDrawerOpenEl?.focus();
+  }
 }
 
 function applyHistoryCollapsed(value, options = {}) {
@@ -495,7 +522,7 @@ function applyHistoryCollapsed(value, options = {}) {
     workspaceShellEl.classList.toggle("is-history-collapsed", isDesktop && state.historyCollapsed);
   }
   if (historyRailEl) {
-    historyRailEl.classList.toggle("is-collapsed", state.historyCollapsed);
+    historyRailEl.classList.toggle("is-collapsed", isDesktop && state.historyCollapsed);
   }
   if (persist) {
     try {
@@ -509,6 +536,10 @@ function applyHistoryCollapsed(value, options = {}) {
 
 function updateHistoryControls() {
   const isMobile = window.innerWidth <= 1100;
+  if (historyDrawerOpenEl) {
+    historyDrawerOpenEl.hidden = !isMobile;
+    historyDrawerOpenEl.setAttribute("aria-expanded", state.historyDrawerOpen ? "true" : "false");
+  }
   if (historyCollapseBtn) {
     historyCollapseBtn.hidden = isMobile;
     historyCollapseBtn.classList.toggle("is-collapsed", state.historyCollapsed);
@@ -4091,6 +4122,18 @@ if (historyDrawerCloseEl) {
   });
 }
 
+if (historyDrawerOpenEl) {
+  historyDrawerOpenEl.addEventListener("click", () => {
+    applyHistoryDrawerOpen(true);
+  });
+}
+
+if (historyDrawerBackdropEl) {
+  historyDrawerBackdropEl.addEventListener("click", () => {
+    applyHistoryDrawerOpen(false);
+  });
+}
+
 if (historyCollapseBtn) {
   historyCollapseBtn.addEventListener("click", () => {
     applyHistoryCollapsed(!state.historyCollapsed);
@@ -5079,7 +5122,7 @@ applyAdvancedSettingsOpen(false);
 applySummaryPromptEditorOpen(false);
 applyActiveAiPanel(state.activeAiPanel);
 applySidebarOpen(false);
-updateHistoryControls();
+applyHistoryDrawerOpen(false);
 setStatus("idle");
 
 // Show initial empty state for transcript
