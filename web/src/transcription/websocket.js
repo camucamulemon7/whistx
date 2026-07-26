@@ -57,10 +57,7 @@ export function waitForSessionReady(ws) {
       if (data.type === "info" && data.message === "ready") {
         cleanup();
         resolve(data);
-      } else if (
-        data.type === "error" &&
-        (data.message === "session_create_failed" || data.message === "not_started")
-      ) {
+      } else if (data.type === "error") {
         cleanup();
         reject(new Error(String(data.detail || data.message || "session_start_failed")));
       }
@@ -72,6 +69,54 @@ export function waitForSessionReady(ws) {
     const onError = () => {
       cleanup();
       reject(new Error("websocket_error"));
+    };
+
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("close", onClose);
+    ws.addEventListener("error", onError);
+  });
+}
+
+export function waitForSessionFinalized(ws, sessionId, timeoutMs = 90_000) {
+  return new Promise((resolve, reject) => {
+    const expectedSessionId = String(sessionId || "");
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("session_finalize_timeout"));
+    }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      ws.removeEventListener("message", onMessage);
+      ws.removeEventListener("close", onClose);
+      ws.removeEventListener("error", onError);
+    };
+    const onMessage = (event) => {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      const incomingSessionId = String(data.sessionId || "");
+      if (
+        data.type === "info" &&
+        data.message === "finalized" &&
+        (!expectedSessionId || !incomingSessionId || incomingSessionId === expectedSessionId)
+      ) {
+        cleanup();
+        resolve(data);
+      } else if (data.type === "error" && data.message === "finalize_failed") {
+        cleanup();
+        reject(new Error(String(data.detail || data.message)));
+      }
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("websocket_closed_before_finalize"));
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("websocket_error_before_finalize"));
     };
 
     ws.addEventListener("message", onMessage);

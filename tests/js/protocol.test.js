@@ -7,6 +7,7 @@ import {
   buildWebSocketUrl,
   normalizeWsPath,
   waitForOpen,
+  waitForSessionFinalized,
   waitForSessionReady,
 } from "../../web/src/transcription/websocket.js";
 
@@ -35,6 +36,29 @@ test("WebSocket lifecycle helpers resolve on protocol readiness", async () => {
   event.data = JSON.stringify({ type: "info", message: "ready", sessionId: "session-1" });
   socket.dispatchEvent(event);
   assert.equal((await ready).sessionId, "session-1");
+});
+
+test("session readiness rejects every server error including duplicate starts", async () => {
+  const ws = new EventTarget();
+  const ready = waitForSessionReady(ws);
+  const event = new Event("message");
+  event.data = JSON.stringify({ type: "error", message: "already_started" });
+  ws.dispatchEvent(event);
+
+  await assert.rejects(ready, /already_started/);
+});
+
+test("session finalization waits for the matching server acknowledgement", async () => {
+  const ws = new EventTarget();
+  const finalized = waitForSessionFinalized(ws, "session-2", 100);
+  const stale = new Event("message");
+  stale.data = JSON.stringify({ type: "info", message: "finalized", sessionId: "session-1" });
+  ws.dispatchEvent(stale);
+  const matching = new Event("message");
+  matching.data = JSON.stringify({ type: "info", message: "finalized", sessionId: "session-2" });
+  ws.dispatchEvent(matching);
+
+  assert.equal((await finalized).sessionId, "session-2");
 });
 
 test("SSE JSON parser handles events split across chunks", async () => {

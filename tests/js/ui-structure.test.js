@@ -12,6 +12,21 @@ test("workspace exposes a keyboard skip target and labelled live transcript", as
   assert.match(html, /aria-labelledby="transcriptPanelTitle"/);
 });
 
+test("mobile history drawer has an accessible trigger and backdrop", async () => {
+  const [html, css, app] = await Promise.all([
+    readFile(new URL("web/index.html", root), "utf8"),
+    readFile(new URL("web/style.css", root), "utf8"),
+    readFile(new URL("web/src/app.js", root), "utf8"),
+  ]);
+
+  assert.match(html, /id="historyDrawerOpen"[^>]*aria-controls="historyRail"[^>]*aria-expanded="false"/s);
+  assert.match(html, /id="historyRail"[^>]*tabindex="-1"/);
+  assert.match(html, /id="historyDrawerBackdrop"[^>]*hidden/);
+  assert.match(css, /\.history-drawer-backdrop/);
+  assert.match(app, /historyDrawerOpenEl\.setAttribute\("aria-expanded"/);
+  assert.match(app, /historyDrawerBackdropEl\.addEventListener\("click"/);
+});
+
 test("guided journey and responsive design tokens are present", async () => {
   const [html, css, app] = await Promise.all([
     readFile(new URL("web/index.html", root), "utf8"),

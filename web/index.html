@@ -54,6 +54,21 @@
           </div>
 
           <div class="header-actions-group">
+            <button
+              id="historyDrawerOpen"
+              type="button"
+              class="header-action-btn history-drawer-toggle"
+              aria-label="履歴を開く"
+              aria-controls="historyRail"
+              aria-expanded="false"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M3 12a9 9 0 1 0 3-6.7"/>
+                <polyline points="3 3 3 9 9 9"/>
+                <path d="M12 7v5l3 2"/>
+              </svg>
+              <span>履歴</span>
+            </button>
             <button id="helpBtn" type="button" class="header-action-btn header-link-btn" aria-label="説明を開く">説明</button>
             <button id="sidebarToggle" type="button" class="header-action-btn header-settings-btn" aria-label="詳細設定を開く" title="詳細設定">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -131,7 +146,7 @@
         </nav>
 
         <section id="workspaceShell" class="workspace-shell">
-          <aside class="history-rail glass-panel reveal delay-2" aria-label="履歴一覧">
+          <aside id="historyRail" class="history-rail glass-panel reveal delay-2" aria-label="履歴一覧" tabindex="-1">
             <div class="history-rail-header">
               <div class="history-rail-copy">
                 <h2 class="history-rail-title">履歴</h2>
@@ -406,9 +421,9 @@
                     <details class="export-menu">
                       <summary class="btn-secondary export-menu-trigger">書き出し</summary>
                       <div class="export-menu-list">
-                        <a id="dlTxt" href="#" download class="download-link">TXT</a>
-                        <a id="dlJsonl" href="#" download class="download-link">JSONL</a>
-                        <a id="dlZip" href="#" download class="download-link">ZIP</a>
+                        <a id="dlTxt" download class="download-link is-disabled" aria-disabled="true" tabindex="-1">TXT</a>
+                        <a id="dlJsonl" download class="download-link is-disabled" aria-disabled="true" tabindex="-1">JSONL</a>
+                        <a id="dlZip" download class="download-link is-disabled" aria-disabled="true" tabindex="-1">ZIP</a>
                       </div>
                     </details>
                   </div>
@@ -545,6 +560,7 @@
       <div id="toastContainer" class="toast-container" role="alert" aria-live="assertive"></div>
     </div>
 
+    <div id="historyDrawerBackdrop" class="history-drawer-backdrop" hidden></div>
     <div id="sidebarBackdrop" class="sidebar-backdrop" hidden></div>
     <aside id="sidePanel" class="side-panel" aria-label="詳細設定" aria-hidden="true">
       <div class="side-panel-header">
@@ -725,7 +741,7 @@
 
     <div id="adminQueueModal" class="screenshot-modal" hidden>
       <div class="screenshot-modal-backdrop" data-admin-modal-close></div>
-      <div class="screenshot-modal-dialog glass-panel admin-queue-dialog" role="dialog" aria-modal="true" aria-label="承認待ちユーザー">
+      <div class="screenshot-modal-dialog glass-panel admin-queue-dialog" role="dialog" aria-modal="true" aria-label="承認待ちユーザー" tabindex="-1">
         <button id="adminQueueClose" type="button" class="icon-btn screenshot-modal-close" aria-label="閉じる">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/>
@@ -742,7 +758,7 @@
 
     <div id="screenshotModal" class="screenshot-modal" hidden>
       <div class="screenshot-modal-backdrop" data-modal-close></div>
-      <div class="screenshot-modal-dialog glass-panel" role="dialog" aria-modal="true" aria-label="スクリーンショット拡大表示">
+      <div class="screenshot-modal-dialog glass-panel" role="dialog" aria-modal="true" aria-label="スクリーンショット拡大表示" tabindex="-1">
         <button id="screenshotModalClose" type="button" class="icon-btn screenshot-modal-close" aria-label="閉じる">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/>
@@ -764,7 +780,7 @@
 
     <div id="helpModal" class="screenshot-modal help-modal" hidden>
       <div class="screenshot-modal-backdrop" data-help-modal-close></div>
-      <div class="screenshot-modal-dialog glass-panel help-modal-dialog" role="dialog" aria-modal="true" aria-label="使い方">
+      <div class="screenshot-modal-dialog glass-panel help-modal-dialog" role="dialog" aria-modal="true" aria-label="使い方" tabindex="-1">
         <button id="helpModalClose" type="button" class="icon-btn screenshot-modal-close" aria-label="閉じる">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/>

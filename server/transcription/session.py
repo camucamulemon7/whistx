@@ -67,3 +67,5 @@ class LiveSession:
     asr_output_tokens: int
     asr_total_tokens: int
     asr_estimated_tokens: int
+    requested_audio_source: str = "mic"
+    audio_source_fallback_reason: str = ""

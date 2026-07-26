@@ -87,7 +87,9 @@ class SessionFactoryTests(unittest.TestCase):
             session = create_live_session(
                 {
                     "sessionId": "client",
-                    "audioSource": "both",
+                    "audioSource": "mic",
+                    "requestedAudioSource": "both",
+                    "audioSourceFallbackReason": "display_audio_not_found",
                     "language": "ja",
                     "diarizationEnabled": True,
                     "diarizationMinSpeakers": 5,
@@ -99,11 +101,16 @@ class SessionFactoryTests(unittest.TestCase):
             )
 
             self.assertTrue(session.session_id.startswith("client_"))
-            self.assertEqual(session.audio_source, "both")
+            self.assertEqual(session.audio_source, "mic")
+            self.assertEqual(session.requested_audio_source, "both")
+            self.assertEqual(session.audio_source_fallback_reason, "display_audio_not_found")
             self.assertEqual(session.queue.maxsize, 3)
             self.assertEqual((session.diarization_min_speakers, session.diarization_max_speakers), (2, 5))
             metadata = session.store.read_metadata()
             self.assertEqual(metadata["sessionId"], session.session_id)
+            self.assertEqual(metadata["audioSource"], "mic")
+            self.assertEqual(metadata["requestedAudioSource"], "both")
+            self.assertEqual(metadata["audioSourceFallbackReason"], "display_audio_not_found")
             self.assertTrue(metadata["diarizationEnabled"])
             self.assertFalse(metadata["finalized"])
 

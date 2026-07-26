@@ -1,15 +1,15 @@
 import { fetchJson } from "../api/client.js";
 
-export function fetchHistoryList({ limit, offset, query }) {
+export function fetchHistoryList({ limit, offset, query, signal }) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (query) {
     params.set("q", query);
   }
-  return fetchJson(`/api/history?${params.toString()}`);
+  return fetchJson(`/api/history?${params.toString()}`, { signal });
 }
 
-export function fetchHistoryDetail(historyId) {
-  return fetchJson(`/api/history/${historyId}`);
+export function fetchHistoryDetail(historyId, options = {}) {
+  return fetchJson(`/api/history/${historyId}`, { signal: options.signal });
 }
 
 export function saveHistoryRequest(payload) {

@@ -25,6 +25,7 @@ import {
   buildWebSocketUrl,
   normalizeWsPath,
   waitForOpen,
+  waitForSessionFinalized,
   waitForSessionReady,
 } from "./transcription/websocket.js";
 import {
@@ -114,7 +115,9 @@ const authProfileDisplayNameEl = $("#authProfileDisplayName");
 const authProfileSaveBtn = $("#authProfileSaveBtn");
 const authProfileCancelBtn = $("#authProfileCancelBtn");
 const historyCollapseBtn = $("#historyCollapseBtn");
+const historyDrawerOpenEl = $("#historyDrawerOpen");
 const historyDrawerCloseEl = document.querySelector("#historyDrawerClose");
+const historyDrawerBackdropEl = $("#historyDrawerBackdrop");
 const authUserLabelEl = document.querySelector("#authUserLabel");
 const authGuestViewEl = $("#authGuestView");
 const authUserViewEl = $("#authUserView");
@@ -227,7 +230,9 @@ const runtimeUi = {
   summaryCopyBtnEl: null,
   appLocked: true,
   bodyScrollLocks: 0,
+  modalStack: [],
 };
+const modalOpeners = new WeakMap();
 
 const state = {
   ws: null,
@@ -241,6 +246,8 @@ const state = {
   chunkTimer: null,
   finalizingStop: false,
   recording: false,
+  recordingPhase: "idle",
+  historyDrawerOpen: false,
   recordingAudioSource: "mic",
   recordingRequestedAudioSource: "mic",
   recordingFallbackReason: "",
@@ -258,9 +265,15 @@ const state = {
   recordedChunkCount: 0,
   runtimeSessionId: "",
   runtimeSessionToken: "",
+  runtimeSessionFinalized: false,
   savedHistoryId: null,
   viewingHistoryId: null,
+  historyDetailRequestVersion: 0,
+  historyListController: null,
+  historyDetailController: null,
   saveInFlight: false,
+  workspaceDirty: false,
+  unloadProtectionRegistered: false,
   seq: 0,
   offsetMs: 0,
   chunkMs: CHUNK_DEFAULT_SECONDS * 1000,
@@ -272,6 +285,9 @@ const state = {
   asrAvailable: true,
   proofreadAvailable: true,
   proofreadInFlight: false,
+  proofreadController: null,
+  summaryInFlight: false,
+  summaryController: null,
   proofreadMode: "proofread",
   activeAiPanel: "proofread",
   advancedSettingsOpen: false,
@@ -351,6 +367,7 @@ const state = {
   auth: {
     authenticated: false,
     isGuest: false,
+    sessionInvalid: false,
     user: null,
     profileEditorOpen: false,
     profileSaving: false,
@@ -433,11 +450,12 @@ function applyBranding(title, tagline) {
 
 function setProofreadButtonBusy(busy) {
   if (!proofreadBtn) return;
-  proofreadBtn.disabled = busy;
+  proofreadBtn.disabled = false;
   if (proofreadBtnLabelEl) {
-    proofreadBtnLabelEl.textContent = busy ? "生成中..." : "生成";
+    proofreadBtnLabelEl.textContent = busy ? "キャンセル" : "生成";
   }
   proofreadBtn.setAttribute("aria-busy", busy ? "true" : "false");
+  proofreadBtn.setAttribute("aria-label", busy ? `${proofreadActionLabel()}をキャンセル` : `${proofreadActionLabel()}を開始`);
 }
 
 function proofreadActionLabel() {
@@ -481,10 +499,34 @@ function applyHistoryDrawerOpen(open) {
   if (!historyRailEl) return;
   const isMobile = window.innerWidth <= 1100;
   const isOpen = !!open && isMobile;
+  const wasOpen = state.historyDrawerOpen;
+  state.historyDrawerOpen = isOpen;
   historyRailEl.classList.toggle("is-open", isOpen);
+  historyRailEl.classList.toggle("is-collapsed", !isMobile && state.historyCollapsed);
   historyRailEl.setAttribute("aria-hidden", isMobile ? (isOpen ? "false" : "true") : "false");
+  if (isMobile) {
+    historyRailEl.setAttribute("role", "dialog");
+    historyRailEl.setAttribute("aria-modal", "true");
+  } else {
+    historyRailEl.removeAttribute("role");
+    historyRailEl.removeAttribute("aria-modal");
+  }
+  if (historyDrawerOpenEl) {
+    historyDrawerOpenEl.setAttribute("aria-expanded", isOpen ? "true" : "false");
+  }
+  if (historyDrawerBackdropEl) {
+    historyDrawerBackdropEl.hidden = !isOpen;
+    historyDrawerBackdropEl.classList.toggle("is-open", isOpen);
+  }
   document.body.classList.toggle("is-history-drawer-open", isOpen);
   updateHistoryControls();
+  if (isOpen && !wasOpen) {
+    requestAnimationFrame(() => {
+      historyDrawerCloseEl?.focus();
+    });
+  } else if (!isOpen && wasOpen && isMobile) {
+    historyDrawerOpenEl?.focus();
+  }
 }
 
 function applyHistoryCollapsed(value, options = {}) {
@@ -495,7 +537,7 @@ function applyHistoryCollapsed(value, options = {}) {
     workspaceShellEl.classList.toggle("is-history-collapsed", isDesktop && state.historyCollapsed);
   }
   if (historyRailEl) {
-    historyRailEl.classList.toggle("is-collapsed", state.historyCollapsed);
+    historyRailEl.classList.toggle("is-collapsed", isDesktop && state.historyCollapsed);
   }
   if (persist) {
     try {
@@ -509,6 +551,10 @@ function applyHistoryCollapsed(value, options = {}) {
 
 function updateHistoryControls() {
   const isMobile = window.innerWidth <= 1100;
+  if (historyDrawerOpenEl) {
+    historyDrawerOpenEl.hidden = !isMobile;
+    historyDrawerOpenEl.setAttribute("aria-expanded", state.historyDrawerOpen ? "true" : "false");
+  }
   if (historyCollapseBtn) {
     historyCollapseBtn.hidden = isMobile;
     historyCollapseBtn.classList.toggle("is-collapsed", state.historyCollapsed);
@@ -542,6 +588,7 @@ function applyAdvancedSettingsOpen(open) {
 }
 
 function syncAiResponsiveState() {
+  applyPanelCollapseState("transcript", !!state.panelCollapsed.transcript, { persist: false });
   applyPanelCollapseState("proofread", !!state.panelCollapsed.proofread, { persist: false });
   applyPanelCollapseState("summary", !!state.panelCollapsed.summary, { persist: false });
 }
@@ -618,19 +665,24 @@ function applyPanelCollapseState(panel, collapsed, options = {}) {
   const persist = options.persist !== false;
   const key = panel === "proofread" || panel === "summary" ? panel : "transcript";
   state.panelCollapsed[key] = !!collapsed;
+  const collapseAvailable = window.innerWidth > WORKSPACE_STACK_BREAKPOINT;
+  const visuallyCollapsed = collapseAvailable && !!collapsed;
 
   const panelEl = document.querySelector(`.${key}-panel`);
   if (panelEl) {
-    panelEl.classList.toggle("is-collapsed", !!collapsed);
+    panelEl.classList.toggle("is-collapsed", visuallyCollapsed);
   }
 
   const toggleBtn = document.querySelector(`[data-panel-toggle="${key}"]`);
   if (toggleBtn) {
-    toggleBtn.classList.toggle("is-collapsed", !!collapsed);
+    toggleBtn.classList.toggle("is-collapsed", visuallyCollapsed);
+    toggleBtn.hidden = !collapseAvailable;
+    toggleBtn.disabled = !collapseAvailable;
+    toggleBtn.setAttribute("aria-hidden", String(!collapseAvailable));
     const labelMap = { transcript: "文字起こし", proofread: "校正", summary: "要約" };
     const label = labelMap[key] || "パネル";
-    toggleBtn.setAttribute("aria-label", collapsed ? `${label}を展開` : `${label}をたたむ`);
-    toggleBtn.title = collapsed ? "展開" : "たたむ";
+    toggleBtn.setAttribute("aria-label", visuallyCollapsed ? `${label}を展開` : `${label}をたたむ`);
+    toggleBtn.title = visuallyCollapsed ? "展開" : "たたむ";
   }
 
   if (persist) {
@@ -1167,6 +1219,109 @@ function unlockBodyScroll() {
   syncBodyScrollLock();
 }
 
+function modalFocusableElements(modal) {
+  if (!modal) return [];
+  return Array.from(
+    modal.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), iframe, [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((element) => {
+    const style = window.getComputedStyle(element);
+    return !element.hidden && style.display !== "none" && style.visibility !== "hidden";
+  });
+}
+
+function topmostModal() {
+  for (let index = runtimeUi.modalStack.length - 1; index >= 0; index -= 1) {
+    const modal = runtimeUi.modalStack[index];
+    if (modal && !modal.hidden) return modal;
+  }
+  return null;
+}
+
+function syncManagedModalLayers() {
+  runtimeUi.modalStack = runtimeUi.modalStack.filter((modal) => modal && !modal.hidden);
+  const top = runtimeUi.modalStack[runtimeUi.modalStack.length - 1] || null;
+  runtimeUi.modalStack.forEach((modal, index) => {
+    modal.style.zIndex = String(31 + index);
+    const inactive = modal !== top;
+    modal.inert = inactive;
+    if (inactive) {
+      modal.setAttribute("aria-hidden", "true");
+    } else {
+      modal.removeAttribute("aria-hidden");
+    }
+  });
+}
+
+function openManagedModal(modal, options = {}) {
+  if (!modal) return;
+  const opener = options.opener || document.activeElement;
+  if (opener instanceof HTMLElement) {
+    modalOpeners.set(modal, opener);
+  }
+  runtimeUi.modalStack = runtimeUi.modalStack.filter((item) => item !== modal);
+  runtimeUi.modalStack.push(modal);
+  modal.hidden = false;
+  modal.classList.add("is-open");
+  syncManagedModalLayers();
+  lockBodyScroll();
+  requestAnimationFrame(() => {
+    const target =
+      options.initialFocus ||
+      modalFocusableElements(modal)[0] ||
+      modal.querySelector('[role="dialog"]');
+    target?.focus?.();
+  });
+}
+
+function closeManagedModal(modal) {
+  if (!modal || modal.hidden) return false;
+  const wasTopmost = topmostModal() === modal;
+  modal.classList.remove("is-open");
+  modal.hidden = true;
+  modal.inert = false;
+  modal.removeAttribute("aria-hidden");
+  modal.style.removeProperty("z-index");
+  runtimeUi.modalStack = runtimeUi.modalStack.filter((item) => item !== modal);
+  syncManagedModalLayers();
+  unlockBodyScroll();
+
+  if (wasTopmost) {
+    const nextModal = topmostModal();
+    if (nextModal) {
+      const nextTarget = modalFocusableElements(nextModal)[0] || nextModal.querySelector('[role="dialog"]');
+      nextTarget?.focus?.();
+    } else {
+      const opener = modalOpeners.get(modal);
+      if (opener?.isConnected && !opener.disabled) {
+        opener.focus();
+      }
+    }
+  }
+  modalOpeners.delete(modal);
+  return true;
+}
+
+function trapModalFocus(event, modal) {
+  if (event.key !== "Tab" || !modal) return;
+  const focusable = modalFocusableElements(modal);
+  if (focusable.length === 0) {
+    event.preventDefault();
+    modal.querySelector('[role="dialog"]')?.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function setHistorySearchQuery(value) {
   state.history.query = String(value || "").trim();
   state.history.offset = 0;
@@ -1364,9 +1519,7 @@ function showScreenshotModal(src, alt = "スクリーンショット") {
   stopScreenshotDrag();
   runtimeUi.screenshotModalImageEl.src = src;
   runtimeUi.screenshotModalImageEl.alt = alt;
-  runtimeUi.screenshotModalEl.hidden = false;
-  runtimeUi.screenshotModalEl.classList.add("is-open");
-  lockBodyScroll();
+  openManagedModal(runtimeUi.screenshotModalEl, { initialFocus: screenshotModalCloseEl });
 
   if (runtimeUi.screenshotModalImageEl.complete) {
     recalculateScreenshotBaseSize();
@@ -1378,8 +1531,7 @@ function showScreenshotModal(src, alt = "スクリーンショット") {
 
 function hideScreenshotModal() {
   if (!runtimeUi.screenshotModalEl || !runtimeUi.screenshotModalImageEl) return;
-  runtimeUi.screenshotModalEl.classList.remove("is-open");
-  runtimeUi.screenshotModalEl.hidden = true;
+  if (!closeManagedModal(runtimeUi.screenshotModalEl)) return;
   runtimeUi.screenshotModalImageEl.src = "";
   runtimeUi.screenshotModalImageEl.style.width = "";
   runtimeUi.screenshotModalImageEl.style.height = "";
@@ -1390,7 +1542,6 @@ function hideScreenshotModal() {
   state.screenshotBaseHeight = 0;
   stopScreenshotDrag();
   updateScreenshotZoomUi();
-  unlockBodyScroll();
 }
 
 function openHelpModal() {
@@ -1398,16 +1549,12 @@ function openHelpModal() {
   if (!helpModalFrameEl.src) {
     helpModalFrameEl.src = "/help.html";
   }
-  helpModalEl.hidden = false;
-  helpModalEl.classList.add("is-open");
-  lockBodyScroll();
+  openManagedModal(helpModalEl, { initialFocus: helpModalCloseEl });
 }
 
 function closeHelpModal() {
   if (!helpModalEl) return;
-  helpModalEl.classList.remove("is-open");
-  helpModalEl.hidden = true;
-  unlockBodyScroll();
+  closeManagedModal(helpModalEl);
 }
 
 function logWsEvent(event, detail = {}) {
@@ -1513,7 +1660,11 @@ function setupWorkspaceResizers() {
       if (window.innerWidth <= 1439) return;
       state.activeResizer = String(handle.dataset.resizer || "");
       document.body.classList.add("is-resizing-panels");
-      handle.setPointerCapture?.(event.pointerId);
+      try {
+        handle.setPointerCapture?.(event.pointerId);
+      } catch {
+        // Pointer capture can be unavailable for synthetic or interrupted pointer sequences.
+      }
       event.preventDefault();
     });
   });
@@ -1568,9 +1719,10 @@ function clampSpeakerCount(value) {
 function updateDiarizationSpeakerUi() {
   const available = !!state.diarizationAvailable;
   const enabled = !!state.diarizationEnabled;
+  const locked = isRecordingInteractionLocked();
   const mode = normalizeSpeakerMode(state.diarizationSpeakerMode);
-  const controlsEnabled = available && enabled;
-  const visible = controlsEnabled;
+  const visible = available && enabled;
+  const controlsEnabled = visible && !locked;
 
   const autoMode = mode === "auto";
   const fixedMode = mode === "fixed";
@@ -1820,13 +1972,59 @@ function setSaveBadge(label, saved = false) {
   saveStateBadgeEl.classList.toggle("is-saved", !!saved);
 }
 
+function isRecordingInteractionLocked() {
+  return state.recordingPhase !== "idle" || !!state.finalizingStop;
+}
+
+function shouldProtectWorkspaceFromUnload() {
+  return state.workspaceDirty || isRecordingInteractionLocked();
+}
+
+function handleBeforeUnload(event) {
+  if (!shouldProtectWorkspaceFromUnload()) return;
+  event.preventDefault();
+  event.returnValue = "";
+}
+
+function syncUnloadProtection() {
+  const shouldProtect = shouldProtectWorkspaceFromUnload();
+  if (shouldProtect && !state.unloadProtectionRegistered) {
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    state.unloadProtectionRegistered = true;
+  } else if (!shouldProtect && state.unloadProtectionRegistered) {
+    window.removeEventListener("beforeunload", handleBeforeUnload);
+    state.unloadProtectionRegistered = false;
+  }
+  document.documentElement.dataset.unsavedTranscript = shouldProtect ? "true" : "false";
+}
+
+function markWorkspaceDirty() {
+  state.workspaceDirty = true;
+  syncUnloadProtection();
+}
+
+function markWorkspaceClean() {
+  state.workspaceDirty = false;
+  syncUnloadProtection();
+}
+
+function confirmWorkspaceDiscard(action) {
+  if (!state.workspaceDirty) return true;
+  return window.confirm(`保存されていない文字起こしや生成結果があります。${action}してよいですか？`);
+}
+
+function showRecordingInteractionBlocked(action) {
+  const finalizing = state.recordingPhase === "stopping" || state.recordingPhase === "finalizing" || state.finalizingStop;
+  showToast(finalizing ? `録音の停止処理中は${action}できません` : `録音中は${action}できません`, "error");
+}
+
 function updateSaveControls() {
   const hasSegments = state.segments.length > 0;
   const authenticated = !!state.auth.authenticated;
   const isGuest = !!state.auth.isGuest;
   const saved = !!state.savedHistoryId;
   const viewingHistory = !!state.viewingHistoryId;
-  const recordingLocked = !!state.recording || !!state.finalizingStop;
+  const recordingLocked = isRecordingInteractionLocked();
 
   if (saveBtn) {
     saveBtn.disabled =
@@ -1843,10 +2041,48 @@ function updateSaveControls() {
   if (saveTitleInputEl) {
     saveTitleInputEl.disabled = viewingHistory || state.saveInFlight || recordingLocked;
   }
+  if (clearBtn) {
+    clearBtn.disabled = runtimeUi.appLocked || recordingLocked;
+    clearBtn.title = recordingLocked ? "録音中・停止処理中はクリアできません" : "クリア";
+  }
   setSaveBadge(
     saved ? "保存済み" : recordingLocked ? "録音中は保存不可" : isGuest ? "ゲストでは保存不可" : authenticated ? "未保存" : "ログインが必要",
     saved
   );
+}
+
+function setSessionSettingsLocked(locked = isRecordingInteractionLocked()) {
+  const sessionInputs = [
+    languageEl,
+    audioSourceEl,
+    chunkSecondsEl,
+    promptEl,
+    sharedVocabularyEl,
+  ];
+  sessionInputs.forEach((element) => {
+    if (!element) return;
+    element.disabled = !!locked;
+    element.title = locked ? "録音中・停止処理中は変更できません" : "";
+  });
+  presetButtons.forEach((button) => {
+    button.disabled = !!locked;
+    button.title = locked ? "録音中・停止処理中は変更できません" : "";
+  });
+  promptTemplateButtonsEl?.querySelectorAll("button").forEach((button) => {
+    button.disabled = !!locked;
+    button.title = locked ? "録音中・停止処理中は変更できません" : "";
+  });
+  if (diarizationToggleEl) {
+    diarizationToggleEl.disabled = !!locked || !state.diarizationAvailable;
+    diarizationToggleEl.title = locked
+      ? "録音中・停止処理中は変更できません"
+      : state.diarizationAvailable
+        ? "話者分離を有効/無効"
+        : "サーバーで話者分離は無効";
+  }
+  document.body.classList.toggle("session-settings-locked", !!locked);
+  updateDiarizationSpeakerUi();
+  updateSharedVocabularyMeta();
 }
 
 function formatHistoryMeta(item) {
@@ -1929,16 +2165,24 @@ function renderHistoryList() {
         <button type="button" class="history-item-delete" aria-label="履歴を削除">削除</button>
       </div>
     `;
-    article.querySelector(".history-item-main")?.addEventListener("click", () => {
+    const historyLocked = isRecordingInteractionLocked();
+    const mainAction = article.querySelector(".history-item-main");
+    const deleteAction = article.querySelector(".history-item-delete");
+    mainAction?.setAttribute("aria-disabled", String(historyLocked));
+    if (deleteAction) {
+      deleteAction.disabled = historyLocked;
+    }
+    article.classList.toggle("is-disabled", historyLocked);
+    mainAction?.addEventListener("click", () => {
       openHistoryDetail(item.id);
     });
-    article.querySelector(".history-item-main")?.addEventListener("keydown", (event) => {
+    mainAction?.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         openHistoryDetail(item.id);
       }
     });
-    article.querySelector(".history-item-delete")?.addEventListener("click", (event) => {
+    deleteAction?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       deleteHistory(item.id);
@@ -1950,8 +2194,7 @@ function renderHistoryList() {
 
 function closeAdminQueueModal() {
   if (!adminQueueModalEl) return;
-  adminQueueModalEl.hidden = true;
-  unlockBodyScroll();
+  closeManagedModal(adminQueueModalEl);
 }
 
 function renderAdminPendingUsers() {
@@ -2119,24 +2362,41 @@ function extractTranscriptText() {
 }
 
 function updateDownloadLinks() {
-  if (state.viewingHistoryId) {
-    dlTxt.href = `/api/history/${state.viewingHistoryId}/download.txt`;
-    dlJsonl.href = `/api/history/${state.viewingHistoryId}/download.jsonl`;
-    dlZip.href = `/api/history/${state.viewingHistoryId}/download.zip`;
-    return;
-  }
-
-  if (!state.runtimeSessionId) {
-    dlTxt.href = "#";
-    dlJsonl.href = "#";
-    dlZip.href = "#";
-    return;
-  }
-
+  const links = [
+    [dlTxt, "txt"],
+    [dlJsonl, "jsonl"],
+    [dlZip, "zip"],
+  ];
+  const locked = isRecordingInteractionLocked();
+  const historyId = !locked ? state.viewingHistoryId : "";
+  const runtimeId = !locked && state.runtimeSessionFinalized ? state.runtimeSessionId : "";
   const suffix = state.runtimeSessionToken ? `?token=${encodeURIComponent(state.runtimeSessionToken)}` : "";
-  dlTxt.href = `/api/transcript/${state.runtimeSessionId}.txt${suffix}`;
-  dlJsonl.href = `/api/transcript/${state.runtimeSessionId}.jsonl${suffix}`;
-  dlZip.href = `/api/transcript/${state.runtimeSessionId}.zip${suffix}`;
+
+  links.forEach(([link, extension]) => {
+    const href = historyId
+      ? `/api/history/${historyId}/download.${extension}`
+      : runtimeId
+        ? `/api/transcript/${runtimeId}.${extension}${suffix}`
+        : "";
+    if (href) {
+      link.setAttribute("href", href);
+      link.setAttribute("aria-disabled", "false");
+      link.removeAttribute("tabindex");
+      link.classList.remove("is-disabled");
+      link.title = `${extension.toUpperCase()}を書き出す`;
+      return;
+    }
+    link.removeAttribute("href");
+    link.setAttribute("aria-disabled", "true");
+    link.setAttribute("tabindex", "-1");
+    link.classList.add("is-disabled");
+    link.classList.remove("is-downloaded");
+    link.title = locked ? "録音の完了後に書き出せます" : "書き出せる文字起こしがありません";
+  });
+
+  const exportMenu = dlTxt?.closest(".export-menu");
+  exportMenu?.classList.toggle("is-disabled", !historyId && !runtimeId);
+  exportMenu?.querySelector("summary")?.setAttribute("aria-disabled", String(!historyId && !runtimeId));
 }
 
 function setSummary(text, meta) {
@@ -2163,7 +2423,7 @@ async function copySummaryText() {
     loginEmailEl?.focus();
     return;
   }
-  const text = String(state.summary || summaryTextEl?.textContent || "").trim();
+  const text = String(state.summary || "").trim();
   if (!text) {
     showToast("要約がありません", "error");
     return;
@@ -2372,6 +2632,7 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", raw
     rawAudioPath,
     audioPath,
   });
+  markWorkspaceDirty();
   updateSegmentCount();
   markProofreadStale();
   updateSaveControls();
@@ -2474,6 +2735,7 @@ function applyChunkSeconds(value) {
 
 function setUiRecording(active) {
   state.recording = active;
+  state.recordingPhase = active ? "recording" : "idle";
 
   if (audioLevelIndicatorEl) {
     audioLevelIndicatorEl.hidden = !active;
@@ -2487,11 +2749,13 @@ function setUiRecording(active) {
     startBtn.querySelector(".record-label").textContent = "停止";
     startBtn.setAttribute("aria-pressed", "true");
     startBtn.setAttribute("aria-label", "録音を停止");
+    startBtn.setAttribute("aria-busy", "false");
   } else {
     startBtn.classList.remove("is-recording");
     startBtn.querySelector(".record-label").textContent = "録音開始";
     startBtn.setAttribute("aria-pressed", "false");
     startBtn.setAttribute("aria-label", "録音を開始");
+    startBtn.setAttribute("aria-busy", "false");
 
     if (state.log.length > 0) {
       startBtn.classList.add("is-complete");
@@ -2501,11 +2765,70 @@ function setUiRecording(active) {
 
   startBtn.disabled = false;
   updateSaveControls();
+  updateDownloadLinks();
+  setSessionSettingsLocked();
+  syncUnloadProtection();
+  renderHistoryList();
+}
+
+function setUiRecordingStarting() {
+  state.recordingPhase = "starting";
+  startBtn.disabled = true;
+  startBtn.classList.remove("is-recording");
+  startBtn.querySelector(".record-label").textContent = "準備中...";
+  startBtn.setAttribute("aria-pressed", "false");
+  startBtn.setAttribute("aria-label", "録音を準備中");
+  startBtn.setAttribute("aria-busy", "true");
+  setStatus("starting");
+  updateSaveControls();
+  updateDownloadLinks();
+  setSessionSettingsLocked(true);
+  syncUnloadProtection();
+  renderHistoryList();
+}
+
+function setUiRecordingStopping(finalizing = false) {
+  state.recordingPhase = finalizing ? "finalizing" : "stopping";
+  startBtn.disabled = true;
+  startBtn.querySelector(".record-label").textContent = finalizing ? "最終処理中..." : "停止中...";
+  startBtn.setAttribute("aria-pressed", "false");
+  startBtn.setAttribute("aria-label", finalizing ? "録音の最終処理中" : "録音を停止中");
+  startBtn.setAttribute("aria-busy", "true");
+  setStatus(finalizing ? "finalizing" : "stopping");
+  updateSaveControls();
+  updateDownloadLinks();
+  setSessionSettingsLocked(true);
+  syncUnloadProtection();
+  renderHistoryList();
 }
 
 function resetRuntimeSessionState() {
   state.runtimeSessionId = "";
   state.runtimeSessionToken = "";
+  state.runtimeSessionFinalized = false;
+}
+
+function commitNewRecordingWorkspace() {
+  state.historyDetailController?.abort("workspace_changed");
+  state.historyDetailController = null;
+  state.historyDetailRequestVersion += 1;
+  state.history.selectedId = null;
+  state.savedHistoryId = null;
+  state.viewingHistoryId = null;
+  state.log = [];
+  state.segments = [];
+  markWorkspaceClean();
+  state.logAutoScrollEnabled = true;
+  if (saveTitleInputEl) {
+    saveTitleInputEl.value = "";
+  }
+  renderEmptyTranscriptState();
+  setSummary("", "未生成");
+  setProofread("", "未生成");
+  updateSegmentCount();
+  updateDownloadLinks();
+  updateSaveControls();
+  renderHistoryList();
 }
 
 function audioSourceHintText(source) {
@@ -2984,6 +3307,21 @@ async function ensureSocket() {
     }
 
     logWsEvent("message", { type: data.type, message: data.message || "", seq: data.seq ?? null });
+    const incomingSessionId = String(data.sessionId || "");
+    const isReadyMessage = data.type === "info" && data.message === "ready";
+    if (
+      incomingSessionId &&
+      !isReadyMessage &&
+      state.runtimeSessionId &&
+      incomingSessionId !== state.runtimeSessionId
+    ) {
+      logWsEvent("ignore_stale_message", {
+        incomingSessionId,
+        currentSessionId: state.runtimeSessionId,
+        type: data.type,
+      });
+      return;
+    }
 
     if (data.type === "conn") {
       return;
@@ -2994,8 +3332,13 @@ async function ensureSocket() {
       if (data.sessionId) {
         state.runtimeSessionId = String(data.sessionId);
         state.runtimeSessionToken = String(data.sessionToken || "");
-        updateDownloadLinks();
       }
+      if (data.message === "ready") {
+        state.runtimeSessionFinalized = false;
+      } else if (data.message === "finalized") {
+        state.runtimeSessionFinalized = true;
+      }
+      updateDownloadLinks();
       return;
     }
 
@@ -3039,16 +3382,19 @@ async function ensureSocket() {
   });
 
   ws.addEventListener("close", () => {
-    state.ws = null;
     logWsEvent("close");
-    if (!state.recording) {
-      setStatus("disconnected");
+    if (ws.__whistxGracefulStop) {
+      if (state.ws === ws) {
+        state.ws = null;
+      }
+      return;
     }
+    abortRecordingAfterSocketLoss(ws, "connection_lost");
   });
 
   ws.addEventListener("error", () => {
     logWsEvent("error");
-    setStatus("socket_error");
+    abortRecordingAfterSocketLoss(ws, "socket_error");
   });
 
   await waitForOpen(ws);
@@ -3432,6 +3778,9 @@ function startRecorderCycle() {
     if (state.recorder === recorder) {
       state.recorder = null;
     }
+    if (recorder.__whistxAbortWithoutFinalize) {
+      return;
+    }
     if (state.recording) {
       startRecorderCycle();
       return;
@@ -3446,16 +3795,34 @@ function startRecorderCycle() {
 async function finalizeStop() {
   if (state.finalizingStop) return;
   state.finalizingStop = true;
+  setUiRecordingStopping(true);
   clearChunkTimer();
+  let completed = false;
+  let finalizeError = null;
 
   try {
     await state.pendingSendChain;
-  } finally {
-    state.pendingSendChain = Promise.resolve();
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      state.ws.send(JSON.stringify({ type: "stop" }));
-      logWsEvent("send_stop", { sessionId: state.runtimeSessionId || "" });
+    const ws = state.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      throw new Error("websocket_unavailable_before_finalize");
     }
+    ws.__whistxGracefulStop = true;
+    const finalized = waitForSessionFinalized(ws, state.runtimeSessionId);
+    ws.send(JSON.stringify({ type: "stop" }));
+    logWsEvent("send_stop", { sessionId: state.runtimeSessionId || "" });
+    await finalized;
+    completed = true;
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close(1000, "session_finalized");
+    }
+    if (state.ws === ws) {
+      state.ws = null;
+    }
+  } catch (error) {
+    finalizeError = error;
+  } finally {
+    state.runtimeSessionFinalized = completed;
+    state.pendingSendChain = Promise.resolve();
     cleanupMedia();
     setUiRecording(false);
     state.segmentStartedAt = 0;
@@ -3466,17 +3833,36 @@ async function finalizeStop() {
     updateRecordingTelemetry();
     state.finalizingStop = false;
     updateSaveControls();
+    updateDownloadLinks();
+    setSessionSettingsLocked(false);
+    syncUnloadProtection();
+    renderHistoryList();
+    if (completed) {
+      setStatus("completed");
+      showToast("録音の最終処理が完了しました", "success");
+    } else {
+      setStatus("finalize_failed");
+      showToast(`録音の最終処理に失敗しました: ${finalizeError?.message || "unknown"}`, "error", 7000);
+    }
   }
 }
 
 async function startRecording() {
-  if (state.recording) return;
+  if (state.recordingPhase !== "idle" || state.finalizingStop) return;
   if (!canUseWorkspace()) {
     showToast("ログインが必要です", "error");
     setAppLocked(true);
     loginEmailEl?.focus();
     return;
   }
+  if (!confirmWorkspaceDiscard("破棄して新しい録音を開始")) {
+    return;
+  }
+  setUiRecordingStarting();
+  let startSent = false;
+  const previousRuntimeSessionId = state.runtimeSessionId;
+  const previousRuntimeSessionToken = state.runtimeSessionToken;
+  const previousRuntimeSessionFinalized = state.runtimeSessionFinalized;
 
   const selectedChunkSeconds = applyChunkSeconds(chunkSecondsEl.value || CHUNK_DEFAULT_SECONDS);
   state.chunkMs = selectedChunkSeconds * 1000;
@@ -3497,19 +3883,8 @@ async function startRecording() {
   state.lastScreenshotSkipSentAt = 0;
   state.seq = 0;
   state.offsetMs = 0;
-  state.runtimeSessionId = "";
-  state.runtimeSessionToken = "";
-  state.history.selectedId = null;
   state.finalizingStop = false;
   state.pendingSendChain = Promise.resolve();
-  state.log = [];
-  state.segments = [];
-  state.logAutoScrollEnabled = true;
-  renderEmptyTranscriptState();
-  setSummary("", "未生成");
-  setProofread("", "未生成");
-  resetCurrentSaveState();
-  renderHistoryList();
   clearChunkTimer();
 
   try {
@@ -3531,13 +3906,16 @@ async function startRecording() {
     state.recorderMimeType = mimeType || "audio/webm";
     state.recorderOptions = mimeType ? { mimeType } : {};
     const diarizationOptions = resolveDiarizationStartOptions();
+    const effectiveAudioSource = normalizeAudioSource(state.recordingAudioSource || selectedAudioSource);
 
     const readyPromise = waitForSessionReady(ws);
     const startPayload = {
       type: "start",
       sessionId: generateSessionSeed(),
       language: selectedLanguage(),
-      audioSource: selectedAudioSource,
+      audioSource: effectiveAudioSource,
+      requestedAudioSource: selectedAudioSource,
+      audioSourceFallbackReason: state.recordingFallbackReason || "",
       prompt: promptEl.value.trim(),
       sharedVocabulary: String(sharedVocabularyEl?.value || state.sharedVocabulary || "").trim(),
       diarizationEnabled: !!(state.diarizationAvailable && state.diarizationEnabled),
@@ -3546,16 +3924,18 @@ async function startRecording() {
       diarizationMaxSpeakers: diarizationOptions.diarizationMaxSpeakers,
     };
     ws.send(JSON.stringify(startPayload));
+    startSent = true;
     logWsEvent("send_start", {
       sessionId: startPayload.sessionId,
       language: startPayload.language || "auto",
       audioSource: startPayload.audioSource,
+      requestedAudioSource: startPayload.requestedAudioSource,
+      audioSourceFallbackReason: startPayload.audioSourceFallbackReason,
     });
     await readyPromise;
 
     state.recordingStartedAt = performance.now();
     setUiRecording(true);
-    const effectiveAudioSource = normalizeAudioSource(state.recordingAudioSource || selectedAudioSource);
     updateRecordingTelemetry();
     if (effectiveAudioSource === "display") {
       setStatus("recording_display_audio");
@@ -3565,6 +3945,7 @@ async function startRecording() {
       setStatus("recording_mic");
     }
     startRecorderCycle();
+    commitNewRecordingWorkspace();
   } catch (err) {
     const name = err?.name || "";
     const message = err?.message || "unknown_error";
@@ -3587,16 +3968,25 @@ async function startRecording() {
     } else {
       setStatus(`start_failed: ${message}`);
     }
+    if (startSent && state.ws?.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ type: "stop" }));
+      logWsEvent("send_stop_after_start_failure");
+    }
     cleanupMedia();
+    state.runtimeSessionId = previousRuntimeSessionId;
+    state.runtimeSessionToken = previousRuntimeSessionToken;
+    state.runtimeSessionFinalized = previousRuntimeSessionFinalized;
+    state.recordingStartedAt = 0;
     setUiRecording(false);
+    updateDownloadLinks();
     updateRecordingTelemetry();
   }
 }
 
 function stopRecording() {
   if (!state.recording) return;
-  setStatus("stopping");
   state.recording = false;
+  setUiRecordingStopping(false);
   clearChunkTimer();
 
   try {
@@ -3608,6 +3998,53 @@ function stopRecording() {
   } catch {
     finalizeStop();
   }
+}
+
+function abortRecordingAfterSocketLoss(ws, reason) {
+  if (ws.__whistxConnectionLossHandled) return;
+  ws.__whistxConnectionLossHandled = true;
+  if (state.ws === ws) {
+    state.ws = null;
+  }
+
+  const wasActive =
+    state.recordingPhase === "starting" ||
+    state.recordingPhase === "recording" ||
+    state.finalizingStop;
+  if (!wasActive) {
+    setStatus(reason === "socket_error" ? "socket_error" : "disconnected");
+    return;
+  }
+
+  state.recording = false;
+  state.recordingPhase = "stopping";
+  clearChunkTimer();
+  const recorder = state.recorder;
+  if (recorder?.state === "recording") {
+    try {
+      recorder.__whistxAbortWithoutFinalize = true;
+      recorder.stop();
+    } catch {
+      // Continue with media cleanup even when recorder shutdown fails.
+    }
+  }
+  cleanupMedia();
+  state.pendingSendChain = Promise.resolve();
+  state.pendingOutboundChunks = 0;
+  state.finalizingStop = false;
+  state.segmentStartedAt = 0;
+  state.recordingStartedAt = 0;
+  state.recordedChunkCount = 0;
+  setUiRecording(false);
+  updateRecordingTelemetry();
+  setStatus(reason);
+  showToast(
+    reason === "socket_error"
+      ? "サーバー接続エラーのため録音を終了しました。未送信の音声は保存されません"
+      : "サーバーとの接続が切れたため録音を終了しました。未送信の音声は保存されません",
+    "error",
+    7000
+  );
 }
 
 function cleanupMedia() {
@@ -3693,6 +4130,7 @@ async function copyProofread() {
 
 async function proofreadAll() {
   if (state.proofreadInFlight) {
+    state.proofreadController?.abort("user_cancelled");
     return;
   }
   if (!canUseWorkspace()) {
@@ -3723,7 +4161,12 @@ async function proofreadAll() {
   setStatus("proofreading");
   showToast(`${proofreadActionLabel()}中...`, "default", 5000);
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 300000);
+  state.proofreadController = controller;
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort("request_timeout");
+  }, 300000);
   const proofreadStartedAt = performance.now();
 
   try {
@@ -3787,6 +4230,7 @@ async function proofreadAll() {
 
       if (eventType === "delta") {
         correctedText += String(event.delta || "");
+        if (correctedText) markWorkspaceDirty();
         const now = Date.now();
         if (now - lastRenderAt >= 120 || correctedText.endsWith("\n")) {
           setProofread(correctedText, chunkCount > 1 ? `処理中... ${currentChunk}/${chunkCount}` : "処理中...");
@@ -3797,6 +4241,7 @@ async function proofreadAll() {
 
       if (eventType === "final_text") {
         correctedText = String(event.text || "").trim();
+        if (correctedText) markWorkspaceDirty();
         setProofread(correctedText, chunkCount > 1 ? `処理中... ${currentChunk}/${chunkCount}` : "処理中...");
         lastRenderAt = Date.now();
         return;
@@ -3821,6 +4266,7 @@ async function proofreadAll() {
     }
 
     setProofread(correctedText, metaParts.join(" | ") || "生成完了");
+    markWorkspaceDirty();
     setStatus("proofread_done");
     showToast(`${proofreadActionLabel()}を生成しました`, "success");
   } catch (err) {
@@ -3830,18 +4276,40 @@ async function proofreadAll() {
       loginEmailEl?.focus();
       return;
     }
-    const message = err?.name === "AbortError" ? "request_timeout" : err?.message || "unknown_error";
-    showToast(`${proofreadActionLabel()}に失敗: ${message}`, "error");
-    setProofread(`${proofreadActionLabel()}に失敗しました。\n${message}`, "エラー");
-    setStatus(`proofread_failed: ${message}`);
+    const message = err?.name === "AbortError"
+      ? timedOut
+        ? "request_timeout"
+        : "request_cancelled"
+      : err?.message || "unknown_error";
+    if (message === "request_cancelled") {
+      showToast(`${proofreadActionLabel()}をキャンセルしました`, "default");
+      proofreadMetaEl.textContent = "キャンセル";
+      setStatus("proofread_cancelled");
+    } else {
+      showToast(
+        message === "request_timeout"
+          ? `${proofreadActionLabel()}がタイムアウトしました`
+          : `${proofreadActionLabel()}に失敗: ${message}`,
+        "error"
+      );
+      setProofread(`${proofreadActionLabel()}に失敗しました。\n${message}`, "エラー");
+      setStatus(`proofread_failed: ${message}`);
+    }
   } finally {
     clearTimeout(timeoutId);
+    if (state.proofreadController === controller) {
+      state.proofreadController = null;
+    }
     state.proofreadInFlight = false;
     setProofreadButtonBusy(false);
   }
 }
 
 async function summarizeAll() {
+  if (state.summaryInFlight) {
+    state.summaryController?.abort("user_cancelled");
+    return;
+  }
   if (!canUseWorkspace()) {
     showToast("ログインが必要です", "error");
     setAppLocked(true);
@@ -3855,9 +4323,14 @@ async function summarizeAll() {
     return;
   }
 
-  summaryBtn.disabled = true;
+  const controller = new AbortController();
+  state.summaryController = controller;
+  state.summaryInFlight = true;
+  summaryBtn.disabled = false;
+  summaryBtn.setAttribute("aria-busy", "true");
+  summaryBtn.setAttribute("aria-label", "要約生成をキャンセル");
   if (summaryBtnLabelEl) {
-    summaryBtnLabelEl.textContent = "生成中...";
+    summaryBtnLabelEl.textContent = "キャンセル";
   }
   setStatus("summarizing");
   showToast("要約を生成中...", "default", 5000);
@@ -3871,6 +4344,8 @@ async function summarizeAll() {
         language: selectedLanguage(),
         prompt: String(summaryPromptEl?.value || "").trim(),
       }),
+      signal: controller.signal,
+      timeoutMs: 120000,
     });
     const summaryText = String(payload.summary || "").trim();
     if (!summaryText) {
@@ -3889,6 +4364,7 @@ async function summarizeAll() {
     }
 
     setSummary(summaryText, metaParts.join(" | ") || "生成完了");
+    markWorkspaceDirty();
     setStatus("summarized");
     showToast("要約を生成しました", "success");
   } catch (err) {
@@ -3898,29 +4374,75 @@ async function summarizeAll() {
       loginEmailEl?.focus();
       return;
     }
-    showToast(`要約に失敗: ${err.message}`, "error");
-    setStatus(`summary_failed: ${err.message}`);
+    const message = err?.code === "timeout"
+      ? "request_timeout"
+      : err?.code === "aborted"
+        ? "request_cancelled"
+        : err?.code === "offline"
+          ? "offline"
+          : err?.message || "unknown_error";
+    showToast(
+      message === "request_cancelled"
+        ? "要約をキャンセルしました"
+        : message === "request_timeout"
+          ? "要約がタイムアウトしました"
+          : message === "offline"
+            ? "オフラインのため要約できません"
+            : `要約に失敗: ${message}`,
+      message === "request_cancelled" ? "default" : "error"
+    );
+    setStatus(message === "request_cancelled" ? "summary_cancelled" : `summary_failed: ${message}`);
   } finally {
+    if (state.summaryController === controller) {
+      state.summaryController = null;
+    }
+    state.summaryInFlight = false;
     summaryBtn.disabled = false;
+    summaryBtn.setAttribute("aria-busy", "false");
+    summaryBtn.setAttribute("aria-label", "要約を開始");
     if (summaryBtnLabelEl) {
       summaryBtnLabelEl.textContent = "生成";
     }
   }
 }
 
-function clearView() {
+function hasDiscardableWorkspaceData() {
+  return (
+    state.segments.length > 0 ||
+    String(state.summary || "").trim().length > 0 ||
+    String(state.proofread || "").trim().length > 0
+  );
+}
+
+function clearView(options = {}) {
   if (!canUseWorkspace()) {
     showToast("ログインが必要です", "error");
     setAppLocked(true);
     loginEmailEl?.focus();
     return;
   }
+  if (isRecordingInteractionLocked()) {
+    showRecordingInteractionBlocked("クリア");
+    return;
+  }
+  if (
+    !options.skipConfirmation &&
+    hasDiscardableWorkspaceData() &&
+    !window.confirm("表示中の文字起こしや生成結果が消えます。クリアしてよいですか？")
+  ) {
+    return;
+  }
+  state.historyDetailRequestVersion += 1;
+  state.historyDetailController?.abort("workspace_cleared");
+  state.historyDetailController = null;
   state.log = [];
   state.segments = [];
   state.logAutoScrollEnabled = true;
   state.history.selectedId = null;
   state.viewingHistoryId = null;
   state.savedHistoryId = null;
+  resetRuntimeSessionState();
+  markWorkspaceClean();
 
   renderEmptyTranscriptState();
 
@@ -4005,9 +4527,9 @@ presetButtons.forEach((button) => {
 });
 
 startBtn.addEventListener("click", () => {
-  if (state.recording) {
+  if (state.recordingPhase === "recording") {
     stopRecording();
-  } else {
+  } else if (state.recordingPhase === "idle" && !state.finalizingStop) {
     startRecording();
   }
 });
@@ -4087,6 +4609,18 @@ if (adminQueueBtn) {
 
 if (historyDrawerCloseEl) {
   historyDrawerCloseEl.addEventListener("click", () => {
+    applyHistoryDrawerOpen(false);
+  });
+}
+
+if (historyDrawerOpenEl) {
+  historyDrawerOpenEl.addEventListener("click", () => {
+    applyHistoryDrawerOpen(true);
+  });
+}
+
+if (historyDrawerBackdropEl) {
+  historyDrawerBackdropEl.addEventListener("click", () => {
     applyHistoryDrawerOpen(false);
   });
 }
@@ -4192,13 +4726,28 @@ if (showTranscriptAudioEnabledEl) {
 }
 
 document.addEventListener("keydown", (event) => {
+  const modal = topmostModal();
+  if (modal && event.key === "Tab") {
+    trapModalFocus(event, modal);
+    return;
+  }
+  if (modal && event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    if (modal === runtimeUi.screenshotModalEl) {
+      hideScreenshotModal();
+    } else if (modal === helpModalEl) {
+      closeHelpModal();
+    } else if (modal === adminQueueModalEl) {
+      closeAdminQueueModal();
+    }
+    return;
+  }
   if (event.key === "Escape" && state.sidebarOpen) {
     applySidebarOpen(false);
   }
   if (event.key === "Escape") {
     applyHistoryDrawerOpen(false);
-    hideScreenshotModal();
-    closeAdminQueueModal();
   }
 });
 
@@ -4256,6 +4805,13 @@ window.addEventListener("resize", () => {
   }
   applyHistoryCollapsed(state.historyCollapsed, { persist: false });
   applyActiveAiPanel(state.activeAiPanel);
+});
+
+window.addEventListener("pagehide", () => {
+  state.summaryController?.abort("page_hidden");
+  state.proofreadController?.abort("page_hidden");
+  state.historyListController?.abort("page_hidden");
+  state.historyDetailController?.abort("page_hidden");
 });
 
 setupWorkspaceResizers();
@@ -4341,7 +4897,13 @@ function renderPromptTemplateButtons(rawTemplates) {
     button.type = "button";
     button.className = "prompt-template-btn";
     button.textContent = label;
+    button.disabled = isRecordingInteractionLocked();
+    button.title = button.disabled ? "録音中・停止処理中は変更できません" : "";
     button.addEventListener("click", () => {
+      if (isRecordingInteractionLocked()) {
+        showRecordingInteractionBlocked("プロンプトを変更することが");
+        return;
+      }
       promptEl.value = content;
       promptEl.dispatchEvent(new Event("input", { bubbles: true }));
       promptEl.focus();
@@ -4366,10 +4928,17 @@ function applySharedVocabulary(payload, options = {}) {
 function updateSharedVocabularyMeta() {
   const authenticated = !!state.auth.authenticated;
   const isGuest = !!state.auth.isGuest;
+  const recordingLocked = isRecordingInteractionLocked();
   if (sharedVocabularySaveBtn) {
-    sharedVocabularySaveBtn.disabled = !authenticated || isGuest || state.sharedVocabularySaving;
+    sharedVocabularySaveBtn.disabled = !authenticated || isGuest || recordingLocked || state.sharedVocabularySaving;
     sharedVocabularySaveBtn.textContent = state.sharedVocabularySaving ? "保存中..." : "全体に保存";
-    sharedVocabularySaveBtn.title = isGuest ? "ゲストでは全体用語辞典を更新できません" : authenticated ? "" : "ログインが必要です";
+    sharedVocabularySaveBtn.title = recordingLocked
+      ? "録音中・停止処理中は変更できません"
+      : isGuest
+        ? "ゲストでは全体用語辞典を更新できません"
+        : authenticated
+          ? ""
+          : "ログインが必要です";
   }
   if (!sharedVocabularyMetaEl) return;
   if (!state.sharedVocabulary) {
@@ -4399,6 +4968,10 @@ async function loadSharedGlossary() {
 }
 
 async function saveSharedGlossary() {
+  if (isRecordingInteractionLocked()) {
+    showRecordingInteractionBlocked("全体用語辞典を変更することが");
+    return;
+  }
   if (state.auth.isGuest) {
     showToast("ゲストでは全体用語辞典を更新できません", "error");
     return;
@@ -4424,12 +4997,20 @@ async function saveSharedGlossary() {
 
 // Download link feedback
 [dlTxt, dlJsonl, dlZip].forEach((link) => {
-  link.addEventListener("click", () => {
-    const format = link.textContent;
-    if (link.href && link.href !== "#") {
-      link.classList.add("is-downloaded");
-      setTimeout(() => link.classList.remove("is-downloaded"), 800);
+  link.addEventListener("click", (event) => {
+    const href = link.getAttribute("href");
+    if (link.getAttribute("aria-disabled") === "true" || !href) {
+      event.preventDefault();
+      showToast(
+        isRecordingInteractionLocked()
+          ? "録音の最終処理が完了してから書き出してください"
+          : "書き出せる文字起こしがありません",
+        "error"
+      );
+      return;
     }
+    link.classList.add("is-downloaded");
+    setTimeout(() => link.classList.remove("is-downloaded"), 800);
   });
 });
 
@@ -4556,10 +5137,13 @@ async function loadCapabilities() {
     }
 
     if (diarizationToggleEl) {
-      diarizationToggleEl.disabled = !state.diarizationAvailable;
-      diarizationToggleEl.title = state.diarizationAvailable
-        ? "話者分離を有効/無効"
-        : "サーバーで話者分離は無効";
+      const recordingLocked = isRecordingInteractionLocked();
+      diarizationToggleEl.disabled = recordingLocked || !state.diarizationAvailable;
+      diarizationToggleEl.title = recordingLocked
+        ? "録音中・停止処理中は変更できません"
+        : state.diarizationAvailable
+          ? "話者分離を有効/無効"
+          : "サーバーで話者分離は無効";
     }
     state.diarizationSpeakerCap = Math.max(
       DIARIZATION_SPEAKER_MIN,
@@ -4610,6 +5194,9 @@ async function loadAuthState() {
   try {
     const payload = await fetchAuthState();
     if (!payload?.authenticated) {
+      state.auth.authenticated = false;
+      state.auth.user = null;
+      state.auth.sessionInvalid = !!payload?.sessionInvalid;
       state.auth.bootstrapAdminRequired = !!payload?.bootstrapAdminRequired;
       state.selfSignupEnabled = !!payload?.selfSignupEnabled;
       state.auth.guestTranscriptionAllowed = !!payload?.guestTranscriptionAllowed;
@@ -4623,17 +5210,22 @@ async function loadAuthState() {
       } catch {
         state.auth.isGuest = false;
       }
-      if (state.auth.guestTranscriptionAllowed && !state.auth.isGuest && !state.auth.bootstrapAdminRequired) {
-        state.auth.isGuest = true;
-        persistGuestMode(true);
+      if (state.auth.sessionInvalid) {
+        state.auth.isGuest = false;
+        persistGuestMode(false);
       }
       setAppLocked(!canUseWorkspace());
       renderAuthState();
+      if (state.auth.sessionInvalid) {
+        showToast("ログインセッションが切れました。再ログインしてください", "error", 7000);
+        loginEmailEl?.focus();
+      }
       logClientEvent("auth_state.load.success", { authenticated: false, guest: !!state.auth.isGuest });
       return;
     }
     state.auth.authenticated = !!payload.authenticated;
     state.auth.isGuest = false;
+    state.auth.sessionInvalid = false;
     state.auth.user = payload.user || null;
     state.auth.profileEditorOpen = false;
     state.auth.profileSaving = false;
@@ -4680,18 +5272,10 @@ async function loadAuthState() {
       isAdmin: !!state.auth.user?.isAdmin,
     });
   } catch {
-    // ignore auth bootstrap errors
     try {
-      state.auth.isGuest = false;
-      if (state.auth.guestTranscriptionAllowed) {
-        state.auth.isGuest = readGuestMode();
-      }
-      if (state.auth.guestTranscriptionAllowed && !state.auth.isGuest && !state.auth.bootstrapAdminRequired) {
-        state.auth.isGuest = true;
-        persistGuestMode(true);
-      }
       setAppLocked(!canUseWorkspace());
       renderAuthState();
+      showToast("認証状態を確認できません。通信を確認して再読み込みしてください", "error", 7000);
       logClientEvent("auth_state.load.fallback", { guest: !!state.auth.isGuest });
     } catch {
       // ignore
@@ -4712,6 +5296,7 @@ async function login() {
     const payload = await loginRequest({ email, password });
     state.auth.authenticated = true;
     state.auth.isGuest = false;
+    state.auth.sessionInvalid = false;
     state.auth.user = payload.user || null;
     state.auth.profileEditorOpen = false;
     state.auth.profileSaving = false;
@@ -4750,6 +5335,7 @@ async function bootstrapAdmin() {
     const payload = await bootstrapAdminRequest({ email, password, displayName });
     state.auth.authenticated = true;
     state.auth.isGuest = false;
+    state.auth.sessionInvalid = false;
     state.auth.user = payload.user || null;
     state.auth.profileEditorOpen = false;
     state.auth.profileSaving = false;
@@ -4814,6 +5400,9 @@ async function saveDisplayName() {
 }
 
 async function logout() {
+  if (!confirmWorkspaceDiscard("破棄してログアウト")) {
+    return;
+  }
   await logoutRequest().catch(() => null);
   if (state.recording || state.finalizingStop) {
     stopRecording();
@@ -4823,6 +5412,7 @@ async function logout() {
   }
   state.auth.authenticated = false;
   state.auth.isGuest = false;
+  state.auth.sessionInvalid = false;
   state.auth.user = null;
   state.auth.profileEditorOpen = false;
   state.auth.profileSaving = false;
@@ -4835,6 +5425,7 @@ async function logout() {
   setSummary("", "未生成");
   setProofread("", "未生成");
   resetRuntimeSessionState();
+  markWorkspaceClean();
   persistGuestMode(false);
   setAppLocked(true);
   renderAuthState();
@@ -4851,12 +5442,14 @@ function loginAsGuest() {
   }
   state.auth.authenticated = false;
   state.auth.isGuest = true;
+  state.auth.sessionInvalid = false;
   state.auth.user = null;
   state.auth.profileEditorOpen = false;
   state.auth.profileSaving = false;
   state.auth.pendingApprovalCount = 0;
   clearHistoryState(state);
   resetRuntimeSessionState();
+  markWorkspaceClean();
   persistGuestMode(true);
   setAppLocked(false);
   renderAuthState();
@@ -4883,10 +5476,10 @@ async function loadPendingUsers() {
 
 async function openAdminQueueModal() {
   if (!state.auth.user?.isAdmin) return;
+  const opener = document.activeElement;
   await loadPendingUsers();
   if (!adminQueueModalEl) return;
-  adminQueueModalEl.hidden = false;
-  lockBodyScroll();
+  openManagedModal(adminQueueModalEl, { opener, initialFocus: adminQueueCloseEl });
 }
 
 async function approvePendingUser(userId) {
@@ -4909,18 +5502,27 @@ async function loadHistoryList() {
   }
 
   logClientEvent("history.load.start", { query: state.history.query, offset: state.history.offset, limit: state.history.limit });
+  state.historyListController?.abort("history_request_replaced");
+  const controller = new AbortController();
+  state.historyListController = controller;
   try {
     const payload = await fetchHistoryListRequest({
       limit: state.history.limit,
       offset: state.history.offset,
       query: state.history.query,
+      signal: controller.signal,
     });
     applyHistoryListPayload(state, payload);
     renderHistoryList();
     logClientEvent("history.load.success", { total: state.history.total, items: state.history.items.length });
-  } catch {
+  } catch (error) {
+    if (error?.code === "aborted") return;
     updateHistoryEmptyState("履歴の取得に失敗しました");
     logClientEvent("history.load.failed");
+  } finally {
+    if (state.historyListController === controller) {
+      state.historyListController = null;
+    }
   }
 }
 
@@ -4949,6 +5551,7 @@ function renderHistoryDetail(payload) {
   if (saveTitleInputEl) {
     saveTitleInputEl.value = String(payload.title || "");
   }
+  markWorkspaceClean();
   updateDownloadLinks();
   updateSaveControls();
   renderHistoryList();
@@ -4961,23 +5564,48 @@ async function openHistoryDetail(historyId) {
     loginEmailEl?.focus();
     return;
   }
-  if (state.recording) {
-    showToast("録音中は履歴を開けません", "error");
+  if (isRecordingInteractionLocked()) {
+    showRecordingInteractionBlocked("履歴を開くことが");
     return;
   }
+  if (state.viewingHistoryId !== historyId && !confirmWorkspaceDiscard("破棄して別の履歴を表示")) {
+    return;
+  }
+  const requestVersion = state.historyDetailRequestVersion + 1;
+  state.historyDetailRequestVersion = requestVersion;
+  const runtimeSessionIdAtRequest = state.runtimeSessionId;
+  state.historyDetailController?.abort("history_request_replaced");
+  const controller = new AbortController();
+  state.historyDetailController = controller;
   try {
-    const payload = await fetchHistoryDetail(historyId);
+    const payload = await fetchHistoryDetail(historyId, { signal: controller.signal });
+    if (
+      requestVersion !== state.historyDetailRequestVersion ||
+      isRecordingInteractionLocked() ||
+      state.runtimeSessionId !== runtimeSessionIdAtRequest
+    ) {
+      return;
+    }
     renderHistoryDetail(payload);
     if (window.innerWidth <= 1100) {
       applyHistoryDrawerOpen(false);
     }
-  } catch {
+  } catch (error) {
+    if (error?.code === "aborted") return;
     showToast("履歴の取得に失敗しました", "error");
+  } finally {
+    if (state.historyDetailController === controller) {
+      state.historyDetailController = null;
+    }
   }
 }
 
 async function deleteHistory(historyId) {
   if (!historyId || !state.auth.authenticated) return;
+  if (isRecordingInteractionLocked()) {
+    showRecordingInteractionBlocked("履歴を削除することが");
+    return;
+  }
   const target = state.history.items.find((item) => item.id === historyId);
   const confirmed = window.confirm(`履歴「${target?.title || historyId}」を削除しますか？`);
   if (!confirmed) return;
@@ -4990,7 +5618,7 @@ async function deleteHistory(historyId) {
   }
 
   if (state.viewingHistoryId === historyId || state.savedHistoryId === historyId || state.history.selectedId === historyId) {
-    clearView();
+    clearView({ skipConfirmation: true });
   }
   await loadHistoryList();
   showToast("履歴を削除しました", "success");
@@ -5054,6 +5682,7 @@ async function saveCurrentHistory() {
   state.savedHistoryId = payload.history?.id || null;
   state.viewingHistoryId = state.savedHistoryId;
   state.history.selectedId = state.savedHistoryId;
+  markWorkspaceClean();
   updateDownloadLinks();
   updateSaveControls();
   await loadHistoryList();
@@ -5079,8 +5708,9 @@ applyAdvancedSettingsOpen(false);
 applySummaryPromptEditorOpen(false);
 applyActiveAiPanel(state.activeAiPanel);
 applySidebarOpen(false);
-updateHistoryControls();
+applyHistoryDrawerOpen(false);
 setStatus("idle");
+document.documentElement.dataset.whistxReady = "true";
 
 // Show initial empty state for transcript
 if (logEl && !logEl.querySelector(".log-row")) {
