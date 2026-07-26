@@ -148,6 +148,21 @@ async function evaluate(client, expression) {
   return result.result.value;
 }
 
+async function unloadProtectionState(client) {
+  return evaluate(
+    client,
+    `(() => {
+      const event = new Event("beforeunload", { cancelable: true });
+      const dispatched = window.dispatchEvent(event);
+      return {
+        dirty: document.documentElement.dataset.unsavedTranscript || "false",
+        prevented: event.defaultPrevented,
+        dispatched
+      };
+    })()`,
+  );
+}
+
 async function waitForApp(client) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const ready = await evaluate(
@@ -599,6 +614,11 @@ async function verifyRecordingStartIsSingleFlight(client) {
   }
   await verifyEmptySummaryIsNotCopied(client);
   await verifyEmptyDownloadsAreDisabled(client);
+  assert.deepEqual(
+    await unloadProtectionState(client),
+    { dirty: "false", prevented: false, dispatched: true },
+    "empty workspace should not register unload protection",
+  );
 
   await evaluate(
     client,
@@ -615,6 +635,7 @@ async function verifyRecordingStartIsSingleFlight(client) {
       disabled: document.querySelector("#startBtn").disabled,
       busy: document.querySelector("#startBtn").getAttribute("aria-busy"),
       label: document.querySelector("#startBtn .record-label").textContent,
+      dirty: document.documentElement.dataset.unsavedTranscript,
       settings: {
         language: document.querySelector("#language").disabled,
         audioSource: document.querySelector("#audioSource").disabled,
@@ -633,6 +654,7 @@ async function verifyRecordingStartIsSingleFlight(client) {
       disabled: true,
       busy: "true",
       label: "準備中...",
+      dirty: "true",
       settings: {
         language: true,
         audioSource: true,
@@ -678,6 +700,11 @@ async function verifyRecordingStartIsSingleFlight(client) {
   assert.equal(result.downloadHref, null, "recording should not expose a partial artifact URL");
   assert.equal(result.downloadDisabled, "true", "recording exports should remain disabled");
   assert.equal(result.settingsLocked, true, "session settings should remain locked while recording");
+  assert.deepEqual(
+    await unloadProtectionState(client),
+    { dirty: "true", prevented: true, dispatched: false },
+    "recording should protect against page unload even before finalization",
+  );
 }
 
 async function verifyEmptyDownloadsAreDisabled(client) {
@@ -982,6 +1009,11 @@ async function verifyGracefulStopIsSerialized(client) {
   );
   assert.equal(completed.downloadDisabled, "false", "exports should unlock after finalization");
   assert.equal(completed.settingsUnlocked, true, "session settings should unlock after finalization");
+  assert.deepEqual(
+    await unloadProtectionState(client),
+    { dirty: "true", prevented: true, dispatched: false },
+    "completed but unsaved transcript should keep unload protection",
+  );
   assert.ok(
     completed.transcript.includes("停止直前の文字起こし"),
     "final segment arriving before finalized acknowledgement should remain in the completed session",
@@ -1043,8 +1075,19 @@ async function verifyIdleDestructiveActions(client) {
   );
   assert.match(result.transcript, /停止直前の文字起こし/, "cancelled clear must preserve completed transcript");
   assert.equal(result.historyDetailRequests, 0, "cancelled clear should not affect history state");
+  assert.deepEqual(
+    await unloadProtectionState(client),
+    { dirty: "true", prevented: true, dispatched: false },
+    "cancelling a destructive clear should retain unload protection",
+  );
 
-  await evaluate(client, `document.querySelector(".history-item-main").click()`);
+  await evaluate(
+    client,
+    `(() => {
+      window.confirm = () => true;
+      document.querySelector(".history-item-main").click();
+    })()`,
+  );
   await new Promise((resolve) => setTimeout(resolve, 20));
   result = await evaluate(
     client,
@@ -1057,6 +1100,11 @@ async function verifyIdleDestructiveActions(client) {
   assert.equal(result.historyDetailRequests, 1, "history should load only after recording finalization");
   assert.match(result.transcript, /履歴の文字起こし/, "unlocked history action should render the selected history");
   assert.equal(result.downloadHref, "/api/history/history-1/download.txt", "selected history should expose its artifact");
+  assert.deepEqual(
+    await unloadProtectionState(client),
+    { dirty: "false", prevented: false, dispatched: true },
+    "saved history view should remove unload protection",
+  );
 }
 
 async function verifySummaryCanBeCancelled(client) {
@@ -1332,6 +1380,18 @@ async function verifyEffectiveAudioSourceFallback(client) {
 
   await evaluate(client, `document.querySelector("#startBtn").click()`);
   await new Promise((resolve) => setTimeout(resolve, 140));
+  await evaluate(
+    client,
+    `(() => {
+      window.confirm = () => true;
+      document.querySelector("#clearBtn").click();
+    })()`,
+  );
+  assert.deepEqual(
+    await unloadProtectionState(client),
+    { dirty: "false", prevented: false, dispatched: true },
+    "explicitly discarded transcript should remove unload protection",
+  );
 }
 
 const chrome = await findChrome();

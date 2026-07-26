@@ -272,6 +272,8 @@ const state = {
   historyListController: null,
   historyDetailController: null,
   saveInFlight: false,
+  workspaceDirty: false,
+  unloadProtectionRegistered: false,
   seq: 0,
   offsetMs: 0,
   chunkMs: CHUNK_DEFAULT_SECONDS * 1000,
@@ -1967,6 +1969,43 @@ function isRecordingInteractionLocked() {
   return state.recordingPhase !== "idle" || !!state.finalizingStop;
 }
 
+function shouldProtectWorkspaceFromUnload() {
+  return state.workspaceDirty || isRecordingInteractionLocked();
+}
+
+function handleBeforeUnload(event) {
+  if (!shouldProtectWorkspaceFromUnload()) return;
+  event.preventDefault();
+  event.returnValue = "";
+}
+
+function syncUnloadProtection() {
+  const shouldProtect = shouldProtectWorkspaceFromUnload();
+  if (shouldProtect && !state.unloadProtectionRegistered) {
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    state.unloadProtectionRegistered = true;
+  } else if (!shouldProtect && state.unloadProtectionRegistered) {
+    window.removeEventListener("beforeunload", handleBeforeUnload);
+    state.unloadProtectionRegistered = false;
+  }
+  document.documentElement.dataset.unsavedTranscript = shouldProtect ? "true" : "false";
+}
+
+function markWorkspaceDirty() {
+  state.workspaceDirty = true;
+  syncUnloadProtection();
+}
+
+function markWorkspaceClean() {
+  state.workspaceDirty = false;
+  syncUnloadProtection();
+}
+
+function confirmWorkspaceDiscard(action) {
+  if (!state.workspaceDirty) return true;
+  return window.confirm(`保存されていない文字起こしや生成結果があります。${action}してよいですか？`);
+}
+
 function showRecordingInteractionBlocked(action) {
   const finalizing = state.recordingPhase === "stopping" || state.recordingPhase === "finalizing" || state.finalizingStop;
   showToast(finalizing ? `録音の停止処理中は${action}できません` : `録音中は${action}できません`, "error");
@@ -2586,6 +2625,7 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", raw
     rawAudioPath,
     audioPath,
   });
+  markWorkspaceDirty();
   updateSegmentCount();
   markProofreadStale();
   updateSaveControls();
@@ -2720,6 +2760,7 @@ function setUiRecording(active) {
   updateSaveControls();
   updateDownloadLinks();
   setSessionSettingsLocked();
+  syncUnloadProtection();
   renderHistoryList();
 }
 
@@ -2735,6 +2776,7 @@ function setUiRecordingStarting() {
   updateSaveControls();
   updateDownloadLinks();
   setSessionSettingsLocked(true);
+  syncUnloadProtection();
   renderHistoryList();
 }
 
@@ -2749,6 +2791,7 @@ function setUiRecordingStopping(finalizing = false) {
   updateSaveControls();
   updateDownloadLinks();
   setSessionSettingsLocked(true);
+  syncUnloadProtection();
   renderHistoryList();
 }
 
@@ -2767,6 +2810,7 @@ function commitNewRecordingWorkspace() {
   state.viewingHistoryId = null;
   state.log = [];
   state.segments = [];
+  markWorkspaceClean();
   state.logAutoScrollEnabled = true;
   if (saveTitleInputEl) {
     saveTitleInputEl.value = "";
@@ -3784,6 +3828,7 @@ async function finalizeStop() {
     updateSaveControls();
     updateDownloadLinks();
     setSessionSettingsLocked(false);
+    syncUnloadProtection();
     renderHistoryList();
     if (completed) {
       setStatus("completed");
@@ -3803,14 +3848,7 @@ async function startRecording() {
     loginEmailEl?.focus();
     return;
   }
-  const hasUnsavedTranscript =
-    state.segments.length > 0 &&
-    !state.savedHistoryId &&
-    !state.viewingHistoryId;
-  if (
-    hasUnsavedTranscript &&
-    !window.confirm("未保存の文字起こしがあります。破棄して新しい録音を開始しますか？")
-  ) {
+  if (!confirmWorkspaceDiscard("破棄して新しい録音を開始")) {
     return;
   }
   setUiRecordingStarting();
@@ -4185,6 +4223,7 @@ async function proofreadAll() {
 
       if (eventType === "delta") {
         correctedText += String(event.delta || "");
+        if (correctedText) markWorkspaceDirty();
         const now = Date.now();
         if (now - lastRenderAt >= 120 || correctedText.endsWith("\n")) {
           setProofread(correctedText, chunkCount > 1 ? `処理中... ${currentChunk}/${chunkCount}` : "処理中...");
@@ -4195,6 +4234,7 @@ async function proofreadAll() {
 
       if (eventType === "final_text") {
         correctedText = String(event.text || "").trim();
+        if (correctedText) markWorkspaceDirty();
         setProofread(correctedText, chunkCount > 1 ? `処理中... ${currentChunk}/${chunkCount}` : "処理中...");
         lastRenderAt = Date.now();
         return;
@@ -4219,6 +4259,7 @@ async function proofreadAll() {
     }
 
     setProofread(correctedText, metaParts.join(" | ") || "生成完了");
+    markWorkspaceDirty();
     setStatus("proofread_done");
     showToast(`${proofreadActionLabel()}を生成しました`, "success");
   } catch (err) {
@@ -4316,6 +4357,7 @@ async function summarizeAll() {
     }
 
     setSummary(summaryText, metaParts.join(" | ") || "生成完了");
+    markWorkspaceDirty();
     setStatus("summarized");
     showToast("要約を生成しました", "success");
   } catch (err) {
@@ -4393,6 +4435,7 @@ function clearView(options = {}) {
   state.viewingHistoryId = null;
   state.savedHistoryId = null;
   resetRuntimeSessionState();
+  markWorkspaceClean();
 
   renderEmptyTranscriptState();
 
@@ -5348,6 +5391,9 @@ async function saveDisplayName() {
 }
 
 async function logout() {
+  if (!confirmWorkspaceDiscard("破棄してログアウト")) {
+    return;
+  }
   await logoutRequest().catch(() => null);
   if (state.recording || state.finalizingStop) {
     stopRecording();
@@ -5369,6 +5415,7 @@ async function logout() {
   setSummary("", "未生成");
   setProofread("", "未生成");
   resetRuntimeSessionState();
+  markWorkspaceClean();
   persistGuestMode(false);
   setAppLocked(true);
   renderAuthState();
@@ -5391,6 +5438,7 @@ function loginAsGuest() {
   state.auth.pendingApprovalCount = 0;
   clearHistoryState(state);
   resetRuntimeSessionState();
+  markWorkspaceClean();
   persistGuestMode(true);
   setAppLocked(false);
   renderAuthState();
@@ -5492,6 +5540,7 @@ function renderHistoryDetail(payload) {
   if (saveTitleInputEl) {
     saveTitleInputEl.value = String(payload.title || "");
   }
+  markWorkspaceClean();
   updateDownloadLinks();
   updateSaveControls();
   renderHistoryList();
@@ -5506,6 +5555,9 @@ async function openHistoryDetail(historyId) {
   }
   if (isRecordingInteractionLocked()) {
     showRecordingInteractionBlocked("履歴を開くことが");
+    return;
+  }
+  if (state.viewingHistoryId !== historyId && !confirmWorkspaceDiscard("破棄して別の履歴を表示")) {
     return;
   }
   const requestVersion = state.historyDetailRequestVersion + 1;
@@ -5619,6 +5671,7 @@ async function saveCurrentHistory() {
   state.savedHistoryId = payload.history?.id || null;
   state.viewingHistoryId = state.savedHistoryId;
   state.history.selectedId = state.savedHistoryId;
+  markWorkspaceClean();
   updateDownloadLinks();
   updateSaveControls();
   await loadHistoryList();
