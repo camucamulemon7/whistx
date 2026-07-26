@@ -1547,7 +1547,11 @@ function setupWorkspaceResizers() {
       if (window.innerWidth <= 1439) return;
       state.activeResizer = String(handle.dataset.resizer || "");
       document.body.classList.add("is-resizing-panels");
-      handle.setPointerCapture?.(event.pointerId);
+      try {
+        handle.setPointerCapture?.(event.pointerId);
+      } catch {
+        // Pointer capture can be unavailable for synthetic or interrupted pointer sequences.
+      }
       event.preventDefault();
     });
   });

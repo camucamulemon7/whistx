@@ -247,6 +247,118 @@ async function verifyHistoryDrawerAtWidth(client, width) {
   assert.equal(state.railOpen, false, `${width}px: close button should close the drawer`);
 }
 
+async function verifyDesktopPanelLayout(client) {
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
+  let layout = await evaluate(
+    client,
+    `({
+      columns: getComputedStyle(document.querySelector("#workspacePanels")).gridTemplateColumns.split(" ").length,
+      resizerDisplay: getComputedStyle(document.querySelector('[data-resizer="left"]')).display
+    })`,
+  );
+  assert.equal(layout.columns, 1, "1280px should use a single workspace column");
+  assert.equal(layout.resizerDisplay, "none", "1280px should hide desktop-only resizers");
+
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
+  const beforeCollapse = await evaluate(
+    client,
+    `({
+      transcript: document.querySelector(".transcript-panel").getBoundingClientRect().width,
+      proofread: document.querySelector(".proofread-panel").getBoundingClientRect().width,
+      resizerDisplay: getComputedStyle(document.querySelector('[data-resizer="left"]')).display
+    })`,
+  );
+  assert.notEqual(beforeCollapse.resizerDisplay, "none", "1440px should expose panel resizers");
+  await evaluate(client, `document.querySelector('[data-panel-toggle="transcript"]').click()`);
+  const afterCollapse = await evaluate(
+    client,
+    `({
+      transcript: document.querySelector(".transcript-panel").getBoundingClientRect().width,
+      proofread: document.querySelector(".proofread-panel").getBoundingClientRect().width
+    })`,
+  );
+  assert.ok(afterCollapse.transcript <= 92, "collapsed transcript should shrink to its compact desktop width");
+  assert.ok(
+    afterCollapse.transcript < beforeCollapse.transcript - 100,
+    "collapsing transcript should release substantial workspace width",
+  );
+  assert.ok(afterCollapse.proofread > beforeCollapse.proofread, "adjacent panels should use released width");
+  await evaluate(client, `document.querySelector('[data-panel-toggle="transcript"]').click()`);
+
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    width: 1920,
+    height: 1000,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
+  const beforeResize = await evaluate(
+    client,
+    `(() => {
+      const transcript = document.querySelector(".transcript-panel").getBoundingClientRect();
+      const proofread = document.querySelector(".proofread-panel").getBoundingClientRect();
+      const handle = document.querySelector('[data-resizer="left"]').getBoundingClientRect();
+      return {
+        transcript: transcript.width,
+        proofread: proofread.width,
+        handleX: handle.left + handle.width / 2,
+        handleY: handle.top + Math.min(80, handle.height / 2)
+      };
+    })()`,
+  );
+  await evaluate(
+    client,
+    `(() => {
+      const handle = document.querySelector('[data-resizer="left"]');
+      handle.dispatchEvent(new PointerEvent("pointerdown", {
+        bubbles: true,
+        pointerId: 1,
+        clientX: ${beforeResize.handleX},
+        clientY: ${beforeResize.handleY}
+      }));
+      window.dispatchEvent(new PointerEvent("pointermove", {
+        bubbles: true,
+        pointerId: 1,
+        clientX: ${beforeResize.handleX + 120},
+        clientY: ${beforeResize.handleY}
+      }));
+      window.dispatchEvent(new PointerEvent("pointerup", {
+        bubbles: true,
+        pointerId: 1,
+        clientX: ${beforeResize.handleX + 120},
+        clientY: ${beforeResize.handleY}
+      }));
+    })()`,
+  );
+  const afterResize = await evaluate(
+    client,
+    `({
+      transcript: document.querySelector(".transcript-panel").getBoundingClientRect().width,
+      proofread: document.querySelector(".proofread-panel").getBoundingClientRect().width
+    })`,
+  );
+  assert.ok(
+    afterResize.transcript > beforeResize.transcript + 40,
+    `dragging should widen the transcript panel: ${JSON.stringify({ beforeResize, afterResize })}`,
+  );
+  assert.ok(
+    afterResize.proofread < beforeResize.proofread - 20,
+    `dragging should resize the adjacent panel: ${JSON.stringify({ beforeResize, afterResize })}`,
+  );
+}
+
 const recordingMocks = String.raw`
   (() => {
     window.__recordingTest = {
@@ -909,6 +1021,7 @@ try {
       if (overlay) overlay.hidden = true;
     })()`,
   );
+  await verifyDesktopPanelLayout(client);
   for (const width of [390, 640, 1100]) {
     await verifyHistoryDrawerAtWidth(client, width);
   }
