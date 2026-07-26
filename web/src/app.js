@@ -2554,6 +2554,25 @@ function resetRuntimeSessionState() {
   state.runtimeSessionToken = "";
 }
 
+function commitNewRecordingWorkspace() {
+  state.history.selectedId = null;
+  state.savedHistoryId = null;
+  state.viewingHistoryId = null;
+  state.log = [];
+  state.segments = [];
+  state.logAutoScrollEnabled = true;
+  if (saveTitleInputEl) {
+    saveTitleInputEl.value = "";
+  }
+  renderEmptyTranscriptState();
+  setSummary("", "未生成");
+  setProofread("", "未生成");
+  updateSegmentCount();
+  updateDownloadLinks();
+  updateSaveControls();
+  renderHistoryList();
+}
+
 function audioSourceHintText(source) {
   if (source === "display") {
     return "画面共有音声はブラウザ制約で取得できない場合があります。Chrome/Edge のタブ共有が最も安定します。";
@@ -3520,8 +3539,20 @@ async function startRecording() {
     loginEmailEl?.focus();
     return;
   }
+  const hasUnsavedTranscript =
+    state.segments.length > 0 &&
+    !state.savedHistoryId &&
+    !state.viewingHistoryId;
+  if (
+    hasUnsavedTranscript &&
+    !window.confirm("未保存の文字起こしがあります。破棄して新しい録音を開始しますか？")
+  ) {
+    return;
+  }
   setUiRecordingStarting();
   let startSent = false;
+  const previousRuntimeSessionId = state.runtimeSessionId;
+  const previousRuntimeSessionToken = state.runtimeSessionToken;
 
   const selectedChunkSeconds = applyChunkSeconds(chunkSecondsEl.value || CHUNK_DEFAULT_SECONDS);
   state.chunkMs = selectedChunkSeconds * 1000;
@@ -3542,19 +3573,8 @@ async function startRecording() {
   state.lastScreenshotSkipSentAt = 0;
   state.seq = 0;
   state.offsetMs = 0;
-  state.runtimeSessionId = "";
-  state.runtimeSessionToken = "";
-  state.history.selectedId = null;
   state.finalizingStop = false;
   state.pendingSendChain = Promise.resolve();
-  state.log = [];
-  state.segments = [];
-  state.logAutoScrollEnabled = true;
-  renderEmptyTranscriptState();
-  setSummary("", "未生成");
-  setProofread("", "未生成");
-  resetCurrentSaveState();
-  renderHistoryList();
   clearChunkTimer();
 
   try {
@@ -3611,6 +3631,7 @@ async function startRecording() {
       setStatus("recording_mic");
     }
     startRecorderCycle();
+    commitNewRecordingWorkspace();
   } catch (err) {
     const name = err?.name || "";
     const message = err?.message || "unknown_error";
@@ -3638,7 +3659,11 @@ async function startRecording() {
       logWsEvent("send_stop_after_start_failure");
     }
     cleanupMedia();
+    state.runtimeSessionId = previousRuntimeSessionId;
+    state.runtimeSessionToken = previousRuntimeSessionToken;
+    state.recordingStartedAt = 0;
     setUiRecording(false);
+    updateDownloadLinks();
     updateRecordingTelemetry();
   }
 }

@@ -452,6 +452,20 @@ async function verifyRecordingStartIsSingleFlight(client) {
 }
 
 async function verifySocketLossStopsRecording(client) {
+  await evaluate(
+    client,
+    `(() => {
+      const event = new Event("message");
+      event.data = JSON.stringify({
+        type: "final",
+        text: "保持すべき文字起こし",
+        tsStart: 0,
+        tsEnd: 1000,
+        seq: 1
+      });
+      window.__recordingTest.socket.dispatchEvent(event);
+    })()`,
+  );
   await evaluate(client, `window.__recordingTest.socket.close()`);
   await new Promise((resolve) => setTimeout(resolve, 50));
   const result = await evaluate(
@@ -469,6 +483,137 @@ async function verifySocketLossStopsRecording(client) {
   assert.equal(result.pressed, "false", "socket loss should leave recording UI");
   assert.equal(result.label, "録音開始", "socket loss should restore the start action");
   assert.equal(result.status, "接続切断・録音終了", "socket loss should explain why recording stopped");
+}
+
+async function verifyFailedStartPreservesTranscript(client) {
+  await evaluate(
+    client,
+    `(() => {
+      window.confirm = () => true;
+      window.fetch = (input) => {
+        const url = String(input);
+        const payload = url.includes("/api/health")
+          ? { asrReady: false, model: "" }
+          : url.includes("/api/auth/me")
+            ? {
+                authenticated: false,
+                guestTranscriptionAllowed: true,
+                bootstrapAdminRequired: false
+              }
+            : { text: "" };
+        return Promise.resolve(new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }));
+      };
+      document.querySelector("#startBtn").click();
+    })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const result = await evaluate(
+    client,
+    `({
+      transcript: document.querySelector(".log-row .text")?.textContent || "",
+      segmentCount: document.querySelector("#segmentCount").textContent,
+      label: document.querySelector("#startBtn .record-label").textContent,
+      status: document.querySelector("#statusText").textContent
+    })`,
+  );
+  assert.equal(result.transcript, "保持すべき文字起こし", "failed start should retain transcript text");
+  assert.equal(result.segmentCount, "1件", "failed start should retain transcript state");
+  assert.equal(result.label, "録音開始", "failed start should restore the start action");
+  assert.equal(result.status, "開始失敗", "failed start should be reported without clearing results");
+
+  await evaluate(
+    client,
+    `(() => {
+      window.fetch = (input) => {
+        const url = String(input);
+        const payload = url.includes("/api/health")
+          ? {
+              asrReady: true,
+              model: "browser-test",
+              wsPath: "/ws/transcribe",
+              diarizationEnabled: false
+            }
+          : url.includes("/api/auth/me")
+            ? {
+                authenticated: false,
+                guestTranscriptionAllowed: true,
+                bootstrapAdminRequired: false
+              }
+            : { text: "" };
+        return Promise.resolve(new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }));
+      };
+      navigator.mediaDevices.getUserMedia = async () => {
+        throw new DOMException("Permission denied", "NotAllowedError");
+      };
+      document.querySelector("#startBtn").click();
+    })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const permissionResult = await evaluate(
+    client,
+    `({
+      transcript: document.querySelector(".log-row .text")?.textContent || "",
+      segmentCount: document.querySelector("#segmentCount").textContent,
+      label: document.querySelector("#startBtn .record-label").textContent
+    })`,
+  );
+  assert.deepEqual(
+    permissionResult,
+    {
+      transcript: "保持すべき文字起こし",
+      segmentCount: "1件",
+      label: "録音開始",
+    },
+    "permission rejection should retain the current transcript",
+  );
+
+  await evaluate(
+    client,
+    `(() => {
+      window.__recordingTest.socket?.close();
+      class FailingWebSocket extends EventTarget {
+        static CONNECTING = 0;
+        static OPEN = 1;
+        static CLOSING = 2;
+        static CLOSED = 3;
+        constructor() {
+          super();
+          this.readyState = FailingWebSocket.CONNECTING;
+          queueMicrotask(() => {
+            this.readyState = FailingWebSocket.CLOSED;
+            this.dispatchEvent(new Event("close"));
+          });
+        }
+        send() {}
+      }
+      window.WebSocket = FailingWebSocket;
+      document.querySelector("#startBtn").click();
+    })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const socketResult = await evaluate(
+    client,
+    `({
+      transcript: document.querySelector(".log-row .text")?.textContent || "",
+      segmentCount: document.querySelector("#segmentCount").textContent,
+      label: document.querySelector("#startBtn .record-label").textContent
+    })`,
+  );
+  assert.deepEqual(
+    socketResult,
+    {
+      transcript: "保持すべき文字起こし",
+      segmentCount: "1件",
+      label: "録音開始",
+    },
+    "WebSocket startup failure should retain the current transcript",
+  );
 }
 
 const chrome = await findChrome();
@@ -506,7 +651,8 @@ try {
   }
   await verifyRecordingStartIsSingleFlight(client);
   await verifySocketLossStopsRecording(client);
-  process.stdout.write("Browser UI, recording single-flight, and socket-loss checks passed.\n");
+  await verifyFailedStartPreservesTranscript(client);
+  process.stdout.write("Browser UI and recording lifecycle checks passed.\n");
 } finally {
   client?.close();
   if (chromeProcess.exitCode === null) {
