@@ -988,6 +988,46 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(payload['authenticated'])
         self.assertEqual(payload['pendingApprovalCount'], 3)
         self.assertEqual(payload['historyRetentionDays'], 7)
+        self.assertFalse(payload['sessionInvalid'])
+
+    def test_auth_me_marks_and_clears_an_invalid_session_cookie(self) -> None:
+        request = Request(
+            {
+                'type': 'http',
+                'method': 'GET',
+                'path': '/api/auth/me',
+                'headers': [(b'cookie', b'whistx_session=stale-session')],
+                'client': ('127.0.0.1', 12345),
+                'query_string': b'',
+            }
+        )
+        with patch.object(auth_service, 'get_optional_user_from_request', return_value=None):
+            with patch.object(auth_service.auth, 'has_admin_account', return_value=True):
+                with patch.object(
+                    auth_service,
+                    'settings',
+                    SimpleNamespace(
+                        enable_self_signup=True,
+                        allow_guest_transcription=True,
+                        history_retention_days=7,
+                        keycloak_enabled=False,
+                        keycloak_issuer='',
+                        keycloak_client_id='',
+                        keycloak_button_label='Keycloakでログイン',
+                    ),
+                ):
+                    payload = auth_service.build_auth_me_payload(request, SimpleNamespace())
+        self.assertFalse(payload['authenticated'])
+        self.assertTrue(payload['sessionInvalid'])
+
+        app = FastAPI()
+        app.include_router(auth_routes.router)
+        app.dependency_overrides[auth_routes.get_db] = lambda: DummyDB()
+        with patch.object(auth_routes, 'build_auth_me_payload', return_value=payload):
+            response = TestClient(app).get('/api/auth/me', cookies={'whistx_session': 'stale-session'})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('whistx_session=', response.headers.get('set-cookie', ''))
+        self.assertIn('Max-Age=0', response.headers.get('set-cookie', ''))
 
     def test_admin_users_route_forwards_search_query(self) -> None:
         app = FastAPI()

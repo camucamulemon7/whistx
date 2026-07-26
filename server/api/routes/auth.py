@@ -33,7 +33,11 @@ logger = logging.getLogger(__name__)
 async def auth_me(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     emit_container_log(__name__, "debug", "auth me requested")
     logger.debug("auth me requested")
-    return JSONResponse(build_auth_me_payload(request, db))
+    payload = build_auth_me_payload(request, db)
+    response = JSONResponse(payload)
+    if payload.get('sessionInvalid'):
+        clear_session_cookie(response=response, request=request, cookie_name='whistx_session')
+    return response
 
 
 @router.post('/api/auth/login')

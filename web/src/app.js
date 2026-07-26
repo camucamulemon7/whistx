@@ -367,6 +367,7 @@ const state = {
   auth: {
     authenticated: false,
     isGuest: false,
+    sessionInvalid: false,
     user: null,
     profileEditorOpen: false,
     profileSaving: false,
@@ -5187,6 +5188,9 @@ async function loadAuthState() {
   try {
     const payload = await fetchAuthState();
     if (!payload?.authenticated) {
+      state.auth.authenticated = false;
+      state.auth.user = null;
+      state.auth.sessionInvalid = !!payload?.sessionInvalid;
       state.auth.bootstrapAdminRequired = !!payload?.bootstrapAdminRequired;
       state.selfSignupEnabled = !!payload?.selfSignupEnabled;
       state.auth.guestTranscriptionAllowed = !!payload?.guestTranscriptionAllowed;
@@ -5200,17 +5204,22 @@ async function loadAuthState() {
       } catch {
         state.auth.isGuest = false;
       }
-      if (state.auth.guestTranscriptionAllowed && !state.auth.isGuest && !state.auth.bootstrapAdminRequired) {
-        state.auth.isGuest = true;
-        persistGuestMode(true);
+      if (state.auth.sessionInvalid) {
+        state.auth.isGuest = false;
+        persistGuestMode(false);
       }
       setAppLocked(!canUseWorkspace());
       renderAuthState();
+      if (state.auth.sessionInvalid) {
+        showToast("ログインセッションが切れました。再ログインしてください", "error", 7000);
+        loginEmailEl?.focus();
+      }
       logClientEvent("auth_state.load.success", { authenticated: false, guest: !!state.auth.isGuest });
       return;
     }
     state.auth.authenticated = !!payload.authenticated;
     state.auth.isGuest = false;
+    state.auth.sessionInvalid = false;
     state.auth.user = payload.user || null;
     state.auth.profileEditorOpen = false;
     state.auth.profileSaving = false;
@@ -5257,18 +5266,10 @@ async function loadAuthState() {
       isAdmin: !!state.auth.user?.isAdmin,
     });
   } catch {
-    // ignore auth bootstrap errors
     try {
-      state.auth.isGuest = false;
-      if (state.auth.guestTranscriptionAllowed) {
-        state.auth.isGuest = readGuestMode();
-      }
-      if (state.auth.guestTranscriptionAllowed && !state.auth.isGuest && !state.auth.bootstrapAdminRequired) {
-        state.auth.isGuest = true;
-        persistGuestMode(true);
-      }
       setAppLocked(!canUseWorkspace());
       renderAuthState();
+      showToast("認証状態を確認できません。通信を確認して再読み込みしてください", "error", 7000);
       logClientEvent("auth_state.load.fallback", { guest: !!state.auth.isGuest });
     } catch {
       // ignore
@@ -5289,6 +5290,7 @@ async function login() {
     const payload = await loginRequest({ email, password });
     state.auth.authenticated = true;
     state.auth.isGuest = false;
+    state.auth.sessionInvalid = false;
     state.auth.user = payload.user || null;
     state.auth.profileEditorOpen = false;
     state.auth.profileSaving = false;
@@ -5327,6 +5329,7 @@ async function bootstrapAdmin() {
     const payload = await bootstrapAdminRequest({ email, password, displayName });
     state.auth.authenticated = true;
     state.auth.isGuest = false;
+    state.auth.sessionInvalid = false;
     state.auth.user = payload.user || null;
     state.auth.profileEditorOpen = false;
     state.auth.profileSaving = false;
@@ -5403,6 +5406,7 @@ async function logout() {
   }
   state.auth.authenticated = false;
   state.auth.isGuest = false;
+  state.auth.sessionInvalid = false;
   state.auth.user = null;
   state.auth.profileEditorOpen = false;
   state.auth.profileSaving = false;
@@ -5432,6 +5436,7 @@ function loginAsGuest() {
   }
   state.auth.authenticated = false;
   state.auth.isGuest = true;
+  state.auth.sessionInvalid = false;
   state.auth.user = null;
   state.auth.profileEditorOpen = false;
   state.auth.profileSaving = false;

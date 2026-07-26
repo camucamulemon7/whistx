@@ -1359,7 +1359,14 @@ async function verifyEffectiveAudioSourceFallback(client) {
       document.querySelector("#startBtn").click();
     })()`,
   );
-  await new Promise((resolve) => setTimeout(resolve, 220));
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const started = await evaluate(
+      client,
+      `document.querySelector("#startBtn").getAttribute("aria-pressed") === "true"`,
+    );
+    if (started) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   const result = await evaluate(
     client,
     `({
@@ -1391,6 +1398,68 @@ async function verifyEffectiveAudioSourceFallback(client) {
     await unloadProtectionState(client),
     { dirty: "false", prevented: false, dispatched: true },
     "explicitly discarded transcript should remove unload protection",
+  );
+}
+
+async function verifyInvalidSessionDoesNotBecomeGuest(client) {
+  await client.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: String.raw`
+      (() => {
+        localStorage.setItem("whistx_guest_mode", "1");
+        const originalFetch = window.fetch;
+        window.fetch = (input, options = {}) => {
+          if (String(input).includes("/api/auth/me")) {
+            return Promise.resolve(new Response(JSON.stringify({
+              authenticated: false,
+              sessionInvalid: true,
+              guestTranscriptionAllowed: true,
+              bootstrapAdminRequired: false,
+              selfSignupEnabled: false
+            }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" }
+            }));
+          }
+          return originalFetch(input, options);
+        };
+      })();
+    `,
+  });
+  await client.send("Page.reload", { ignoreCache: true });
+  await waitForApp(client);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const ready = await evaluate(
+      client,
+      `document.body.classList.contains("whistx-auth-locked") &&
+       document.querySelector("#toastContainer").textContent.includes("ログインセッションが切れました")`,
+    );
+    if (ready) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  let result = await evaluate(
+    client,
+    `({
+      locked: document.body.classList.contains("whistx-auth-locked"),
+      guestMode: localStorage.getItem("whistx_guest_mode"),
+      toast: document.querySelector("#toastContainer").textContent
+    })`,
+  );
+  assert.equal(result.locked, true, "invalid session should require login instead of opening the workspace");
+  assert.equal(result.guestMode, null, "invalid session should clear stale guest-mode cache");
+  assert.match(result.toast, /ログインセッションが切れました/, "invalid session should explain that re-login is required");
+
+  await evaluate(client, `document.querySelector("#guestLoginBtn").click()`);
+  result = await evaluate(
+    client,
+    `({
+      locked: document.body.classList.contains("whistx-auth-locked"),
+      guestMode: localStorage.getItem("whistx_guest_mode")
+    })`,
+  );
+  assert.deepEqual(
+    result,
+    { locked: false, guestMode: "1" },
+    "guest mode should begin only after the explicit guest action",
   );
 }
 
@@ -1438,6 +1507,7 @@ try {
   await verifySocketLossStopsRecording(client);
   await verifyFailedStartPreservesTranscript(client);
   await verifyEffectiveAudioSourceFallback(client);
+  await verifyInvalidSessionDoesNotBecomeGuest(client);
   process.stdout.write("Browser UI and recording lifecycle checks passed.\n");
 } finally {
   client?.close();
@@ -1447,5 +1517,5 @@ try {
     await exited;
   }
   await new Promise((resolve) => server.close(resolve));
-  await rm(profileDir, { recursive: true, force: true });
+  await rm(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 }

@@ -96,9 +96,11 @@ def get_optional_user_from_request(request: Request, db: Session) -> User | None
 
 
 def build_auth_me_payload(request: Request, db: Session) -> dict[str, Any]:
+    session_cookie_present = bool(request.cookies.get(auth.SESSION_COOKIE_NAME))
     user = get_optional_user_from_request(request, db)
     return {
         'authenticated': user is not None,
+        'sessionInvalid': session_cookie_present and user is None,
         'user': serialize_user(user) if user is not None else None,
         'selfSignupEnabled': settings.enable_self_signup,
         'guestTranscriptionAllowed': bool(getattr(settings, 'allow_guest_transcription', False)),
