@@ -224,6 +224,18 @@ async function verifyHistoryDrawerAtWidth(client, width) {
   let state = await drawerState(client);
   assert.equal(state.triggerVisible, true, `${width}px: history trigger should be visible`);
   assert.equal(state.railCollapsed, false, `${width}px: desktop collapse must not constrain the drawer`);
+  const transcriptState = await evaluate(
+    client,
+    `({
+      collapsed: document.querySelector(".transcript-panel").classList.contains("is-collapsed"),
+      contentVisible: getComputedStyle(document.querySelector("#log")).display !== "none"
+    })`,
+  );
+  assert.deepEqual(
+    transcriptState,
+    { collapsed: false, contentVisible: true },
+    `${width}px: desktop transcript collapse must not hide narrow-layout content`,
+  );
 
   await evaluate(client, `document.querySelector("#historyDrawerOpen").click()`);
   state = await drawerState(client);
@@ -310,6 +322,47 @@ async function verifyDesktopPanelLayout(client) {
     "collapsing transcript should release substantial workspace width",
   );
   assert.ok(afterCollapse.proofread > beforeCollapse.proofread, "adjacent panels should use released width");
+
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
+  const narrowAfterCollapse = await evaluate(
+    client,
+    `({
+      collapsedClass: document.querySelector(".transcript-panel").classList.contains("is-collapsed"),
+      transcriptVisible: getComputedStyle(document.querySelector("#log")).display !== "none",
+      toggleHidden: document.querySelector('[data-panel-toggle="transcript"]').hidden,
+      columns: getComputedStyle(document.querySelector("#workspacePanels")).gridTemplateColumns.split(" ").length
+    })`,
+  );
+  assert.deepEqual(
+    narrowAfterCollapse,
+    { collapsedClass: false, transcriptVisible: true, toggleHidden: true, columns: 1 },
+    "one-column layout should suspend desktop collapse without hiding transcript content",
+  );
+
+  await client.send("Emulation.setDeviceMetricsOverride", {
+    width: 1440,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
+  const restoredCollapse = await evaluate(
+    client,
+    `({
+      collapsedClass: document.querySelector(".transcript-panel").classList.contains("is-collapsed"),
+      width: document.querySelector(".transcript-panel").getBoundingClientRect().width,
+      toggleHidden: document.querySelector('[data-panel-toggle="transcript"]').hidden
+    })`,
+  );
+  assert.equal(restoredCollapse.collapsedClass, true, "desktop collapse preference should return after widening");
+  assert.ok(restoredCollapse.width <= 92, "restored desktop collapse should use compact width");
+  assert.equal(restoredCollapse.toggleHidden, false, "desktop collapse control should return after widening");
   await evaluate(client, `document.querySelector('[data-panel-toggle="transcript"]').click()`);
 
   await client.send("Emulation.setDeviceMetricsOverride", {
@@ -377,6 +430,7 @@ async function verifyDesktopPanelLayout(client) {
 const recordingMocks = String.raw`
   (() => {
     window.__recordingTest = {
+      instanceId: crypto.randomUUID(),
       mediaRequests: 0,
       startMessages: 0,
       startPayloads: [],
@@ -611,7 +665,14 @@ const recordingMocks = String.raw`
 async function verifyRecordingStartIsSingleFlight(client) {
   await client.send("Page.addScriptToEvaluateOnNewDocument", { source: recordingMocks });
   await client.send("Page.reload", { ignoreCache: true });
-  await waitForApp(client);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const ready = await evaluate(
+      client,
+      `document.documentElement.dataset.whistxReady === "true" && Boolean(window.__recordingTest?.instanceId)`,
+    );
+    if (ready) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const unlocked = await evaluate(client, `!document.body.classList.contains("whistx-auth-locked")`);
     if (unlocked) break;
@@ -1347,8 +1408,18 @@ async function verifyFailedStartPreservesTranscript(client) {
 }
 
 async function verifyEffectiveAudioSourceFallback(client) {
+  const previousInstanceId = await evaluate(client, `window.__recordingTest?.instanceId || ""`);
   await client.send("Page.reload", { ignoreCache: true });
-  await waitForApp(client);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const ready = await evaluate(
+      client,
+      `document.documentElement.dataset.whistxReady === "true" &&
+       window.__recordingTest?.instanceId &&
+       window.__recordingTest.instanceId !== ${JSON.stringify(previousInstanceId)}`,
+    );
+    if (ready) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const unlocked = await evaluate(client, `!document.body.classList.contains("whistx-auth-locked")`);
     if (unlocked) break;
@@ -1382,10 +1453,17 @@ async function verifyEffectiveAudioSourceFallback(client) {
     `({
       payload: window.__recordingTest.startPayloads[0],
       pressed: document.querySelector("#startBtn").getAttribute("aria-pressed"),
-      telemetry: document.querySelector("#recordTelemetry").textContent
+      telemetry: document.querySelector("#recordTelemetry").textContent,
+      status: document.querySelector("#statusText").textContent,
+      startMessages: window.__recordingTest.startMessages,
+      mediaRequests: window.__recordingTest.mediaRequests,
+      locked: document.body.classList.contains("whistx-auth-locked"),
+      startDisabled: document.querySelector("#startBtn").disabled,
+      audioSourceDisabled: document.querySelector("#audioSource").disabled,
+      toast: document.querySelector("#toastContainer").textContent
     })`,
   );
-  assert.equal(result.pressed, "true", "fallback recording should still start");
+  assert.equal(result.pressed, "true", `fallback recording should still start: ${JSON.stringify(result)}`);
   assert.equal(result.payload.audioSource, "mic", "server payload should use the effective microphone source");
   assert.equal(result.payload.requestedAudioSource, "both", "payload should preserve the requested mixed source");
   assert.equal(
@@ -1412,6 +1490,7 @@ async function verifyEffectiveAudioSourceFallback(client) {
 }
 
 async function verifyInvalidSessionDoesNotBecomeGuest(client) {
+  const previousInstanceId = await evaluate(client, `window.__recordingTest?.instanceId || ""`);
   await client.send("Page.addScriptToEvaluateOnNewDocument", {
     source: String.raw`
       (() => {
@@ -1436,7 +1515,16 @@ async function verifyInvalidSessionDoesNotBecomeGuest(client) {
     `,
   });
   await client.send("Page.reload", { ignoreCache: true });
-  await waitForApp(client);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const ready = await evaluate(
+      client,
+      `document.documentElement.dataset.whistxReady === "true" &&
+       window.__recordingTest?.instanceId &&
+       window.__recordingTest.instanceId !== ${JSON.stringify(previousInstanceId)}`,
+    );
+    if (ready) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const ready = await evaluate(
       client,
@@ -1504,7 +1592,7 @@ try {
     })()`,
   );
   await verifyDesktopPanelLayout(client);
-  for (const width of [390, 640, 1100]) {
+  for (const width of [390, 640, 768, 1100]) {
     await verifyHistoryDrawerAtWidth(client, width);
   }
   await verifyRecordingStartIsSingleFlight(client);

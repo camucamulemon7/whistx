@@ -588,6 +588,7 @@ function applyAdvancedSettingsOpen(open) {
 }
 
 function syncAiResponsiveState() {
+  applyPanelCollapseState("transcript", !!state.panelCollapsed.transcript, { persist: false });
   applyPanelCollapseState("proofread", !!state.panelCollapsed.proofread, { persist: false });
   applyPanelCollapseState("summary", !!state.panelCollapsed.summary, { persist: false });
 }
@@ -664,19 +665,24 @@ function applyPanelCollapseState(panel, collapsed, options = {}) {
   const persist = options.persist !== false;
   const key = panel === "proofread" || panel === "summary" ? panel : "transcript";
   state.panelCollapsed[key] = !!collapsed;
+  const collapseAvailable = window.innerWidth > WORKSPACE_STACK_BREAKPOINT;
+  const visuallyCollapsed = collapseAvailable && !!collapsed;
 
   const panelEl = document.querySelector(`.${key}-panel`);
   if (panelEl) {
-    panelEl.classList.toggle("is-collapsed", !!collapsed);
+    panelEl.classList.toggle("is-collapsed", visuallyCollapsed);
   }
 
   const toggleBtn = document.querySelector(`[data-panel-toggle="${key}"]`);
   if (toggleBtn) {
-    toggleBtn.classList.toggle("is-collapsed", !!collapsed);
+    toggleBtn.classList.toggle("is-collapsed", visuallyCollapsed);
+    toggleBtn.hidden = !collapseAvailable;
+    toggleBtn.disabled = !collapseAvailable;
+    toggleBtn.setAttribute("aria-hidden", String(!collapseAvailable));
     const labelMap = { transcript: "文字起こし", proofread: "校正", summary: "要約" };
     const label = labelMap[key] || "パネル";
-    toggleBtn.setAttribute("aria-label", collapsed ? `${label}を展開` : `${label}をたたむ`);
-    toggleBtn.title = collapsed ? "展開" : "たたむ";
+    toggleBtn.setAttribute("aria-label", visuallyCollapsed ? `${label}を展開` : `${label}をたたむ`);
+    toggleBtn.title = visuallyCollapsed ? "展開" : "たたむ";
   }
 
   if (persist) {
