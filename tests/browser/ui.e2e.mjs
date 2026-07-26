@@ -701,7 +701,8 @@ async function verifyDestructiveActionsAreLocked(client) {
         text: "録音中に保持する文字起こし",
         tsStart: 0,
         tsEnd: 1000,
-        seq: 1
+        seq: 1,
+        screenshotPath: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
       });
       window.__recordingTest.socket.dispatchEvent(event);
       document.querySelector("#clearBtn").click();
@@ -722,6 +723,99 @@ async function verifyDestructiveActionsAreLocked(client) {
   assert.equal(result.historyDisabled, "true", "history switching must be marked disabled while recording");
   assert.equal(result.historyDetailRequests, 0, "recording must block history detail requests");
   assert.match(result.transcript, /録音中に保持する文字起こし/, "blocked clear must preserve the transcript");
+}
+
+async function verifyModalKeyboardManagement(client) {
+  await evaluate(
+    client,
+    `(() => {
+      const help = document.querySelector("#helpBtn");
+      help.focus();
+      help.click();
+    })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  let state = await evaluate(
+    client,
+    `({
+      helpHidden: document.querySelector("#helpModal").hidden,
+      activeId: document.activeElement?.id || "",
+      bodyLocked: document.body.classList.contains("is-modal-open")
+    })`,
+  );
+  assert.equal(state.helpHidden, false, "help modal should open");
+  assert.equal(state.activeId, "helpModalClose", "help modal should receive initial focus");
+  assert.equal(state.bodyLocked, true, "open modal should lock background scrolling");
+
+  await evaluate(client, `document.querySelector(".log-screenshot-link").click()`);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  state = await evaluate(
+    client,
+    `({
+      helpHidden: document.querySelector("#helpModal").hidden,
+      screenshotHidden: document.querySelector("#screenshotModal").hidden,
+      activeId: document.activeElement?.id || ""
+    })`,
+  );
+  assert.equal(state.helpHidden, false, "opening a second modal should keep the underlying modal");
+  assert.equal(state.screenshotHidden, false, "screenshot modal should open above help");
+  assert.equal(state.activeId, "screenshotModalClose", "topmost modal should receive focus");
+
+  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+  state = await evaluate(
+    client,
+    `({
+      helpHidden: document.querySelector("#helpModal").hidden,
+      screenshotHidden: document.querySelector("#screenshotModal").hidden,
+      activeId: document.activeElement?.id || "",
+      bodyLocked: document.body.classList.contains("is-modal-open")
+    })`,
+  );
+  assert.equal(state.screenshotHidden, true, "Escape should close only the topmost modal");
+  assert.equal(state.helpHidden, false, "underlying modal should remain open after one Escape");
+  assert.equal(state.activeId, "helpModalClose", "focus should return to the underlying modal");
+  assert.equal(state.bodyLocked, true, "background should remain locked while another modal is open");
+
+  await evaluate(
+    client,
+    `document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      bubbles: true
+    }))`,
+  );
+  assert.equal(
+    await evaluate(client, `document.activeElement?.id || document.activeElement?.tagName || ""`),
+    "helpModalFrame",
+    "Shift+Tab from the first control should wrap to the last modal control",
+  );
+  await evaluate(
+    client,
+    `document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true
+    }))`,
+  );
+  assert.equal(
+    await evaluate(client, `document.activeElement?.id || ""`),
+    "helpModalClose",
+    "Tab from the last control should wrap to the first modal control",
+  );
+
+  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+  state = await evaluate(
+    client,
+    `({
+      helpHidden: document.querySelector("#helpModal").hidden,
+      activeId: document.activeElement?.id || "",
+      bodyLocked: document.body.classList.contains("is-modal-open")
+    })`,
+  );
+  assert.equal(state.helpHidden, true, "second Escape should close the remaining modal");
+  assert.equal(state.activeId, "helpBtn", "closing should restore focus to the opener");
+  assert.equal(state.bodyLocked, false, "closing the final modal should unlock background scrolling");
 }
 
 async function verifySocketLossStopsRecording(client) {
@@ -1067,6 +1161,7 @@ try {
   }
   await verifyRecordingStartIsSingleFlight(client);
   await verifyDestructiveActionsAreLocked(client);
+  await verifyModalKeyboardManagement(client);
   await verifyGracefulStopIsSerialized(client);
   await verifyIdleDestructiveActions(client);
   await startSecondRecordingAndRejectStaleMessages(client);

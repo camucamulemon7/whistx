@@ -230,7 +230,9 @@ const runtimeUi = {
   summaryCopyBtnEl: null,
   appLocked: true,
   bodyScrollLocks: 0,
+  modalStack: [],
 };
+const modalOpeners = new WeakMap();
 
 const state = {
   ws: null,
@@ -1202,6 +1204,109 @@ function unlockBodyScroll() {
   syncBodyScrollLock();
 }
 
+function modalFocusableElements(modal) {
+  if (!modal) return [];
+  return Array.from(
+    modal.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), iframe, [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((element) => {
+    const style = window.getComputedStyle(element);
+    return !element.hidden && style.display !== "none" && style.visibility !== "hidden";
+  });
+}
+
+function topmostModal() {
+  for (let index = runtimeUi.modalStack.length - 1; index >= 0; index -= 1) {
+    const modal = runtimeUi.modalStack[index];
+    if (modal && !modal.hidden) return modal;
+  }
+  return null;
+}
+
+function syncManagedModalLayers() {
+  runtimeUi.modalStack = runtimeUi.modalStack.filter((modal) => modal && !modal.hidden);
+  const top = runtimeUi.modalStack[runtimeUi.modalStack.length - 1] || null;
+  runtimeUi.modalStack.forEach((modal, index) => {
+    modal.style.zIndex = String(31 + index);
+    const inactive = modal !== top;
+    modal.inert = inactive;
+    if (inactive) {
+      modal.setAttribute("aria-hidden", "true");
+    } else {
+      modal.removeAttribute("aria-hidden");
+    }
+  });
+}
+
+function openManagedModal(modal, options = {}) {
+  if (!modal) return;
+  const opener = options.opener || document.activeElement;
+  if (opener instanceof HTMLElement) {
+    modalOpeners.set(modal, opener);
+  }
+  runtimeUi.modalStack = runtimeUi.modalStack.filter((item) => item !== modal);
+  runtimeUi.modalStack.push(modal);
+  modal.hidden = false;
+  modal.classList.add("is-open");
+  syncManagedModalLayers();
+  lockBodyScroll();
+  requestAnimationFrame(() => {
+    const target =
+      options.initialFocus ||
+      modalFocusableElements(modal)[0] ||
+      modal.querySelector('[role="dialog"]');
+    target?.focus?.();
+  });
+}
+
+function closeManagedModal(modal) {
+  if (!modal || modal.hidden) return false;
+  const wasTopmost = topmostModal() === modal;
+  modal.classList.remove("is-open");
+  modal.hidden = true;
+  modal.inert = false;
+  modal.removeAttribute("aria-hidden");
+  modal.style.removeProperty("z-index");
+  runtimeUi.modalStack = runtimeUi.modalStack.filter((item) => item !== modal);
+  syncManagedModalLayers();
+  unlockBodyScroll();
+
+  if (wasTopmost) {
+    const nextModal = topmostModal();
+    if (nextModal) {
+      const nextTarget = modalFocusableElements(nextModal)[0] || nextModal.querySelector('[role="dialog"]');
+      nextTarget?.focus?.();
+    } else {
+      const opener = modalOpeners.get(modal);
+      if (opener?.isConnected && !opener.disabled) {
+        opener.focus();
+      }
+    }
+  }
+  modalOpeners.delete(modal);
+  return true;
+}
+
+function trapModalFocus(event, modal) {
+  if (event.key !== "Tab" || !modal) return;
+  const focusable = modalFocusableElements(modal);
+  if (focusable.length === 0) {
+    event.preventDefault();
+    modal.querySelector('[role="dialog"]')?.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function setHistorySearchQuery(value) {
   state.history.query = String(value || "").trim();
   state.history.offset = 0;
@@ -1399,9 +1504,7 @@ function showScreenshotModal(src, alt = "スクリーンショット") {
   stopScreenshotDrag();
   runtimeUi.screenshotModalImageEl.src = src;
   runtimeUi.screenshotModalImageEl.alt = alt;
-  runtimeUi.screenshotModalEl.hidden = false;
-  runtimeUi.screenshotModalEl.classList.add("is-open");
-  lockBodyScroll();
+  openManagedModal(runtimeUi.screenshotModalEl, { initialFocus: screenshotModalCloseEl });
 
   if (runtimeUi.screenshotModalImageEl.complete) {
     recalculateScreenshotBaseSize();
@@ -1413,8 +1516,7 @@ function showScreenshotModal(src, alt = "スクリーンショット") {
 
 function hideScreenshotModal() {
   if (!runtimeUi.screenshotModalEl || !runtimeUi.screenshotModalImageEl) return;
-  runtimeUi.screenshotModalEl.classList.remove("is-open");
-  runtimeUi.screenshotModalEl.hidden = true;
+  if (!closeManagedModal(runtimeUi.screenshotModalEl)) return;
   runtimeUi.screenshotModalImageEl.src = "";
   runtimeUi.screenshotModalImageEl.style.width = "";
   runtimeUi.screenshotModalImageEl.style.height = "";
@@ -1425,7 +1527,6 @@ function hideScreenshotModal() {
   state.screenshotBaseHeight = 0;
   stopScreenshotDrag();
   updateScreenshotZoomUi();
-  unlockBodyScroll();
 }
 
 function openHelpModal() {
@@ -1433,16 +1534,12 @@ function openHelpModal() {
   if (!helpModalFrameEl.src) {
     helpModalFrameEl.src = "/help.html";
   }
-  helpModalEl.hidden = false;
-  helpModalEl.classList.add("is-open");
-  lockBodyScroll();
+  openManagedModal(helpModalEl, { initialFocus: helpModalCloseEl });
 }
 
 function closeHelpModal() {
   if (!helpModalEl) return;
-  helpModalEl.classList.remove("is-open");
-  helpModalEl.hidden = true;
-  unlockBodyScroll();
+  closeManagedModal(helpModalEl);
 }
 
 function logWsEvent(event, detail = {}) {
@@ -2010,8 +2107,7 @@ function renderHistoryList() {
 
 function closeAdminQueueModal() {
   if (!adminQueueModalEl) return;
-  adminQueueModalEl.hidden = true;
-  unlockBodyScroll();
+  closeManagedModal(adminQueueModalEl);
 }
 
 function renderAdminPendingUsers() {
@@ -4469,13 +4565,28 @@ if (showTranscriptAudioEnabledEl) {
 }
 
 document.addEventListener("keydown", (event) => {
+  const modal = topmostModal();
+  if (modal && event.key === "Tab") {
+    trapModalFocus(event, modal);
+    return;
+  }
+  if (modal && event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    if (modal === runtimeUi.screenshotModalEl) {
+      hideScreenshotModal();
+    } else if (modal === helpModalEl) {
+      closeHelpModal();
+    } else if (modal === adminQueueModalEl) {
+      closeAdminQueueModal();
+    }
+    return;
+  }
   if (event.key === "Escape" && state.sidebarOpen) {
     applySidebarOpen(false);
   }
   if (event.key === "Escape") {
     applyHistoryDrawerOpen(false);
-    hideScreenshotModal();
-    closeAdminQueueModal();
   }
 });
 
@@ -5168,10 +5279,10 @@ async function loadPendingUsers() {
 
 async function openAdminQueueModal() {
   if (!state.auth.user?.isAdmin) return;
+  const opener = document.activeElement;
   await loadPendingUsers();
   if (!adminQueueModalEl) return;
-  adminQueueModalEl.hidden = false;
-  lockBodyScroll();
+  openManagedModal(adminQueueModalEl, { opener, initialFocus: adminQueueCloseEl });
 }
 
 async function approvePendingUser(userId) {
