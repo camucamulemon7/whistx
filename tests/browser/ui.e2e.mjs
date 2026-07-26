@@ -255,6 +255,7 @@ const recordingMocks = String.raw`
       stopMessages: 0,
       trackStops: 0,
       contextCloses: 0,
+      historyDetailRequests: 0,
       socket: null,
       sockets: []
     };
@@ -276,10 +277,37 @@ const recordingMocks = String.raw`
       }
       if (url.includes("/api/auth/me")) {
         return jsonResponse({
-          authenticated: false,
+          authenticated: true,
+          user: {
+            id: "browser-user",
+            email: "browser@example.com",
+            displayName: "Browser Test",
+            isAdmin: false
+          },
           guestTranscriptionAllowed: true,
           bootstrapAdminRequired: false,
           selfSignupEnabled: false
+        });
+      }
+      if (url.includes("/api/history/history-1")) {
+        window.__recordingTest.historyDetailRequests += 1;
+        return jsonResponse({
+          id: "history-1",
+          title: "既存の履歴",
+          savedAt: "2026-01-01T00:00:00Z",
+          segments: [{ text: "履歴の文字起こし", tsStart: 0, tsEnd: 1000, seq: 1 }]
+        });
+      }
+      if (url.includes("/api/history?")) {
+        return jsonResponse({
+          total: 1,
+          items: [{
+            id: "history-1",
+            title: "既存の履歴",
+            preview: "履歴の文字起こし",
+            language: "ja",
+            savedAt: "2026-01-01T00:00:00Z"
+          }]
         });
       }
       if (url.includes("/api/glossary/shared")) {
@@ -487,6 +515,40 @@ async function verifyRecordingStartIsSingleFlight(client) {
   assert.equal(result.pressed, "true", "record button should enter recording state");
 }
 
+async function verifyDestructiveActionsAreLocked(client) {
+  await evaluate(
+    client,
+    `(() => {
+      const event = new Event("message");
+      event.data = JSON.stringify({
+        type: "final",
+        sessionId: "browser-test-1",
+        text: "録音中に保持する文字起こし",
+        tsStart: 0,
+        tsEnd: 1000,
+        seq: 1
+      });
+      window.__recordingTest.socket.dispatchEvent(event);
+      document.querySelector("#clearBtn").click();
+      document.querySelector(".history-item-main").click();
+    })()`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const result = await evaluate(
+    client,
+    `({
+      clearDisabled: document.querySelector("#clearBtn").disabled,
+      historyDisabled: document.querySelector(".history-item-main").getAttribute("aria-disabled"),
+      historyDetailRequests: window.__recordingTest.historyDetailRequests,
+      transcript: document.querySelector("#log").textContent
+    })`,
+  );
+  assert.equal(result.clearDisabled, true, "clear must be disabled while recording");
+  assert.equal(result.historyDisabled, "true", "history switching must be marked disabled while recording");
+  assert.equal(result.historyDetailRequests, 0, "recording must block history detail requests");
+  assert.match(result.transcript, /録音中に保持する文字起こし/, "blocked clear must preserve the transcript");
+}
+
 async function verifySocketLossStopsRecording(client) {
   await evaluate(
     client,
@@ -538,7 +600,10 @@ async function verifyGracefulStopIsSerialized(client) {
       stopMessages: window.__recordingTest.stopMessages,
       disabled: document.querySelector("#startBtn").disabled,
       busy: document.querySelector("#startBtn").getAttribute("aria-busy"),
-      label: document.querySelector("#startBtn .record-label").textContent
+      label: document.querySelector("#startBtn .record-label").textContent,
+      clearDisabled: document.querySelector("#clearBtn").disabled,
+      historyDisabled: document.querySelector(".history-item-main").getAttribute("aria-disabled"),
+      historyDetailRequests: window.__recordingTest.historyDetailRequests
     })`,
   );
   assert.equal(finalizing.startMessages, 1, "stop/start click sequence must not start a second session");
@@ -546,6 +611,9 @@ async function verifyGracefulStopIsSerialized(client) {
   assert.equal(finalizing.disabled, true, "record action should remain locked during server finalization");
   assert.equal(finalizing.busy, "true", "finalization should remain exposed as busy");
   assert.equal(finalizing.label, "最終処理中...", "finalization should have a distinct action label");
+  assert.equal(finalizing.clearDisabled, true, "clear must remain disabled during server finalization");
+  assert.equal(finalizing.historyDisabled, "true", "history switching must remain disabled during finalization");
+  assert.equal(finalizing.historyDetailRequests, 0, "finalization must not load another history view");
 
   await new Promise((resolve) => setTimeout(resolve, 120));
   const completed = await evaluate(
@@ -556,6 +624,8 @@ async function verifyGracefulStopIsSerialized(client) {
       busy: document.querySelector("#startBtn").getAttribute("aria-busy"),
       label: document.querySelector("#startBtn .record-label").textContent,
       status: document.querySelector("#statusText").textContent,
+      clearDisabled: document.querySelector("#clearBtn").disabled,
+      historyDisabled: document.querySelector(".history-item-main").getAttribute("aria-disabled"),
       transcript: [...document.querySelectorAll(".log-row .text")].map((node) => node.textContent)
     })`,
   );
@@ -564,6 +634,8 @@ async function verifyGracefulStopIsSerialized(client) {
   assert.equal(completed.busy, "false", "completed recording should clear busy state");
   assert.equal(completed.label, "録音開始", "completed recording should restore start label");
   assert.equal(completed.status, "録音完了", "normal stop should be distinct from disconnect");
+  assert.equal(completed.clearDisabled, false, "clear should unlock after finalization");
+  assert.equal(completed.historyDisabled, "false", "history switching should unlock after finalization");
   assert.ok(
     completed.transcript.includes("停止直前の文字起こし"),
     "final segment arriving before finalized acknowledgement should remain in the completed session",
@@ -605,6 +677,37 @@ async function startSecondRecordingAndRejectStaleMessages(client) {
   assert.equal(result.startMessages, 2, "new recording should start only after previous finalization");
   assert.equal(result.pressed, "true", "second recording should be active");
   assert.doesNotMatch(result.transcript, /混入してはいけない旧セッション/, "stale session messages must be ignored");
+}
+
+async function verifyIdleDestructiveActions(client) {
+  await evaluate(
+    client,
+    `(() => {
+      window.confirm = () => false;
+      document.querySelector("#clearBtn").click();
+    })()`,
+  );
+  let result = await evaluate(
+    client,
+    `({
+      transcript: document.querySelector("#log").textContent,
+      historyDetailRequests: window.__recordingTest.historyDetailRequests
+    })`,
+  );
+  assert.match(result.transcript, /停止直前の文字起こし/, "cancelled clear must preserve completed transcript");
+  assert.equal(result.historyDetailRequests, 0, "cancelled clear should not affect history state");
+
+  await evaluate(client, `document.querySelector(".history-item-main").click()`);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  result = await evaluate(
+    client,
+    `({
+      transcript: document.querySelector("#log").textContent,
+      historyDetailRequests: window.__recordingTest.historyDetailRequests
+    })`,
+  );
+  assert.equal(result.historyDetailRequests, 1, "history should load only after recording finalization");
+  assert.match(result.transcript, /履歴の文字起こし/, "unlocked history action should render the selected history");
 }
 
 async function verifyFailedStartPreservesTranscript(client) {
@@ -772,7 +875,9 @@ try {
     await verifyHistoryDrawerAtWidth(client, width);
   }
   await verifyRecordingStartIsSingleFlight(client);
+  await verifyDestructiveActionsAreLocked(client);
   await verifyGracefulStopIsSerialized(client);
+  await verifyIdleDestructiveActions(client);
   await startSecondRecordingAndRejectStaleMessages(client);
   await verifySocketLossStopsRecording(client);
   await verifyFailedStartPreservesTranscript(client);

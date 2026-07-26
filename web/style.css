@@ -3409,6 +3409,21 @@ html[data-theme="dark"] .download-link.is-downloaded {
   box-shadow: var(--shadow-md);
 }
 
+.history-item.is-disabled {
+  opacity: 0.58;
+}
+
+.history-item.is-disabled:hover {
+  transform: none;
+  border-color: transparent;
+  box-shadow: var(--shadow-xs);
+}
+
+.history-item.is-disabled .history-item-main,
+.history-item-delete:disabled {
+  cursor: not-allowed;
+}
+
 .history-item.is-active {
   border-color: var(--accent-400);
   box-shadow: var(--shadow-md), 0 0 0 1px rgba(79, 157, 146, 0.14) inset;

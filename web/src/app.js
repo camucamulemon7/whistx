@@ -265,6 +265,7 @@ const state = {
   runtimeSessionToken: "",
   savedHistoryId: null,
   viewingHistoryId: null,
+  historyDetailRequestVersion: 0,
   saveInFlight: false,
   seq: 0,
   offsetMs: 0,
@@ -1853,13 +1854,22 @@ function setSaveBadge(label, saved = false) {
   saveStateBadgeEl.classList.toggle("is-saved", !!saved);
 }
 
+function isRecordingInteractionLocked() {
+  return state.recordingPhase !== "idle" || !!state.finalizingStop;
+}
+
+function showRecordingInteractionBlocked(action) {
+  const finalizing = state.recordingPhase === "stopping" || state.recordingPhase === "finalizing" || state.finalizingStop;
+  showToast(finalizing ? `録音の停止処理中は${action}できません` : `録音中は${action}できません`, "error");
+}
+
 function updateSaveControls() {
   const hasSegments = state.segments.length > 0;
   const authenticated = !!state.auth.authenticated;
   const isGuest = !!state.auth.isGuest;
   const saved = !!state.savedHistoryId;
   const viewingHistory = !!state.viewingHistoryId;
-  const recordingLocked = state.recordingPhase !== "idle" || !!state.finalizingStop;
+  const recordingLocked = isRecordingInteractionLocked();
 
   if (saveBtn) {
     saveBtn.disabled =
@@ -1875,6 +1885,10 @@ function updateSaveControls() {
   }
   if (saveTitleInputEl) {
     saveTitleInputEl.disabled = viewingHistory || state.saveInFlight || recordingLocked;
+  }
+  if (clearBtn) {
+    clearBtn.disabled = runtimeUi.appLocked || recordingLocked;
+    clearBtn.title = recordingLocked ? "録音中・停止処理中はクリアできません" : "クリア";
   }
   setSaveBadge(
     saved ? "保存済み" : recordingLocked ? "録音中は保存不可" : isGuest ? "ゲストでは保存不可" : authenticated ? "未保存" : "ログインが必要",
@@ -1962,16 +1976,24 @@ function renderHistoryList() {
         <button type="button" class="history-item-delete" aria-label="履歴を削除">削除</button>
       </div>
     `;
-    article.querySelector(".history-item-main")?.addEventListener("click", () => {
+    const historyLocked = isRecordingInteractionLocked();
+    const mainAction = article.querySelector(".history-item-main");
+    const deleteAction = article.querySelector(".history-item-delete");
+    mainAction?.setAttribute("aria-disabled", String(historyLocked));
+    if (deleteAction) {
+      deleteAction.disabled = historyLocked;
+    }
+    article.classList.toggle("is-disabled", historyLocked);
+    mainAction?.addEventListener("click", () => {
       openHistoryDetail(item.id);
     });
-    article.querySelector(".history-item-main")?.addEventListener("keydown", (event) => {
+    mainAction?.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         openHistoryDetail(item.id);
       }
     });
-    article.querySelector(".history-item-delete")?.addEventListener("click", (event) => {
+    deleteAction?.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       deleteHistory(item.id);
@@ -2537,6 +2559,7 @@ function setUiRecording(active) {
 
   startBtn.disabled = false;
   updateSaveControls();
+  renderHistoryList();
 }
 
 function setUiRecordingStarting() {
@@ -2548,6 +2571,8 @@ function setUiRecordingStarting() {
   startBtn.setAttribute("aria-label", "録音を準備中");
   startBtn.setAttribute("aria-busy", "true");
   setStatus("starting");
+  updateSaveControls();
+  renderHistoryList();
 }
 
 function setUiRecordingStopping(finalizing = false) {
@@ -2559,6 +2584,7 @@ function setUiRecordingStopping(finalizing = false) {
   startBtn.setAttribute("aria-busy", "true");
   setStatus(finalizing ? "finalizing" : "stopping");
   updateSaveControls();
+  renderHistoryList();
 }
 
 function resetRuntimeSessionState() {
@@ -3581,6 +3607,7 @@ async function finalizeStop() {
     updateRecordingTelemetry();
     state.finalizingStop = false;
     updateSaveControls();
+    renderHistoryList();
     if (completed) {
       setStatus("completed");
       showToast("録音の最終処理が完了しました", "success");
@@ -4090,13 +4117,33 @@ async function summarizeAll() {
   }
 }
 
-function clearView() {
+function hasDiscardableWorkspaceData() {
+  return (
+    state.segments.length > 0 ||
+    String(state.summary || "").trim().length > 0 ||
+    String(state.proofread || "").trim().length > 0
+  );
+}
+
+function clearView(options = {}) {
   if (!canUseWorkspace()) {
     showToast("ログインが必要です", "error");
     setAppLocked(true);
     loginEmailEl?.focus();
     return;
   }
+  if (isRecordingInteractionLocked()) {
+    showRecordingInteractionBlocked("クリア");
+    return;
+  }
+  if (
+    !options.skipConfirmation &&
+    hasDiscardableWorkspaceData() &&
+    !window.confirm("表示中の文字起こしや生成結果が消えます。クリアしてよいですか？")
+  ) {
+    return;
+  }
+  state.historyDetailRequestVersion += 1;
   state.log = [];
   state.segments = [];
   state.logAutoScrollEnabled = true;
@@ -5155,12 +5202,22 @@ async function openHistoryDetail(historyId) {
     loginEmailEl?.focus();
     return;
   }
-  if (state.recording) {
-    showToast("録音中は履歴を開けません", "error");
+  if (isRecordingInteractionLocked()) {
+    showRecordingInteractionBlocked("履歴を開くことが");
     return;
   }
+  const requestVersion = state.historyDetailRequestVersion + 1;
+  state.historyDetailRequestVersion = requestVersion;
+  const runtimeSessionIdAtRequest = state.runtimeSessionId;
   try {
     const payload = await fetchHistoryDetail(historyId);
+    if (
+      requestVersion !== state.historyDetailRequestVersion ||
+      isRecordingInteractionLocked() ||
+      state.runtimeSessionId !== runtimeSessionIdAtRequest
+    ) {
+      return;
+    }
     renderHistoryDetail(payload);
     if (window.innerWidth <= 1100) {
       applyHistoryDrawerOpen(false);
@@ -5172,6 +5229,10 @@ async function openHistoryDetail(historyId) {
 
 async function deleteHistory(historyId) {
   if (!historyId || !state.auth.authenticated) return;
+  if (isRecordingInteractionLocked()) {
+    showRecordingInteractionBlocked("履歴を削除することが");
+    return;
+  }
   const target = state.history.items.find((item) => item.id === historyId);
   const confirmed = window.confirm(`履歴「${target?.title || historyId}」を削除しますか？`);
   if (!confirmed) return;
@@ -5184,7 +5245,7 @@ async function deleteHistory(historyId) {
   }
 
   if (state.viewingHistoryId === historyId || state.savedHistoryId === historyId || state.history.selectedId === historyId) {
-    clearView();
+    clearView({ skipConfirmation: true });
   }
   await loadHistoryList();
   showToast("履歴を削除しました", "success");
