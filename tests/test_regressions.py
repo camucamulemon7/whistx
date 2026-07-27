@@ -63,9 +63,16 @@ from server.core import security
 from server.core import rate_limit
 from server.models import TranscriptHistory, TranscriptSegment, User
 from server.repositories import quota_repository, session_repository, user_repository
-from server.services import admin_service, auth_service, glossary_service, history_service
+from server.services import (
+    admin_service,
+    auth_service,
+    glossary_service,
+    history_service,
+    runtime_artifact_service,
+)
 from server.deps import get_current_admin, get_current_user
 from server.transcript_store import read_jsonl_records
+from server.transcription import text_processing
 
 
 class DummyDB:
@@ -990,8 +997,14 @@ class RegressionTests(unittest.TestCase):
             )
             (screenshots_dir / '000001.webp').write_bytes(b'webp')
 
-            with patch.object(runtime, 'settings', SimpleNamespace(transcripts_dir=transcripts_dir)):
-                response = asyncio.run(runtime.get_zip('sess-zip', user_id=1, guest_grant_id=None))
+            with patch.object(
+                runtime_artifact_service,
+                'settings',
+                SimpleNamespace(transcripts_dir=transcripts_dir),
+            ):
+                response = asyncio.run(
+                    runtime_artifact_service.get_zip('sess-zip', user_id=1, guest_grant_id=None)
+                )
 
             with zipfile.ZipFile(BytesIO(response.body)) as archive:
                 names = sorted(archive.namelist())
@@ -1262,12 +1275,12 @@ class RegressionTests(unittest.TestCase):
     def test_trim_overlap_prefix_requires_substantial_match(self) -> None:
         previous = '本日の会議では新製品の価格改定について説明します'
         current = '価格改定について説明します。次に販売計画を確認します'
-        self.assertEqual(runtime._trim_overlap_prefix(current, previous), '次に販売計画を確認します')
+        self.assertEqual(text_processing._trim_overlap_prefix(current, previous), '次に販売計画を確認します')
 
     def test_trim_overlap_prefix_fuzzy_match_handles_small_variation(self) -> None:
         previous = '新製品の価格改定について説明いたします'
         current = '価格改定について説明します。次に販売計画です'
-        self.assertEqual(runtime._trim_overlap_prefix(current, previous), '次に販売計画です')
+        self.assertEqual(text_processing._trim_overlap_prefix(current, previous), '次に販売計画です')
 
     def test_build_prompt_includes_shared_vocabulary(self) -> None:
         session = SimpleNamespace(
@@ -1279,7 +1292,7 @@ class RegressionTests(unittest.TestCase):
             context_max_chars=400,
             language='ja',
         )
-        prompt = runtime._build_prompt(session)
+        prompt = text_processing._build_prompt(session)
         self.assertIsNotNone(prompt)
         self.assertIn('共有用語辞典', prompt)
         self.assertIn('PCIe, UCIe, Blackwell', prompt)
@@ -1432,23 +1445,37 @@ class RegressionTests(unittest.TestCase):
     def test_near_duplicate_detection_does_not_drop_extended_text(self) -> None:
         previous = '本日の会議では新製品の価格改定について説明します'
         current = '本日の会議では新製品の価格改定について詳細を説明します'
-        self.assertFalse(runtime._is_near_duplicate(current, previous))
+        self.assertFalse(text_processing._is_near_duplicate(current, previous))
 
     def test_near_duplicate_detection_uses_timestamp_gap(self) -> None:
         previous = '価格改定について説明します'
         current = '価格改定について説明します'
-        self.assertTrue(runtime._is_near_duplicate(current, previous, current_start_ms=1000, previous_end_ms=900))
-        self.assertFalse(runtime._is_near_duplicate(current, previous, current_start_ms=5000, previous_end_ms=900))
+        self.assertTrue(
+            text_processing._is_near_duplicate(
+                current,
+                previous,
+                current_start_ms=1000,
+                previous_end_ms=900,
+            )
+        )
+        self.assertFalse(
+            text_processing._is_near_duplicate(
+                current,
+                previous,
+                current_start_ms=5000,
+                previous_end_ms=900,
+            )
+        )
 
     def test_light_proofread_collapses_fillers_and_normalizes_digits(self) -> None:
-        value = runtime._light_proofread('えーと、えーと ２０ ２５ 年の計画です', language='ja')
+        value = text_processing._light_proofread('えーと、えーと ２０ ２５ 年の計画です', language='ja')
         self.assertIn('えーと', value)
         self.assertNotIn('えーと、えーと', value)
         self.assertIn('2025', value)
 
     def test_boundary_fragment_detection_drops_broken_display_chunk(self) -> None:
         self.assertTrue(
-            runtime._should_drop_boundary_fragment(
+            text_processing._should_drop_boundary_fragment(
                 'おすすめとかえええ\ufffd',
                 '有識者のみなさんぜひ教えてくださいよということでお願いしますよお願いしますほなじゃあなんかありますかおすすめとか',
                 source_mode='display',
@@ -1481,7 +1508,7 @@ class RegressionTests(unittest.TestCase):
 
     def test_weird_transcription_retry_detection_handles_broken_chunk(self) -> None:
         self.assertTrue(
-            runtime._should_retry_weird_transcription(
+            text_processing._should_retry_weird_transcription(
                 'おすすめとかえええ\ufffd',
                 '有識者のみなさんぜひ教えてくださいよということでお願いしますよお願いしますほなじゃあなんかありますかおすすめとか',
                 source_mode='display',
@@ -1493,7 +1520,7 @@ class RegressionTests(unittest.TestCase):
         original = ASRChunkResult(text='おすすめとかえええ\ufffd', start_ms=0, end_ms=1000, suspicious=True)
         retry = ASRChunkResult(text='おすすめとか', start_ms=0, end_ms=1000, suspicious=False)
         self.assertTrue(
-            runtime._prefer_rescue_transcription_result(
+            text_processing._prefer_rescue_transcription_result(
                 original=original,
                 retry=retry,
                 previous_text='有識者のみなさんぜひ教えてくださいよということでお願いしますよお願いしますほなじゃあなんかありますか',
@@ -1502,8 +1529,22 @@ class RegressionTests(unittest.TestCase):
         )
 
     def test_monotonic_bounds_prevent_timestamp_overlap(self) -> None:
-        self.assertEqual(runtime._coerce_monotonic_bounds(ts_start=8100, ts_end=8900, previous_end_ms=9000), (9000, 9000))
-        self.assertEqual(runtime._coerce_monotonic_bounds(ts_start=9100, ts_end=9500, previous_end_ms=9000), (9100, 9500))
+        self.assertEqual(
+            text_processing._coerce_monotonic_bounds(
+                ts_start=8100,
+                ts_end=8900,
+                previous_end_ms=9000,
+            ),
+            (9000, 9000),
+        )
+        self.assertEqual(
+            text_processing._coerce_monotonic_bounds(
+                ts_start=9100,
+                ts_end=9500,
+                previous_end_ms=9000,
+            ),
+            (9100, 9500),
+        )
 
     def test_register_user_rejects_when_self_signup_disabled(self) -> None:
         payload = RegisterRequest(email='user@example.com', password='password123', display_name='User')

@@ -37,6 +37,7 @@ if str(ROOT) not in sys.path:
 
 from server.audio_pipeline import AudioPreprocessor, PreparedAudio
 from server import runtime
+from server.transcription import media
 from server.asr import ASRChunkResult
 
 
@@ -172,7 +173,7 @@ class AudioPipelineTests(unittest.TestCase):
 
     def test_session_worker_retries_failed_chunk_with_next_chunk(self) -> None:
         prepared_first = PreparedAudio(
-            audio_bytes=runtime._merge_wav_chunks([_make_test_wav(16000)]),
+            audio_bytes=media._merge_wav_chunks([_make_test_wav(16000)]),
             mime_type="audio/wav",
             overlap_ms_used=0,
             tail_pcm=b"",
@@ -182,7 +183,7 @@ class AudioPipelineTests(unittest.TestCase):
             audio_metrics={"rms": 0.05, "peak": 0.2, "speech_ratio": 0.5},
         )
         prepared_second = PreparedAudio(
-            audio_bytes=runtime._merge_wav_chunks([_make_test_wav(8000)]),
+            audio_bytes=media._merge_wav_chunks([_make_test_wav(8000)]),
             mime_type="audio/wav",
             overlap_ms_used=0,
             tail_pcm=b"",
