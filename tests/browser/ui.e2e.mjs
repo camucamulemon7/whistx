@@ -299,6 +299,33 @@ async function verifyDesktopPanelLayout(client) {
     mobile: false,
   });
   await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
+  const historyLayout = await evaluate(
+    client,
+    `(() => {
+      const rail = document.querySelector("#historyRail");
+      const workspace = document.querySelector(".workspace-main");
+      const railRect = rail.getBoundingClientRect();
+      const workspaceRect = workspace.getBoundingClientRect();
+      return {
+        railTop: railRect.top,
+        workspaceTop: workspaceRect.top,
+        railHeight: railRect.height,
+        workspaceHeight: workspaceRect.height,
+        minHeight: getComputedStyle(rail).minHeight,
+        position: getComputedStyle(rail).position
+      };
+    })()`,
+  );
+  assert.ok(
+    Math.abs(historyLayout.railTop - historyLayout.workspaceTop) <= 1,
+    "desktop history rail should align with the workspace top",
+  );
+  assert.equal(historyLayout.position, "sticky", "desktop history rail should retain its sticky positioning");
+  assert.notEqual(historyLayout.minHeight, "100%", "runtime styles must not stretch the static history rail");
+  assert.ok(
+    historyLayout.railHeight < historyLayout.workspaceHeight,
+    "history rail should size to its contents instead of the full workspace",
+  );
   const beforeCollapse = await evaluate(
     client,
     `({

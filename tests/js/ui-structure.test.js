@@ -27,6 +27,18 @@ test("mobile history drawer has an accessible trigger and backdrop", async () =>
   assert.match(app, /historyDrawerBackdropEl\.addEventListener\("click"/);
 });
 
+test("runtime UI styles do not override the static history rail layout", async () => {
+  const [html, css, runtimeCss] = await Promise.all([
+    readFile(new URL("web/index.html", root), "utf8"),
+    readFile(new URL("web/style.css", root), "utf8"),
+    readFile(new URL("web/runtime-ui.css", root), "utf8"),
+  ]);
+
+  assert.match(css, /\.history-rail\s*\{[^}]*position:\s*sticky/s);
+  assert.doesNotMatch(runtimeCss, /(?:\.history-rail|#history(?:SearchInput|List|Empty))/);
+  assert.match(html, /runtime-ui\.css\?v=20260728/);
+});
+
 test("guided journey and responsive design tokens are present", async () => {
   const [html, css, app] = await Promise.all([
     readFile(new URL("web/index.html", root), "utf8"),
