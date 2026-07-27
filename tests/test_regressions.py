@@ -116,6 +116,75 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(response.status_code, 429)
             self.assertIn('too_many_login_attempts', response.body.decode('utf-8'))
 
+    def test_runtime_artifact_access_fails_closed_and_checks_owner_or_guest_grant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            transcripts_dir = Path(tmpdir)
+            session_id = 'sess-access'
+            txt_path = transcripts_dir / f'{session_id}.txt'
+            metadata_path = transcripts_dir / f'{session_id}.meta.json'
+            txt_path.write_text('secret transcript', encoding='utf-8')
+
+            with patch.object(security, 'settings', make_security_settings()):
+                self.assertFalse(
+                    security.runtime_access_allowed(
+                        transcripts_dir=transcripts_dir,
+                        session_id=session_id,
+                        user_id=None,
+                        guest_grant_id=None,
+                    )
+                )
+
+                metadata_path.write_text('{invalid', encoding='utf-8')
+                self.assertFalse(
+                    security.runtime_access_allowed(
+                        transcripts_dir=transcripts_dir,
+                        session_id=session_id,
+                        user_id=1,
+                        guest_grant_id=None,
+                    )
+                )
+
+                metadata_path.write_text('{"finalized":true,"ownerUserId":7}', encoding='utf-8')
+                self.assertTrue(
+                    security.runtime_access_allowed(
+                        transcripts_dir=transcripts_dir,
+                        session_id=session_id,
+                        user_id=7,
+                        guest_grant_id=None,
+                    )
+                )
+                self.assertFalse(
+                    security.runtime_access_allowed(
+                        transcripts_dir=transcripts_dir,
+                        session_id=session_id,
+                        user_id=8,
+                        guest_grant_id=None,
+                    )
+                )
+
+                guest_grant = 'guest-browser-grant'
+                guest_digest = security.digest_guest_artifact_grant(guest_grant)
+                metadata_path.write_text(
+                    f'{{"finalized":true,"guestGrantDigest":"{guest_digest}"}}',
+                    encoding='utf-8',
+                )
+                self.assertTrue(
+                    security.runtime_access_allowed(
+                        transcripts_dir=transcripts_dir,
+                        session_id=session_id,
+                        user_id=None,
+                        guest_grant_id=guest_grant,
+                    )
+                )
+                self.assertFalse(
+                    security.runtime_access_allowed(
+                        transcripts_dir=transcripts_dir,
+                        session_id=session_id,
+                        user_id=None,
+                        guest_grant_id='another-grant',
+                    )
+                )
+
     def test_asr_retry_config_is_loaded_from_environment(self) -> None:
         with patch.dict(
             os.environ,
@@ -387,7 +456,7 @@ class RegressionTests(unittest.TestCase):
                 encoding='utf-8',
             )
             (transcripts_dir / f'{session_id}.meta.json').write_text(
-                '{"finalized": true, "accessToken": "token"}',
+                '{"finalized": true, "ownerUserId": 1}',
                 encoding='utf-8',
             )
 
@@ -663,7 +732,7 @@ class RegressionTests(unittest.TestCase):
                 encoding='utf-8',
             )
             (runtime_dir / f'{session_id}.meta.json').write_text(
-                '{"finalized": true, "accessToken": "token"}',
+                '{"finalized": true, "ownerUserId": 1}',
                 encoding='utf-8',
             )
 
@@ -734,7 +803,7 @@ class RegressionTests(unittest.TestCase):
                 encoding='utf-8',
             )
             (runtime_dir / f'{session_id}.meta.json').write_text(
-                '{"finalized": true, "accessToken": "token"}',
+                '{"finalized": true, "ownerUserId": 1}',
                 encoding='utf-8',
             )
 
@@ -807,13 +876,13 @@ class RegressionTests(unittest.TestCase):
                 encoding='utf-8',
             )
             (runtime_dir / 'sess-zip.meta.json').write_text(
-                '{"finalized": true, "accessToken": "token"}',
+                '{"finalized": true, "ownerUserId": 1}',
                 encoding='utf-8',
             )
             (screenshots_dir / '000001.webp').write_bytes(b'webp')
 
             with patch.object(runtime, 'settings', SimpleNamespace(transcripts_dir=transcripts_dir)):
-                response = asyncio.run(runtime.get_zip('sess-zip', token='token'))
+                response = asyncio.run(runtime.get_zip('sess-zip', user_id=1, guest_grant_id=None))
 
             with zipfile.ZipFile(BytesIO(response.body)) as archive:
                 names = sorted(archive.namelist())

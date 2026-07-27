@@ -960,7 +960,11 @@ async def ws_transcribe(ws: WebSocket) -> None:
                     continue
 
                 try:
-                    session = _create_session(data)
+                    session = _create_session(
+                        data,
+                        owner_user_id=getattr(ws.state, "authenticated_user_id", None),
+                        guest_grant_digest=getattr(ws.state, "guest_artifact_grant_digest", None),
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Session creation failed")
                     await _safe_send(
@@ -997,7 +1001,6 @@ async def ws_transcribe(ws: WebSocket) -> None:
                         "message": "ready",
                         "state": "ready",
                         "sessionId": session.session_id,
-                        "sessionToken": session.access_token,
                         "backend": f"openai:{settings.asr_model}",
                         "diarizationEnabled": session.collect_audio_for_diarization,
                         "diarizationNumSpeakers": session.diarization_num_speakers,
@@ -1223,7 +1226,12 @@ async def _session_worker(ws: WebSocket, session: LiveSession) -> None:
 
 
 
-def _create_session(payload: dict[str, Any]) -> LiveSession:
+def _create_session(
+    payload: dict[str, Any],
+    *,
+    owner_user_id: int | None = None,
+    guest_grant_digest: str | None = None,
+) -> LiveSession:
     if TRANSCRIBER_FACTORY is None:
         raise RuntimeError("transcriber_not_ready")
     return create_live_session(
@@ -1231,6 +1239,8 @@ def _create_session(payload: dict[str, Any]) -> LiveSession:
         settings=settings,
         transcriber_factory=TRANSCRIBER_FACTORY,
         diarizer_available=DIARIZER is not None,
+        owner_user_id=owner_user_id,
+        guest_grant_digest=guest_grant_digest,
     )
 
 
@@ -2002,7 +2012,7 @@ def _store_screenshot_for_chunk(session: LiveSession, item: ChunkMessage) -> str
             mime_type=item.screenshot_mime_type,
             image_bytes=item.screenshot_bytes,
         )
-        return f"/api/transcripts/{session.session_id}/screenshots/{filename}?token={session.access_token}"
+        return f"/api/transcripts/{session.session_id}/screenshots/{filename}"
     except Exception:  # noqa: BLE001
         logger.warning(
             "Screenshot save failed: session=%s seq=%s",
@@ -2044,7 +2054,7 @@ def _store_debug_raw_audio_for_final(session: LiveSession, item: ChunkMessage) -
         path = debug_dir / filename
         if not path.exists():
             path.write_bytes(item.audio_bytes)
-        return f"/api/transcripts/{session.session_id}/audio/{filename}?token={session.access_token}"
+        return f"/api/transcripts/{session.session_id}/audio/{filename}"
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Debug raw audio save failed: session=%s seq=%s err=%s",
@@ -2063,7 +2073,7 @@ def _store_debug_audio_for_final(session: LiveSession, seq: int, audio_bytes: by
         debug_dir.mkdir(parents=True, exist_ok=True)
         filename = f"asr-{seq:06d}.wav"
         (debug_dir / filename).write_bytes(audio_bytes)
-        return f"/api/transcripts/{session.session_id}/audio/{filename}?token={session.access_token}"
+        return f"/api/transcripts/{session.session_id}/audio/{filename}"
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Debug ASR audio save failed: session=%s seq=%s err=%s",
@@ -2095,7 +2105,7 @@ def _resolve_existing_debug_audio_url(session: LiveSession, *, prefix: str, seq:
             continue
         matches = sorted(debug_dir.glob(f"{prefix}-{seq:06d}.*"))
         if matches:
-            return f"/api/transcripts/{session.session_id}/audio/{matches[0].name}?token={session.access_token}"
+            return f"/api/transcripts/{session.session_id}/audio/{matches[0].name}"
     return None
 
 
@@ -2163,8 +2173,18 @@ def _format_sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def _runtime_access_allowed(session_id: str, token: str | None) -> bool:
-    return security_runtime_access_allowed(transcripts_dir=settings.transcripts_dir, session_id=session_id, token=token)
+def _runtime_access_allowed(
+    session_id: str,
+    *,
+    user_id: int | None,
+    guest_grant_id: str | None,
+) -> bool:
+    return security_runtime_access_allowed(
+        transcripts_dir=settings.transcripts_dir,
+        session_id=session_id,
+        user_id=user_id,
+        guest_grant_id=guest_grant_id,
+    )
 
 
 def _keycloak_login_enabled() -> bool:
@@ -2278,8 +2298,8 @@ def _clear_session_cookie(response: Response, request: Request) -> None:
     security_clear_session_cookie(response=response, request=request, cookie_name=SESSION_COOKIE_NAME)
 
 
-async def get_txt(session_id: str, token: str | None = Query(default=None)) -> Response:
-    if not _runtime_access_allowed(session_id, token):
+async def get_txt(session_id: str, *, user_id: int | None, guest_grant_id: str | None) -> Response:
+    if not _runtime_access_allowed(session_id, user_id=user_id, guest_grant_id=guest_grant_id):
         return HTMLResponse(status_code=404, content="not found")
     path = resolve_transcript_path(settings.transcripts_dir, session_id, "txt")
     if not path or not path.exists():
@@ -2287,8 +2307,8 @@ async def get_txt(session_id: str, token: str | None = Query(default=None)) -> R
     return FileResponse(str(path), media_type="text/plain")
 
 
-async def get_jsonl(session_id: str, token: str | None = Query(default=None)) -> Response:
-    if not _runtime_access_allowed(session_id, token):
+async def get_jsonl(session_id: str, *, user_id: int | None, guest_grant_id: str | None) -> Response:
+    if not _runtime_access_allowed(session_id, user_id=user_id, guest_grant_id=guest_grant_id):
         return HTMLResponse(status_code=404, content="not found")
     path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
     if not path or not path.exists():
@@ -2296,8 +2316,8 @@ async def get_jsonl(session_id: str, token: str | None = Query(default=None)) ->
     return FileResponse(str(path), media_type="application/x-ndjson")
 
 
-async def get_zip(session_id: str, token: str | None = Query(default=None)) -> Response:
-    if not _runtime_access_allowed(session_id, token):
+async def get_zip(session_id: str, *, user_id: int | None, guest_grant_id: str | None) -> Response:
+    if not _runtime_access_allowed(session_id, user_id=user_id, guest_grant_id=guest_grant_id):
         return HTMLResponse(status_code=404, content="not found")
     txt_path = resolve_transcript_path(settings.transcripts_dir, session_id, "txt")
     jsonl_path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
@@ -2329,8 +2349,14 @@ async def get_zip(session_id: str, token: str | None = Query(default=None)) -> R
     return Response(content=buffer.getvalue(), media_type="application/zip", headers=headers)
 
 
-async def get_screenshot(session_id: str, filename: str, token: str | None = Query(default=None)) -> Response:
-    if not _runtime_access_allowed(session_id, token):
+async def get_screenshot(
+    session_id: str,
+    filename: str,
+    *,
+    user_id: int | None,
+    guest_grant_id: str | None,
+) -> Response:
+    if not _runtime_access_allowed(session_id, user_id=user_id, guest_grant_id=guest_grant_id):
         return HTMLResponse(status_code=404, content="not found")
     path = resolve_screenshot_path(settings.transcripts_dir, session_id, filename)
     if not path or not path.exists():
@@ -2348,8 +2374,14 @@ async def get_screenshot(session_id: str, filename: str, token: str | None = Que
     return FileResponse(str(path), media_type=media_type)
 
 
-async def get_debug_audio(session_id: str, filename: str, token: str | None = Query(default=None)) -> Response:
-    if not _runtime_access_allowed(session_id, token):
+async def get_debug_audio(
+    session_id: str,
+    filename: str,
+    *,
+    user_id: int | None,
+    guest_grant_id: str | None,
+) -> Response:
+    if not _runtime_access_allowed(session_id, user_id=user_id, guest_grant_id=guest_grant_id):
         return HTMLResponse(status_code=404, content="not found")
     path = resolve_debug_audio_path(settings.debug_chunks_dir, session_id, filename)
     if not path or not path.exists():

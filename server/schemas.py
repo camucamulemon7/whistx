@@ -27,7 +27,7 @@ class ChangePasswordRequest(BaseModel):
 
 class HistorySaveRequest(BaseModel):
     runtimeSessionId: str = Field(min_length=1, max_length=128)
-    runtimeSessionToken: str = Field(min_length=1, max_length=128)
+    runtimeSessionToken: str = Field(default="", max_length=128)
     title: str | None = Field(default=None, max_length=255)
     summaryText: str | None = None
     proofreadText: str | None = None

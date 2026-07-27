@@ -8,7 +8,14 @@ from sqlalchemy.orm import Session
 
 from ... import runtime
 from ...core.logging import emit_container_log
-from ...core.security import clear_session_cookie, set_session_cookie, serialize_user
+from ...core.security import (
+    clear_session_cookie,
+    create_guest_artifact_grant,
+    read_guest_artifact_grant,
+    set_guest_artifact_grant_cookie,
+    set_session_cookie,
+    serialize_user,
+)
 from ...db import get_db
 from ...deps import get_current_user
 from ...models import User
@@ -44,6 +51,9 @@ async def auth_me(request: Request, db: Session = Depends(get_db)) -> JSONRespon
     )
     if payload.get('sessionInvalid'):
         clear_session_cookie(response=response, request=request, cookie_name='whistx_session')
+    if payload.get('guestTranscriptionAllowed') and not payload.get('authenticated'):
+        grant_id = read_guest_artifact_grant(request) or create_guest_artifact_grant()
+        set_guest_artifact_grant_cookie(response=response, request=request, grant_id=grant_id)
     return response
 
 

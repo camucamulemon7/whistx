@@ -152,8 +152,9 @@ def save_history(
         metadata_path=snapshot.txt_path.with_suffix(".meta.json"),
     ):
         raise HistoryError("runtime_session_not_finalized", 409)
-    required_token = str(snapshot.metadata.get("accessToken") or "").strip()
-    if required_token and required_token != runtime_session_token.strip():
+    del runtime_session_token
+    owner_user_id = _as_int(snapshot.metadata.get("ownerUserId"), 0)
+    if owner_user_id <= 0 or owner_user_id != user.id:
         raise HistoryError("runtime_session_not_found", 404)
 
     summary_value = (summary_text or "").strip() or None

@@ -7,7 +7,7 @@ from fastapi import APIRouter, WebSocket
 
 from ... import runtime
 from ...core.config import settings
-from ...core.security import client_ip
+from ...core.security import client_ip, digest_guest_artifact_grant, read_guest_artifact_grant
 from ...db import db_session
 from ...services.auth_service import get_optional_user_from_request
 
@@ -46,6 +46,11 @@ async def ws_transcribe(ws: WebSocket) -> None:
         await _close_safely(ws, 4401, "authentication_required")
         return
 
+    guest_grant_id = read_guest_artifact_grant(ws)
+    if not guest_grant_id:
+        await _close_safely(ws, 4401, "guest_grant_required")
+        return
+
     client_ip = _client_ip(ws)
     if (
         _GUEST_CONNECTIONS_TOTAL >= settings.guest_ws_max_connections
@@ -58,6 +63,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
     _GUEST_CONNECTIONS_BY_IP[client_ip] += 1
     ws.state.is_guest = True
     ws.state.rate_limit_subject = f"ip:{client_ip}"
+    ws.state.guest_artifact_grant_digest = digest_guest_artifact_grant(guest_grant_id)
     try:
         await asyncio.wait_for(runtime.ws_transcribe(ws), timeout=settings.guest_ws_max_duration_seconds)
     except TimeoutError:

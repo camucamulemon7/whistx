@@ -98,6 +98,8 @@ class SessionFactoryTests(unittest.TestCase):
                 settings=settings,
                 transcriber_factory=_Transcriber,
                 diarizer_available=True,
+                owner_user_id=7,
+                guest_grant_digest=None,
             )
 
             self.assertTrue(session.session_id.startswith("client_"))
@@ -111,6 +113,9 @@ class SessionFactoryTests(unittest.TestCase):
             self.assertEqual(metadata["audioSource"], "mic")
             self.assertEqual(metadata["requestedAudioSource"], "both")
             self.assertEqual(metadata["audioSourceFallbackReason"], "display_audio_not_found")
+            self.assertEqual(metadata["ownerUserId"], 7)
+            self.assertIsNone(metadata["guestGrantDigest"])
+            self.assertNotIn("accessToken", metadata)
             self.assertTrue(metadata["diarizationEnabled"])
             self.assertFalse(metadata["finalized"])
 

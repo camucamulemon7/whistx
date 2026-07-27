@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import secrets
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -17,11 +16,11 @@ def create_live_session(
     settings: Any,
     transcriber_factory: Callable[[], SessionTranscriber],
     diarizer_available: bool,
+    owner_user_id: int | None,
+    guest_grant_digest: str | None,
 ) -> LiveSession:
     base_session_id = TranscriptStore.sanitize_or_generate(as_str(payload.get("sessionId")))
     runtime_session_id = TranscriptStore.make_runtime_session_id(base_session_id)
-    access_token = secrets.token_urlsafe(18)
-
     language = normalize_asr_language(as_str(payload.get("language")))
     audio_source = normalize_audio_source(as_str(payload.get("audioSource")))
     requested_audio_source = normalize_audio_source(as_str(payload.get("requestedAudioSource")) or audio_source)
@@ -34,7 +33,6 @@ def create_live_session(
 
     session = LiveSession(
         session_id=runtime_session_id,
-        access_token=access_token,
         language=language,
         audio_source=audio_source,
         base_prompt=prompt,
@@ -71,7 +69,8 @@ def create_live_session(
     session.store.write_metadata(
         {
             "sessionId": runtime_session_id,
-            "accessToken": access_token,
+            "ownerUserId": owner_user_id,
+            "guestGrantDigest": guest_grant_digest,
             "language": language,
             "audioSource": audio_source,
             "requestedAudioSource": requested_audio_source,
