@@ -600,6 +600,23 @@ class RegressionTests(unittest.TestCase):
             response = health_routes.liveness()
         self.assertEqual(response.status_code, 200)
 
+    def test_security_headers_cover_api_static_and_rejected_requests(self) -> None:
+        client = TestClient(application_core.create_app())
+        responses = (
+            client.get('/api/health/live'),
+            client.get('/'),
+            client.post(
+                '/api/auth/logout',
+                headers={'origin': 'https://attacker.invalid'},
+            ),
+        )
+        for response in responses:
+            self.assertEqual(response.headers.get('x-content-type-options'), 'nosniff')
+            self.assertEqual(response.headers.get('x-frame-options'), 'DENY')
+            self.assertEqual(response.headers.get('referrer-policy'), 'no-referrer')
+            self.assertIn("frame-ancestors 'none'", response.headers.get('content-security-policy', ''))
+            self.assertIn('microphone=(self)', response.headers.get('permissions-policy', ''))
+
     def test_readiness_reports_schema_revision_mismatch(self) -> None:
         schema = SimpleNamespace(
             ready=False,

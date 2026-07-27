@@ -26,18 +26,23 @@ COPY requirements-diarization.lock /app/requirements-diarization.lock
 RUN uv pip install --system --no-cache --require-hashes -r /app/requirements.lock \
     && if [ "${INSTALL_DIARIZATION}" = "1" ]; then uv pip install --system --no-cache --require-hashes -r /app/requirements-diarization.lock; fi
 
-COPY alembic.ini /app/alembic.ini
-COPY alembic /app/alembic
-COPY server /app/server
-COPY web /app/web
-COPY scripts /app/scripts
-COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
-RUN mkdir -p /app/data/transcripts
+RUN groupadd --gid 10001 whistx \
+    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /tmp --shell /usr/sbin/nologin whistx
+
+COPY --chown=whistx:whistx alembic.ini /app/alembic.ini
+COPY --chown=whistx:whistx alembic /app/alembic
+COPY --chown=whistx:whistx server /app/server
+COPY --chown=whistx:whistx web /app/web
+COPY --chown=whistx:whistx scripts /app/scripts
+COPY --chown=whistx:whistx entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh \
+    && mkdir -p /app/data/transcripts \
+    && chown -R whistx:whistx /app/data
 
 VOLUME ["/app/data"]
 EXPOSE 8005
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/api/health/live', timeout=3).read()" || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python -c "import os, urllib.request; port=os.getenv('APP_PORT', os.getenv('PORT', '8005')); urllib.request.urlopen(f'http://127.0.0.1:{port}/api/health/live', timeout=3).read()" || exit 1
 
+USER 10001:10001
 CMD ["/app/entrypoint.sh"]

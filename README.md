@@ -223,6 +223,21 @@ Container diarization dependency behavior:
 - `CONTAINER_INSTALL_DIARIZATION=0` (default): do not install `torch` / `torchaudio` / `pyannote.audio`
 - `CONTAINER_INSTALL_DIARIZATION=1`: include diarization dependencies in the image
 
+The image runs as non-root UID/GID `10001`. `/app/data` is the only persistent writable
+location; when using `--read-only`, mount `/app/data` as a volume and `/tmp` as a tmpfs:
+
+```bash
+docker run --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+  --mount type=volume,src=whistx-data,dst=/app/data \
+  -e APP_SESSION_SECRET -e ASR_API_KEY -p 8005:8005 whistx:latest
+```
+
+TLS terminates at the trusted reverse proxy. The application emits CSP, frame, MIME-sniffing,
+referrer, and permissions headers; the proxy must add HSTS only on HTTPS virtual hosts.
+Runtime base and tool images use explicit release tags and are rebuilt by CI. Production
+promotion should record the resolved image digest and deploy that digest; dependency update
+PRs are the only place where these tags are advanced.
+
 ## Minimal Configuration
 
 At minimum, set these in `.env`:
