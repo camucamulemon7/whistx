@@ -238,6 +238,10 @@ Runtime base and tool images use explicit release tags and are rebuilt by CI. Pr
 promotion should record the resolved image digest and deploy that digest; dependency update
 PRs are the only place where these tags are advanced.
 
+`start.sh`と`podman-run.sh`は、ローカルのbind mountを利用するためホストUID/GIDで
+コンテナを実行し、アプリ起動前に同じimageで`alembic upgrade head`を実行します。
+実行UIDを固定したい場合は`CONTAINER_USER=<uid>:<gid>`で上書きできます。
+
 ## Minimal Configuration
 
 At minimum, set these in `.env`:

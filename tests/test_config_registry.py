@@ -125,6 +125,15 @@ class ConfigRegistryTests(unittest.TestCase):
             self.assertIn("build_common_container_env", source)
             self.assertIn('"${COMMON_CONTAINER_ENV[@]}"', source)
 
+    def test_local_container_scripts_migrate_as_host_user_before_startup(self) -> None:
+        common = (ROOT / "scripts" / "container_common.sh").read_text(encoding="utf-8")
+        self.assertIn('CONTAINER_USER="${CONTAINER_USER:-$(id -u):$(id -g)}"', common)
+        for script_name in ("start.sh", "podman-run.sh"):
+            source = (ROOT / script_name).read_text(encoding="utf-8")
+            self.assertIn('alembic upgrade head', source)
+            self.assertIn('--user "${CONTAINER_USER}"', source)
+            self.assertLess(source.index('alembic upgrade head'), source.rindex('"${CONTAINER_IMAGE_NAME}"'))
+
     def test_aliases_have_an_explicit_removal_policy(self) -> None:
         for item in ENV_REGISTRY:
             self.assertEqual(item.deprecated_aliases, item.aliases)

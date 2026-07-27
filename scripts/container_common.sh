@@ -11,6 +11,7 @@ resolve_container_runtime_env() {
   CONTAINER_NAME="${CONTAINER_NAME:-whistx}"
   CONTAINER_BUILD_POLICY="${CONTAINER_BUILD_POLICY:-missing}"
   CONTAINER_INSTALL_DIARIZATION="${CONTAINER_INSTALL_DIARIZATION:-${DIARIZATION_ENABLED:-0}}"
+  CONTAINER_USER="${CONTAINER_USER:-$(id -u):$(id -g)}"
 }
 
 build_common_container_env() {
