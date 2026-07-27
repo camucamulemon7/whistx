@@ -4229,11 +4229,6 @@ body.is-history-drawer-open {
     grid-template-columns: 1fr;
   }
 
-  .history-rail {
-    position: static;
-    max-height: none;
-  }
-
   .auth-card {
     padding: var(--space-6);
   }

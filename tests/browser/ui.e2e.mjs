@@ -239,6 +239,20 @@ async function verifyHistoryDrawerAtWidth(client, width) {
 
   await evaluate(client, `document.querySelector("#historyDrawerOpen").click()`);
   state = await drawerState(client);
+  const drawerLayout = await evaluate(
+    client,
+    `(() => {
+      const rail = document.querySelector("#historyRail");
+      const rect = rail.getBoundingClientRect();
+      return {
+        position: getComputedStyle(rail).position,
+        top: rect.top,
+        left: rect.left,
+        height: rect.height,
+        viewportHeight: window.innerHeight
+      };
+    })()`,
+  );
   assert.deepEqual(
     {
       expanded: state.expanded,
@@ -255,6 +269,13 @@ async function verifyHistoryDrawerAtWidth(client, width) {
       bodyLocked: true,
     },
     `${width}px: opening the history drawer should synchronize visible and accessible state`,
+  );
+  assert.equal(drawerLayout.position, "fixed", `${width}px: history must remain a viewport drawer`);
+  assert.ok(Math.abs(drawerLayout.top) <= 1, `${width}px: history drawer must align with the viewport top`);
+  assert.ok(Math.abs(drawerLayout.left) <= 1, `${width}px: history drawer must align with the viewport left`);
+  assert.ok(
+    Math.abs(drawerLayout.height - drawerLayout.viewportHeight) <= 1,
+    `${width}px: history drawer must fill the viewport height`,
   );
 
   await evaluate(client, `document.querySelector("#historyDrawerBackdrop").click()`);
@@ -282,6 +303,21 @@ async function verifyDesktopPanelLayout(client) {
     mobile: false,
   });
   await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
+  const desktopHistoryPosition = await evaluate(
+    client,
+    `(() => {
+      const rail = document.querySelector("#historyRail");
+      const main = document.querySelector(".workspace-main");
+      const railRect = rail.getBoundingClientRect();
+      const mainRect = main.getBoundingClientRect();
+      return {
+        position: getComputedStyle(rail).position,
+        topDifference: Math.abs(railRect.top - mainRect.top)
+      };
+    })()`,
+  );
+  assert.equal(desktopHistoryPosition.position, "sticky", "desktop history must retain its sticky sidebar position");
+  assert.ok(desktopHistoryPosition.topDifference <= 1, "desktop history must align with the workspace content");
   let layout = await evaluate(
     client,
     `({
