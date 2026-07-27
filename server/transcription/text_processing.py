@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import difflib
 import logging
 import re
 
 from ..asr import ASRChunkResult
+from ..core.blocking import blocking_work_pool
 from ..core.config import settings
 from .session import LiveSession
 
@@ -312,7 +312,8 @@ async def _retry_weird_transcription_if_needed(
         bool(result.suspicious),
         session.audio_source,
     )
-    rescue_result = await asyncio.to_thread(
+    rescue_result = await blocking_work_pool.run(
+        "asr",
         session.transcriber.transcribe_chunk,
         audio_bytes,
         mime_type=prepared.mime_type,

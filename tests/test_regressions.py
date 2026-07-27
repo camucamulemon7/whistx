@@ -10,7 +10,6 @@ import types
 import unittest
 import zipfile
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -116,10 +115,10 @@ class RegressionTests(unittest.TestCase):
 
         with patch.object(auth_module, 'get_user_by_email', return_value=None):
             for _ in range(5):
-                response = asyncio.run(auth_routes.auth_login(payload, request, db))
+                response = auth_routes.auth_login(payload, request, db)
                 self.assertEqual(response.status_code, 401)
 
-            response = asyncio.run(auth_routes.auth_login(payload, request, db))
+            response = auth_routes.auth_login(payload, request, db)
             self.assertEqual(response.status_code, 429)
             self.assertIn('too_many_login_attempts', response.body.decode('utf-8'))
 
@@ -1000,14 +999,23 @@ class RegressionTests(unittest.TestCase):
             with patch.object(
                 runtime_artifact_service,
                 'settings',
-                SimpleNamespace(transcripts_dir=transcripts_dir),
+                SimpleNamespace(
+                    transcripts_dir=transcripts_dir,
+                    app_data_dir=Path(tmpdir),
+                    artifact_worker_concurrency=2,
+                    blocking_worker_queue_timeout_seconds=30,
+                ),
             ):
-                response = asyncio.run(
-                    runtime_artifact_service.get_zip('sess-zip', user_id=1, guest_grant_id=None)
+                response = runtime_artifact_service.get_zip(
+                    'sess-zip',
+                    user_id=1,
+                    guest_grant_id=None,
                 )
 
-            with zipfile.ZipFile(BytesIO(response.body)) as archive:
+            with zipfile.ZipFile(response.path) as archive:
                 names = sorted(archive.namelist())
+            asyncio.run(response.background())
+            self.assertFalse(Path(response.path).exists())
 
             self.assertIn('sess-zip.txt', names)
             self.assertIn('sess-zip.jsonl', names)

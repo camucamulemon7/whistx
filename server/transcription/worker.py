@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from ..diarizer import AudioChunk
+from ..core.blocking import blocking_work_pool
 from ..transcript_store import TranscriptRecord
 from .session import FailedPreparedChunk, LiveSession
 
@@ -66,7 +67,9 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
 
             if session.collect_audio_for_diarization:
                 try:
-                    chunk_path = session.store.save_audio_chunk(
+                    chunk_path = await blocking_work_pool.run(
+                        "artifact",
+                        session.store.save_audio_chunk,
                         seq=item.seq,
                         mime_type=item.mime_type,
                         audio_bytes=item.audio_bytes,
@@ -86,11 +89,16 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
                         item.seq,
                         exc,
                     )
-            deps.save_debug_chunk(session, item)
+            await blocking_work_pool.run("artifact", deps.save_debug_chunk, session, item)
 
             prepared = None
             try:
-                prepared = deps.prepare_audio(session=session, item=item)
+                prepared = await blocking_work_pool.run(
+                    "media",
+                    deps.prepare_audio,
+                    session=session,
+                    item=item,
+                )
                 buffered_count = len(session.failed_prepared_chunks)
                 effective_audio_bytes = prepared.audio_bytes
                 effective_seq = item.seq
@@ -98,7 +106,9 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
                 effective_duration_ms = item.duration_ms
                 if session.failed_prepared_chunks:
                     buffered = list(session.failed_prepared_chunks)
-                    effective_audio_bytes = deps.merge_wav_chunks(
+                    effective_audio_bytes = await blocking_work_pool.run(
+                        "media",
+                        deps.merge_wav_chunks,
                         [entry.audio_bytes for entry in buffered] + [prepared.audio_bytes]
                     )
                     effective_seq = buffered[0].seq
@@ -145,7 +155,8 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
                         },
                     )
                     continue
-                result = await asyncio.to_thread(
+                result = await blocking_work_pool.run(
+                    "asr",
                     session.transcriber.transcribe_chunk,
                     effective_audio_bytes,
                     mime_type=prepared.mime_type,
@@ -249,6 +260,31 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
                 previous_end_ms=session.last_emitted_ts_end,
             )
 
+            screenshot_path = await blocking_work_pool.run(
+                "artifact",
+                deps.store_screenshot,
+                session,
+                item,
+            )
+            raw_audio_path = await blocking_work_pool.run(
+                "artifact",
+                _store_or_resolve_audio,
+                deps.store_raw_audio,
+                deps.resolve_audio_url,
+                session,
+                item,
+                "raw",
+                item.seq,
+            )
+            audio_path = await blocking_work_pool.run(
+                "artifact",
+                _store_or_resolve_asr_audio,
+                deps.store_asr_audio,
+                deps.resolve_audio_url,
+                session,
+                effective_seq,
+                effective_audio_bytes,
+            )
             record = TranscriptRecord(
                 type="final",
                 segmentId=f"{effective_seq:06d}",
@@ -260,17 +296,11 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
                 chunkDurationMs=effective_duration_ms,
                 language=session.language,
                 createdAt=datetime.now(timezone.utc).isoformat(),
-                screenshotPath=deps.store_screenshot(session, item),
-                rawAudioPath=(
-                    deps.store_raw_audio(session, item)
-                    or deps.resolve_audio_url(session, prefix="raw", seq=item.seq)
-                ),
-                audioPath=(
-                    deps.store_asr_audio(session, effective_seq, effective_audio_bytes)
-                    or deps.resolve_audio_url(session, prefix="asr", seq=effective_seq)
-                ),
+                screenshotPath=screenshot_path,
+                rawAudioPath=raw_audio_path,
+                audioPath=audio_path,
             )
-            session.store.append_final(record)
+            await blocking_work_pool.run("artifact", session.store.append_final, record)
             session.last_emitted_text = text
             session.last_emitted_ts_end = ts_end
             session.transcript_history.append(text)
@@ -324,3 +354,24 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
             await asyncio.to_thread(session.transcriber.close)
         except Exception:  # noqa: BLE001
             deps.logger.debug("session transcriber close failed: session=%s", session.session_id, exc_info=True)
+
+
+def _store_or_resolve_audio(
+    store: Callable[[LiveSession, Any], str | None],
+    resolve: Callable[..., str | None],
+    session: LiveSession,
+    item: Any,
+    prefix: str,
+    seq: int,
+) -> str | None:
+    return store(session, item) or resolve(session, prefix=prefix, seq=seq)
+
+
+def _store_or_resolve_asr_audio(
+    store: Callable[[LiveSession, int, bytes], str | None],
+    resolve: Callable[..., str | None],
+    session: LiveSession,
+    seq: int,
+    audio_bytes: bytes,
+) -> str | None:
+    return store(session, seq, audio_bytes) or resolve(session, prefix="asr", seq=seq)

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import zipfile
-from io import BytesIO
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from threading import BoundedSemaphore
 
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from starlette.background import BackgroundTask
 
 from ..core.config import settings
 from ..core.security import runtime_access_allowed as security_runtime_access_allowed
@@ -13,6 +16,8 @@ from ..transcript_store import (
     resolve_screenshot_path,
     resolve_transcript_path,
 )
+
+_ZIP_WORKERS = BoundedSemaphore(settings.artifact_worker_concurrency)
 
 
 def _runtime_access_allowed(
@@ -29,7 +34,7 @@ def _runtime_access_allowed(
     )
 
 
-async def get_txt(
+def get_txt(
     session_id: str, *, user_id: int | None, guest_grant_id: str | None
 ) -> Response:
     if not _runtime_access_allowed(
@@ -42,7 +47,7 @@ async def get_txt(
     return FileResponse(str(path), media_type="text/plain")
 
 
-async def get_jsonl(
+def get_jsonl(
     session_id: str, *, user_id: int | None, guest_grant_id: str | None
 ) -> Response:
     if not _runtime_access_allowed(
@@ -55,7 +60,7 @@ async def get_jsonl(
     return FileResponse(str(path), media_type="application/x-ndjson")
 
 
-async def get_zip(
+def get_zip(
     session_id: str, *, user_id: int | None, guest_grant_id: str | None
 ) -> Response:
     if not _runtime_access_allowed(
@@ -72,36 +77,64 @@ async def get_zip(
     ):
         return HTMLResponse(status_code=404, content="not found")
 
-    buffer = BytesIO()
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.write(txt_path, arcname=f"{session_id}.txt")
-        archive.write(jsonl_path, arcname=f"{session_id}.jsonl")
+    acquired = _ZIP_WORKERS.acquire(
+        timeout=settings.blocking_worker_queue_timeout_seconds
+    )
+    if not acquired:
+        return Response(
+            status_code=503,
+            content="artifact worker queue timeout",
+            media_type="text/plain",
+        )
+    try:
+        temp_dir = settings.app_data_dir / "tmp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(
+            prefix=f"{session_id}-",
+            suffix=".zip",
+            dir=temp_dir,
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+        try:
+            with zipfile.ZipFile(
+                temp_path, "w", compression=zipfile.ZIP_DEFLATED
+            ) as archive:
+                archive.write(txt_path, arcname=f"{session_id}.txt")
+                archive.write(jsonl_path, arcname=f"{session_id}.jsonl")
 
-        seen_screenshots: set[str] = set()
-        for screenshots_dir in iter_runtime_screenshot_dirs(
-            settings.transcripts_dir, session_id
-        ):
-            if not screenshots_dir.exists():
-                continue
-            for screenshot_path in sorted(screenshots_dir.iterdir()):
-                if not screenshot_path.is_file():
-                    continue
-                if screenshot_path.name in seen_screenshots:
-                    continue
-                seen_screenshots.add(screenshot_path.name)
-                archive.write(
-                    screenshot_path,
-                    arcname=f"{session_id}/screenshots/{screenshot_path.name}",
-                )
+                seen_screenshots: set[str] = set()
+                for screenshots_dir in iter_runtime_screenshot_dirs(
+                    settings.transcripts_dir, session_id
+                ):
+                    if not screenshots_dir.exists():
+                        continue
+                    for screenshot_path in sorted(screenshots_dir.iterdir()):
+                        if not screenshot_path.is_file():
+                            continue
+                        if screenshot_path.name in seen_screenshots:
+                            continue
+                        seen_screenshots.add(screenshot_path.name)
+                        archive.write(
+                            screenshot_path,
+                            arcname=f"{session_id}/screenshots/{screenshot_path.name}",
+                        )
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+    finally:
+        _ZIP_WORKERS.release()
 
-    buffer.seek(0)
     headers = {"Content-Disposition": f'attachment; filename="{session_id}.zip"'}
-    return Response(
-        content=buffer.getvalue(), media_type="application/zip", headers=headers
+    return FileResponse(
+        str(temp_path),
+        media_type="application/zip",
+        headers=headers,
+        background=BackgroundTask(_remove_temp_file, temp_path),
     )
 
 
-async def get_screenshot(
+def get_screenshot(
     session_id: str,
     filename: str,
     *,
@@ -128,7 +161,7 @@ async def get_screenshot(
     return FileResponse(str(path), media_type=media_type)
 
 
-async def get_debug_audio(
+def get_debug_audio(
     session_id: str,
     filename: str,
     *,
@@ -157,3 +190,7 @@ async def get_debug_audio(
         media_type = "audio/mpeg"
 
     return FileResponse(str(path), media_type=media_type)
+
+
+def _remove_temp_file(path: Path) -> None:
+    path.unlink(missing_ok=True)

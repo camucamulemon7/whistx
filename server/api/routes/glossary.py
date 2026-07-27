@@ -19,7 +19,7 @@ class SharedGlossaryUpdateRequest(BaseModel):
 
 
 @router.get("/api/glossary/shared")
-async def get_shared_glossary(user: User = Depends(get_current_user)) -> dict[str, object]:
+def get_shared_glossary(user: User = Depends(get_current_user)) -> dict[str, object]:
     emit_container_log(__name__, "debug", "shared glossary requested: user=%s", user.email)
     logger.debug("shared glossary requested: user=%s", user.email)
     payload = load_shared_glossary()
@@ -27,7 +27,7 @@ async def get_shared_glossary(user: User = Depends(get_current_user)) -> dict[st
 
 
 @router.put("/api/glossary/shared")
-async def put_shared_glossary(
+def put_shared_glossary(
     payload: SharedGlossaryUpdateRequest,
     user: User = Depends(get_current_admin),
 ) -> dict[str, object]:

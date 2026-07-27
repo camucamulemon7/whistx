@@ -27,6 +27,7 @@ from .auth import (
 from .asr import SessionTranscriber
 from .audio_pipeline import AudioPreprocessor
 from .core.config import settings
+from .core.blocking import blocking_work_pool
 from .db import db_session, get_db, init_db
 from .diarizer import PyannoteSpeakerDiarizer, SpeakerTurn
 from .langfuse_observer import make_langfuse_observer
@@ -133,6 +134,7 @@ DIARIZER: PyannoteSpeakerDiarizer | None = None
 ACTIVE_SOCKETS: set[WebSocket] = set()
 LANGFUSE_OBSERVER = None
 CLEANUP_TASK: asyncio.Task | None = None
+EVENT_LOOP_MONITOR_TASK: asyncio.Task | None = None
 OIDC_STATE_COOKIE_NAME = "whistx_oidc_state"
 KEYCLOAK_PROVIDER = "keycloak"
 KEYCLOAK_DISCOVERY_CACHE: dict[str, Any] | None = None
@@ -147,12 +149,14 @@ async def on_startup() -> None:
         PROOFREADER, \
         DIARIZER, \
         LANGFUSE_OBSERVER, \
-        CLEANUP_TASK
+        CLEANUP_TASK, \
+        EVENT_LOOP_MONITOR_TASK
 
     _validate_runtime_configuration()
     init_db()
     _run_cleanup_once("startup")
     CLEANUP_TASK = asyncio.create_task(_periodic_cleanup_loop())
+    EVENT_LOOP_MONITOR_TASK = asyncio.create_task(_event_loop_lag_monitor())
     logger.info(
         "startup config: history_dir=%s keycloak=%s self_signup=%s require_verified_email=%s",
         settings.history_dir,
@@ -251,14 +255,17 @@ async def on_startup() -> None:
 
 
 async def on_shutdown() -> None:
-    global CLEANUP_TASK
-    if CLEANUP_TASK is not None:
-        CLEANUP_TASK.cancel()
+    global CLEANUP_TASK, EVENT_LOOP_MONITOR_TASK
+    for task in (CLEANUP_TASK, EVENT_LOOP_MONITOR_TASK):
+        if task is None:
+            continue
+        task.cancel()
         try:
-            await CLEANUP_TASK
+            await task
         except asyncio.CancelledError:
             pass
-        CLEANUP_TASK = None
+    CLEANUP_TASK = None
+    EVENT_LOOP_MONITOR_TASK = None
     if LANGFUSE_OBSERVER is not None:
         LANGFUSE_OBSERVER.flush()
         LANGFUSE_OBSERVER.shutdown()
@@ -279,6 +286,25 @@ async def _periodic_cleanup_loop() -> None:
         while True:
             await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
             await asyncio.to_thread(_run_cleanup_once, "periodic cleanup")
+    except asyncio.CancelledError:
+        raise
+
+
+async def _event_loop_lag_monitor() -> None:
+    interval_seconds = 1.0
+    loop = asyncio.get_running_loop()
+    expected = loop.time() + interval_seconds
+    try:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            current = loop.time()
+            lag_seconds = max(0.0, current - expected)
+            if lag_seconds >= 0.25:
+                logger.warning(
+                    "event loop lag detected: lag_ms=%d",
+                    round(lag_seconds * 1000),
+                )
+            expected = current + interval_seconds
     except asyncio.CancelledError:
         raise
 
@@ -453,7 +479,8 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
     )
 
     try:
-        result = await asyncio.to_thread(
+        result = await blocking_work_pool.run(
+            "llm",
             SUMMARIZER.summarize_long,
             text=raw_text,
             language=language,
@@ -502,7 +529,8 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
 
     language = _as_str(payload.language) or settings.default_language
     mode = _normalize_proofread_mode(_as_str(payload.mode))
-    glossary_text = str(load_shared_glossary().get("text") or "").strip()
+    glossary_payload = await asyncio.to_thread(load_shared_glossary)
+    glossary_text = str(glossary_payload.get("text") or "").strip()
     logger.info("Proofread requested: chars=%d language=%s", len(raw_text), language)
     trace_context = (
         LANGFUSE_OBSERVER.create_trace_context(
@@ -514,7 +542,8 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
     )
 
     try:
-        result = await asyncio.to_thread(
+        result = await blocking_work_pool.run(
+            "llm",
             PROOFREADER.proofread_long,
             text=raw_text,
             language=language,
@@ -566,7 +595,8 @@ async def proofread_stream(payload: ProofreadRequest) -> Response:
 
     language = _as_str(payload.language) or settings.default_language
     mode = _normalize_proofread_mode(_as_str(payload.mode))
-    glossary_text = str(load_shared_glossary().get("text") or "").strip()
+    glossary_payload = await asyncio.to_thread(load_shared_glossary)
+    glossary_text = str(glossary_payload.get("text") or "").strip()
     trace_context = (
         LANGFUSE_OBSERVER.create_trace_context(
             name="api.proofread.stream",
@@ -1093,7 +1123,11 @@ async def _run_diarization_for_session(ws: WebSocket, session: LiveSession) -> N
     )
 
     try:
-        patch_map = await asyncio.to_thread(_apply_diarization_labels, session)
+        patch_map = await blocking_work_pool.run(
+            "diarization",
+            _apply_diarization_labels,
+            session,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Diarization failed: session=%s", session.session_id)
         await _safe_send(

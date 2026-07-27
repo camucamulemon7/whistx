@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.post('/api/history')
-async def create_history(
+def create_history(
     payload: HistorySaveRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -43,7 +43,7 @@ async def create_history(
 
 
 @router.get('/api/history')
-async def get_history_list(
+def get_history_list(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     q: str | None = Query(default=None),
@@ -56,7 +56,7 @@ async def get_history_list(
 
 
 @router.get('/api/history/{history_id}')
-async def get_history_detail(
+def get_history_detail(
     history_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -71,7 +71,7 @@ async def get_history_detail(
 
 
 @router.delete('/api/history/{history_id}')
-async def delete_history_entry(
+def delete_history_entry(
     history_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -83,25 +83,25 @@ async def delete_history_entry(
 
 
 @router.get('/api/history/{history_id}/download.txt', response_model=None)
-async def download_history_txt(history_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Response:
+def download_history_txt(history_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Response:
     response = get_history_download_response(db, user=user, history_id=history_id, kind='txt')
     return response or HTMLResponse(status_code=404, content='not found')
 
 
 @router.get('/api/history/{history_id}/download.jsonl', response_model=None)
-async def download_history_jsonl(history_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Response:
+def download_history_jsonl(history_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Response:
     response = get_history_download_response(db, user=user, history_id=history_id, kind='jsonl')
     return response or HTMLResponse(status_code=404, content='not found')
 
 
 @router.get('/api/history/{history_id}/download.zip', response_model=None)
-async def download_history_zip(history_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Response:
+def download_history_zip(history_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> Response:
     response = get_history_download_response(db, user=user, history_id=history_id, kind='zip')
     return response or HTMLResponse(status_code=404, content='not found')
 
 
 @router.get('/api/history/{history_id}/screenshots/{filename}', response_model=None)
-async def get_history_screenshot(
+def get_history_screenshot(
     history_id: str,
     filename: str,
     user: User = Depends(get_current_user),
@@ -112,7 +112,7 @@ async def get_history_screenshot(
 
 
 @router.get('/api/history/{history_id}/audio/{filename}', response_model=None)
-async def get_history_audio(
+def get_history_audio(
     history_id: str,
     filename: str,
     user: User = Depends(get_current_user),

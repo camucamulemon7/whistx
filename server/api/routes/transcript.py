@@ -13,11 +13,11 @@ router = APIRouter()
 
 
 @router.get("/api/transcript/{session_id}.txt", response_model=None)
-async def get_txt(
+def get_txt(
     session_id: str, request: Request, db: Session = Depends(get_db)
 ) -> Response:
     user = get_optional_user_from_request(request, db)
-    return await runtime_artifact_service.get_txt(
+    return runtime_artifact_service.get_txt(
         session_id,
         user_id=user.id if user is not None else None,
         guest_grant_id=read_guest_artifact_grant(request),
@@ -25,11 +25,11 @@ async def get_txt(
 
 
 @router.get("/api/transcript/{session_id}.jsonl", response_model=None)
-async def get_jsonl(
+def get_jsonl(
     session_id: str, request: Request, db: Session = Depends(get_db)
 ) -> Response:
     user = get_optional_user_from_request(request, db)
-    return await runtime_artifact_service.get_jsonl(
+    return runtime_artifact_service.get_jsonl(
         session_id,
         user_id=user.id if user is not None else None,
         guest_grant_id=read_guest_artifact_grant(request),
@@ -37,11 +37,11 @@ async def get_jsonl(
 
 
 @router.get("/api/transcript/{session_id}.zip", response_model=None)
-async def get_zip(
+def get_zip(
     session_id: str, request: Request, db: Session = Depends(get_db)
 ) -> Response:
     user = get_optional_user_from_request(request, db)
-    return await runtime_artifact_service.get_zip(
+    return runtime_artifact_service.get_zip(
         session_id,
         user_id=user.id if user is not None else None,
         guest_grant_id=read_guest_artifact_grant(request),
@@ -49,14 +49,14 @@ async def get_zip(
 
 
 @router.get("/api/transcripts/{session_id}/screenshots/{filename}", response_model=None)
-async def get_screenshot(
+def get_screenshot(
     session_id: str,
     filename: str,
     request: Request,
     db: Session = Depends(get_db),
 ) -> Response:
     user = get_optional_user_from_request(request, db)
-    return await runtime_artifact_service.get_screenshot(
+    return runtime_artifact_service.get_screenshot(
         session_id,
         filename,
         user_id=user.id if user is not None else None,
@@ -65,14 +65,14 @@ async def get_screenshot(
 
 
 @router.get("/api/transcripts/{session_id}/audio/{filename}", response_model=None)
-async def get_debug_audio(
+def get_debug_audio(
     session_id: str,
     filename: str,
     request: Request,
     db: Session = Depends(get_db),
 ) -> Response:
     user = get_optional_user_from_request(request, db)
-    return await runtime_artifact_service.get_debug_audio(
+    return runtime_artifact_service.get_debug_audio(
         session_id,
         filename,
         user_id=user.id if user is not None else None,

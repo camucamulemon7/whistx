@@ -21,14 +21,14 @@ router = APIRouter()
 
 
 @router.get("/api/admin/pending-users")
-async def admin_pending_users(
+def admin_pending_users(
     user: User = Depends(get_current_admin), db: Session = Depends(get_db)
 ) -> JSONResponse:
     return JSONResponse(list_pending_users_payload(db))
 
 
 @router.post("/api/admin/pending-users/{user_id}/approve")
-async def admin_approve_pending_user(
+def admin_approve_pending_user(
     user_id: int,
     user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -42,7 +42,7 @@ async def admin_approve_pending_user(
 
 
 @router.get("/api/admin/users")
-async def admin_users(
+def admin_users(
     q: str = Query(default=""),
     user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -70,7 +70,7 @@ async def admin_update_user_role(
 
 
 @router.get("/admin", response_model=None)
-async def admin_page(user: User = Depends(get_current_admin)) -> Response:
+def admin_page(user: User = Depends(get_current_admin)) -> Response:
     del user
     path = Path("web") / "admin.html"
     if not path.exists():
