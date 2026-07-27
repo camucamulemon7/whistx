@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import logging
 import secrets
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -14,12 +14,13 @@ from .. import auth
 from ..core.config import settings
 from ..core.security import client_ip, serialize_user
 from ..models import User
-from ..repositories import user_repository
+from ..repositories import quota_repository, user_repository
+
+logger = logging.getLogger(__name__)
 
 KEYCLOAK_PROVIDER = 'keycloak'
 LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300
 LOGIN_RATE_LIMIT_ATTEMPTS = 5
-LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 
 
 class AuthServiceError(Exception):
@@ -55,32 +56,25 @@ def _login_rate_limit_keys(request: Request, email: str) -> tuple[str, str]:
     return f'{_client_ip(request)}::{normalized}', f'email::{normalized}'
 
 
-def _prune_login_attempts(key: str, now: float | None = None) -> list[float]:
-    current = time.monotonic() if now is None else now
-    attempts = [stamp for stamp in LOGIN_ATTEMPTS.get(key, []) if current - stamp < LOGIN_RATE_LIMIT_WINDOW_SECONDS]
-    if attempts:
-        LOGIN_ATTEMPTS[key] = attempts
-    else:
-        LOGIN_ATTEMPTS.pop(key, None)
-    return attempts
-
-
 def _record_failed_login(key: str) -> None:
-    attempts = _prune_login_attempts(key)
-    attempts.append(time.monotonic())
-    LOGIN_ATTEMPTS[key] = attempts
+    quota_repository.consume_rate_limit(
+        bucket='login',
+        subject=key,
+        limit=LOGIN_RATE_LIMIT_ATTEMPTS,
+        window_seconds=LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+    )
 
 
 def _clear_failed_login(key: str) -> None:
-    LOGIN_ATTEMPTS.pop(key, None)
+    quota_repository.clear_rate_limit(bucket='login', subject=key)
 
 
 def _login_retry_after_seconds(key: str) -> int | None:
-    attempts = _prune_login_attempts(key)
-    if len(attempts) < LOGIN_RATE_LIMIT_ATTEMPTS:
-        return None
-    retry_after = LOGIN_RATE_LIMIT_WINDOW_SECONDS - (time.monotonic() - min(attempts))
-    return max(1, int(retry_after))
+    return quota_repository.rate_limit_retry_after(
+        bucket='login',
+        subject=key,
+        limit=LOGIN_RATE_LIMIT_ATTEMPTS,
+    )
 
 
 def _login_retry_after_seconds_for_keys(keys: tuple[str, str]) -> int | None:
@@ -98,6 +92,8 @@ def get_optional_user_from_request(request: Request, db: Session) -> User | None
 def build_auth_me_payload(request: Request, db: Session) -> dict[str, Any]:
     session_cookie_present = bool(request.cookies.get(auth.SESSION_COOKIE_NAME))
     user = get_optional_user_from_request(request, db)
+    admin_exists = auth.has_admin_account(db)
+    http_bootstrap_allowed = getattr(settings, "app_env", "development") != "production"
     return {
         'authenticated': user is not None,
         'sessionInvalid': session_cookie_present and user is None,
@@ -105,7 +101,8 @@ def build_auth_me_payload(request: Request, db: Session) -> dict[str, Any]:
         'selfSignupEnabled': settings.enable_self_signup,
         'guestTranscriptionAllowed': bool(getattr(settings, 'allow_guest_transcription', False)),
         'historyRetentionDays': settings.history_retention_days,
-        'bootstrapAdminRequired': not auth.has_admin_account(db),
+        'bootstrapAdminRequired': not admin_exists and http_bootstrap_allowed,
+        'bootstrapAdminCliRequired': not admin_exists and not http_bootstrap_allowed,
         'pendingApprovalCount': user_repository.count_pending_users(db) if user is not None and user.is_admin else 0,
         'keycloakEnabled': bool(settings.keycloak_enabled and settings.keycloak_issuer and settings.keycloak_client_id),
         'keycloakButtonLabel': settings.keycloak_button_label,
@@ -142,12 +139,17 @@ def login_user(payload, request: Request, db: Session) -> AuthResult:
 
 
 def bootstrap_admin(payload, request: Request, db: Session) -> AuthResult:
+    if getattr(settings, "app_env", "development") == "production":
+        logger.warning("initial administrator HTTP bootstrap rejected in production: ip=%s", client_ip(request))
+        raise AuthServiceError('bootstrap_admin_cli_required', 403)
     if auth.has_admin_account(db):
+        logger.warning("duplicate administrator bootstrap rejected: ip=%s", client_ip(request))
         raise AuthServiceError('admin_already_exists', 409)
     existing = auth.get_user_by_email(db, payload.email)
     if existing is not None:
         raise AuthServiceError('email_already_exists', 409)
     try:
+        user_repository.claim_initial_admin_bootstrap(db)
         user = auth.create_user(
             db,
             email=payload.email.strip().lower(),
@@ -171,7 +173,8 @@ def bootstrap_admin(payload, request: Request, db: Session) -> AuthResult:
         raise AuthServiceError('password_too_short', 400) from None
     except IntegrityError:
         db.rollback()
-        raise AuthServiceError('email_already_exists', 409) from None
+        logger.warning("concurrent administrator bootstrap rejected: ip=%s", client_ip(request))
+        raise AuthServiceError('admin_already_exists', 409) from None
 
 
 def register_user(payload, db: Session) -> AuthResult:

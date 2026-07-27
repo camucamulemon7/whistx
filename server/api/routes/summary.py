@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends
@@ -33,7 +34,7 @@ async def summarize(
     payload: runtime.SummarizeRequest,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
-    if not _allow_costly_request("summary", user):
+    if not await asyncio.to_thread(_allow_costly_request, "summary", user):
         return JSONResponse(status_code=429, content={"error": "rate_limit_exceeded"})
     emit_container_log(__name__, "debug", "summary requested: chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
     logger.debug("summary requested: chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
@@ -45,7 +46,7 @@ async def proofread(
     payload: runtime.ProofreadRequest,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
-    if not _allow_costly_request("proofread", user):
+    if not await asyncio.to_thread(_allow_costly_request, "proofread", user):
         return JSONResponse(status_code=429, content={"error": "rate_limit_exceeded"})
     emit_container_log(__name__, "debug", "proofread requested(route): chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
     logger.debug("proofread requested(route): chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
@@ -57,7 +58,7 @@ async def proofread_stream(
     payload: runtime.ProofreadRequest,
     user: User = Depends(get_current_user),
 ) -> Response:
-    if not _allow_costly_request("proofread", user):
+    if not await asyncio.to_thread(_allow_costly_request, "proofread", user):
         return JSONResponse(status_code=429, content={"error": "rate_limit_exceeded"})
     emit_container_log(__name__, "debug", "proofread stream requested: chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
     logger.debug("proofread stream requested: chars=%s language=%s", len(payload.text or ""), payload.language or "auto")

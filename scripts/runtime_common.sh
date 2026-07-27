@@ -28,6 +28,7 @@ resolve_app_runtime_env() {
   APP_PORT="${APP_PORT:-${PORT:-8005}}"
   APP_ENTRYPOINT="${APP_ENTRYPOINT:-${APP:-server.app:app}}"
   APP_WS_PATH="${APP_WS_PATH:-${WS_PATH:-/ws/transcribe}}"
+  WS_MAX_MESSAGE_BYTES="${WS_MAX_MESSAGE_BYTES:-20971520}"
   APP_DATA_DIR="${APP_DATA_DIR:-${DATA_DIR:-${script_dir}/data}}"
   APP_DATA_DIR="$(resolve_path_from_root "${script_dir}" "${APP_DATA_DIR}")"
   APP_TRANSCRIPTS_DIR="${APP_TRANSCRIPTS_DIR:-${APP_DATA_DIR}/transcripts}"

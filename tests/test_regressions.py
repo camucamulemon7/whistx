@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import json
 import re
 import sys
 import tempfile
@@ -9,7 +10,6 @@ import types
 import unittest
 import zipfile
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -35,8 +35,7 @@ if 'argon2' not in sys.modules:
     sys.modules['argon2'] = argon2_mod
     sys.modules['argon2.exceptions'] = argon2_exc
 
-from fastapi import Request
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 import httpx
 from openai import APIConnectionError, BadRequestError
@@ -50,9 +49,11 @@ from server import runtime
 from server import openai_whisper
 from server import summarizer as summarizer_module
 from server.asr import ASRChunkResult
-from server.schemas import LoginRequest, RegisterRequest
+from server.schemas import BootstrapAdminRequest, LoginRequest, RegisterRequest
 from server.api.routes import admin as admin_routes
 from server.api.routes import auth as auth_routes
+from server.api.routes import glossary as glossary_routes
+from server.api.routes import health as health_routes
 from server.api.routes import summary as summary_routes
 from server.api.ws import transcribe as ws_routes
 from server.core import application as application_core
@@ -61,10 +62,17 @@ from server.core.config.asr import load_asr_config
 from server.core import security
 from server.core import rate_limit
 from server.models import TranscriptHistory, TranscriptSegment, User
-from server.repositories import session_repository, user_repository
-from server.services import admin_service, auth_service, glossary_service, history_service
-from server.deps import get_current_user
+from server.repositories import quota_repository, session_repository, user_repository
+from server.services import (
+    admin_service,
+    auth_service,
+    glossary_service,
+    history_service,
+    runtime_artifact_service,
+)
+from server.deps import get_current_admin, get_current_user
 from server.transcript_store import read_jsonl_records
+from server.transcription import text_processing
 
 
 class DummyDB:
@@ -99,7 +107,6 @@ def make_security_settings(**overrides):
 
 class RegressionTests(unittest.TestCase):
     def setUp(self) -> None:
-        auth_service.LOGIN_ATTEMPTS.clear()
         rate_limit.clear()
 
     def test_login_route_rate_limits_after_repeated_failures(self) -> None:
@@ -109,12 +116,111 @@ class RegressionTests(unittest.TestCase):
 
         with patch.object(auth_module, 'get_user_by_email', return_value=None):
             for _ in range(5):
-                response = asyncio.run(auth_routes.auth_login(payload, request, db))
+                response = auth_routes.auth_login(payload, request, db)
                 self.assertEqual(response.status_code, 401)
 
-            response = asyncio.run(auth_routes.auth_login(payload, request, db))
+            response = auth_routes.auth_login(payload, request, db)
             self.assertEqual(response.status_code, 429)
             self.assertIn('too_many_login_attempts', response.body.decode('utf-8'))
+
+    def test_production_admin_bootstrap_requires_trusted_cli(self) -> None:
+        payload = BootstrapAdminRequest(
+            email='admin@example.com',
+            password='secure-password',
+            display_name='Administrator',
+        )
+        with patch.object(auth_service, 'settings', SimpleNamespace(app_env='production')):
+            with self.assertRaises(auth_service.AuthServiceError) as ctx:
+                auth_service.bootstrap_admin(payload, make_request(), DummyDB())
+        self.assertEqual(ctx.exception.code, 'bootstrap_admin_cli_required')
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_concurrent_admin_bootstrap_claim_is_rejected(self) -> None:
+        payload = BootstrapAdminRequest(
+            email='admin@example.com',
+            password='secure-password',
+            display_name='Administrator',
+        )
+        conflict = auth_service.IntegrityError('insert bootstrap claim', {}, RuntimeError('unique'))
+        with (
+            patch.object(auth_service, 'settings', SimpleNamespace(app_env='development')),
+            patch.object(auth_service.auth, 'has_admin_account', return_value=False),
+            patch.object(auth_service.auth, 'get_user_by_email', return_value=None),
+            patch.object(auth_service.user_repository, 'claim_initial_admin_bootstrap', side_effect=conflict),
+        ):
+            with self.assertRaises(auth_service.AuthServiceError) as ctx:
+                auth_service.bootstrap_admin(payload, make_request(), DummyDB())
+        self.assertEqual(ctx.exception.code, 'admin_already_exists')
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_runtime_artifact_access_fails_closed_and_checks_owner_or_guest_grant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            transcripts_dir = Path(tmpdir)
+            session_id = 'sess-access'
+            txt_path = transcripts_dir / f'{session_id}.txt'
+            metadata_path = transcripts_dir / f'{session_id}.meta.json'
+            txt_path.write_text('secret transcript', encoding='utf-8')
+
+            with patch.object(security, 'settings', make_security_settings()):
+                self.assertFalse(
+                    security.runtime_access_allowed(
+                        transcripts_dir=transcripts_dir,
+                        session_id=session_id,
+                        user_id=None,
+                        guest_grant_id=None,
+                    )
+                )
+
+                metadata_path.write_text('{invalid', encoding='utf-8')
+                self.assertFalse(
+                    security.runtime_access_allowed(
+                        transcripts_dir=transcripts_dir,
+                        session_id=session_id,
+                        user_id=1,
+                        guest_grant_id=None,
+                    )
+                )
+
+                metadata_path.write_text('{"finalized":true,"ownerUserId":7}', encoding='utf-8')
+                self.assertTrue(
+                    security.runtime_access_allowed(
+                        transcripts_dir=transcripts_dir,
+                        session_id=session_id,
+                        user_id=7,
+                        guest_grant_id=None,
+                    )
+                )
+                self.assertFalse(
+                    security.runtime_access_allowed(
+                        transcripts_dir=transcripts_dir,
+                        session_id=session_id,
+                        user_id=8,
+                        guest_grant_id=None,
+                    )
+                )
+
+                guest_grant = 'guest-browser-grant'
+                guest_digest = security.digest_guest_artifact_grant(guest_grant)
+                metadata_path.write_text(
+                    f'{{"finalized":true,"guestGrantDigest":"{guest_digest}"}}',
+                    encoding='utf-8',
+                )
+                self.assertTrue(
+                    security.runtime_access_allowed(
+                        transcripts_dir=transcripts_dir,
+                        session_id=session_id,
+                        user_id=None,
+                        guest_grant_id=guest_grant,
+                    )
+                )
+                self.assertFalse(
+                    security.runtime_access_allowed(
+                        transcripts_dir=transcripts_dir,
+                        session_id=session_id,
+                        user_id=None,
+                        guest_grant_id='another-grant',
+                    )
+                )
 
     def test_asr_retry_config_is_loaded_from_environment(self) -> None:
         with patch.dict(
@@ -387,7 +493,7 @@ class RegressionTests(unittest.TestCase):
                 encoding='utf-8',
             )
             (transcripts_dir / f'{session_id}.meta.json').write_text(
-                '{"finalized": true, "accessToken": "token"}',
+                '{"finalized": true, "ownerUserId": 1}',
                 encoding='utf-8',
             )
 
@@ -433,19 +539,47 @@ class RegressionTests(unittest.TestCase):
             self.assertTrue(user_history_dir.exists())
             self.assertFalse(any(path.name.startswith('.hist_') for path in user_history_dir.glob('**/*')))
 
-    def test_session_repository_handles_aware_expiry(self) -> None:
+    def test_session_lookup_filters_expiry_without_deleting(self) -> None:
         now = datetime.now(timezone.utc)
-        session = SimpleNamespace(expires_at=now + timedelta(minutes=5), user='user')
 
         class DummySessionDB:
             def execute(self, *_args, **_kwargs):
-                return None
+                raise AssertionError('session lookup must not issue DELETE')
 
-            def scalar(self, *_args, **_kwargs):
-                return session
+            def scalar(self, statement, *_args, **_kwargs):
+                sql = str(statement)
+                self.assert_in_sql = 'user_sessions.expires_at >=' in sql
+                return 'user'
 
-        user = session_repository.get_user_by_session_id(DummySessionDB(), 'sess-1', now=now)
+        db = DummySessionDB()
+        user = session_repository.get_user_by_session_id(db, 'sess-1', now=now)
         self.assertEqual(user, 'user')
+        self.assertTrue(db.assert_in_sql)
+
+    def test_session_cleanup_reports_batched_delete(self) -> None:
+        now = datetime.now(timezone.utc)
+        oldest = now - timedelta(days=3)
+
+        class DummyResult:
+            rowcount = 25
+
+        class DummySessionDB:
+            def scalar(self, *_args, **_kwargs):
+                return oldest
+
+            def execute(self, statement, *_args, **_kwargs):
+                self.sql = str(statement)
+                return DummyResult()
+
+        db = DummySessionDB()
+        result = session_repository.prune_expired_sessions(
+            db,
+            now=now,
+            batch_size=25,
+        )
+        self.assertEqual(result.deleted_count, 25)
+        self.assertEqual(result.oldest_expired_at, oldest)
+        self.assertIn('LIMIT', db.sql)
 
     def test_summary_route_requires_login(self) -> None:
         app = FastAPI()
@@ -456,6 +590,106 @@ class RegressionTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json(), {'detail': 'login_required'})
+
+    def test_liveness_does_not_depend_on_database_revision(self) -> None:
+        with patch.object(
+            health_routes,
+            'schema_revision_status',
+            side_effect=RuntimeError('database unavailable'),
+        ):
+            response = health_routes.liveness()
+        self.assertEqual(response.status_code, 200)
+
+    def test_security_headers_cover_api_static_and_rejected_requests(self) -> None:
+        client = TestClient(application_core.create_app())
+        responses = (
+            client.get('/api/health/live'),
+            client.get('/'),
+            client.post(
+                '/api/auth/logout',
+                headers={'origin': 'https://attacker.invalid'},
+            ),
+        )
+        for response in responses:
+            self.assertEqual(response.headers.get('x-content-type-options'), 'nosniff')
+            self.assertEqual(response.headers.get('x-frame-options'), 'DENY')
+            self.assertEqual(response.headers.get('referrer-policy'), 'no-referrer')
+            self.assertIn("frame-ancestors 'none'", response.headers.get('content-security-policy', ''))
+            self.assertIn('microphone=(self)', response.headers.get('permissions-policy', ''))
+
+    def test_readiness_reports_schema_revision_mismatch(self) -> None:
+        schema = SimpleNamespace(
+            ready=False,
+            current_revisions=('20260727_0006',),
+            expected_revisions=('20260727_0007',),
+            error=None,
+        )
+        with patch.object(health_routes, 'schema_revision_status', return_value=schema):
+            response = asyncio.run(health_routes.readiness())
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('not_ready', response.body.decode('utf-8'))
+
+    def test_shared_glossary_requires_login_and_admin_for_updates(self) -> None:
+        app = FastAPI()
+        app.include_router(glossary_routes.router)
+        client = TestClient(app)
+
+        self.assertEqual(client.get('/api/glossary/shared').status_code, 401)
+        self.assertEqual(client.put('/api/glossary/shared', json={'text': 'secret'}).status_code, 401)
+
+        member = User(
+            id=1,
+            email='member@example.com',
+            password_hash='hash',
+            is_active=True,
+            is_admin=False,
+        )
+        app.dependency_overrides[get_current_user] = lambda: member
+        with patch.object(
+            glossary_routes,
+            'load_shared_glossary',
+            return_value={'text': 'internal', 'updatedAt': None, 'updatedBy': None},
+        ):
+            response = client.get('/api/glossary/shared')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['items'], 'internal')
+
+        def reject_member_update():
+            raise HTTPException(status_code=403, detail='admin_required')
+
+        app.dependency_overrides[get_current_admin] = reject_member_update
+        self.assertEqual(client.put('/api/glossary/shared', json={'text': 'changed'}).status_code, 403)
+
+        admin = User(
+            id=2,
+            email='admin@example.com',
+            password_hash='hash',
+            is_active=True,
+            is_admin=True,
+        )
+        app.dependency_overrides[get_current_admin] = lambda: admin
+        with patch.object(
+            glossary_routes,
+            'save_shared_glossary',
+            return_value={'text': 'changed', 'updatedAt': 'now', 'updatedBy': admin.email},
+        ):
+            response = client.put('/api/glossary/shared', json={'text': 'changed'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['items'], 'changed')
+
+    def test_shared_glossary_writes_append_only_revision_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(
+                glossary_service,
+                'settings',
+                SimpleNamespace(app_data_dir=Path(tmpdir)),
+            ):
+                first = glossary_service.save_shared_glossary(text='alpha', updated_by='admin@example.com')
+                second = glossary_service.save_shared_glossary(text='beta', updated_by='admin@example.com')
+                history_lines = glossary_service.glossary_history_path().read_text(encoding='utf-8').splitlines()
+
+        self.assertNotEqual(first['revisionId'], second['revisionId'])
+        self.assertEqual([json.loads(line)['text'] for line in history_lines], ['alpha', 'beta'])
 
     def test_summary_route_allows_authenticated_user(self) -> None:
         app = FastAPI()
@@ -545,6 +779,22 @@ class RegressionTests(unittest.TestCase):
 
         handler.assert_called_once()
 
+    def test_ws_transcribe_rejects_cross_origin_before_authentication(self) -> None:
+        app = FastAPI()
+        app.include_router(ws_routes.router)
+        client = TestClient(app)
+
+        with patch.object(ws_routes, 'get_optional_user_from_request') as auth_lookup:
+            with self.assertRaises(Exception) as ctx:
+                with client.websocket_connect(
+                    '/ws/transcribe',
+                    headers={'origin': 'https://attacker.example'},
+                ):
+                    pass
+
+        self.assertEqual(getattr(ctx.exception, 'code', None), 4403)
+        auth_lookup.assert_not_called()
+
     def test_ws_transcribe_allows_bounded_guest_when_enabled(self) -> None:
         app = FastAPI()
         app.include_router(ws_routes.router)
@@ -564,6 +814,7 @@ class RegressionTests(unittest.TestCase):
         with (
             patch.object(ws_routes, 'settings', guest_settings),
             patch.object(ws_routes, 'get_optional_user_from_request', return_value=None),
+            patch.object(ws_routes, 'read_guest_artifact_grant', return_value='guest-grant'),
             patch.object(ws_routes.runtime, 'ws_transcribe', side_effect=accept_and_close) as handler,
         ):
             with client.websocket_connect('/ws/transcribe'):
@@ -663,7 +914,7 @@ class RegressionTests(unittest.TestCase):
                 encoding='utf-8',
             )
             (runtime_dir / f'{session_id}.meta.json').write_text(
-                '{"finalized": true, "accessToken": "token"}',
+                '{"finalized": true, "ownerUserId": 1}',
                 encoding='utf-8',
             )
 
@@ -734,7 +985,7 @@ class RegressionTests(unittest.TestCase):
                 encoding='utf-8',
             )
             (runtime_dir / f'{session_id}.meta.json').write_text(
-                '{"finalized": true, "accessToken": "token"}',
+                '{"finalized": true, "ownerUserId": 1}',
                 encoding='utf-8',
             )
 
@@ -807,16 +1058,31 @@ class RegressionTests(unittest.TestCase):
                 encoding='utf-8',
             )
             (runtime_dir / 'sess-zip.meta.json').write_text(
-                '{"finalized": true, "accessToken": "token"}',
+                '{"finalized": true, "ownerUserId": 1}',
                 encoding='utf-8',
             )
             (screenshots_dir / '000001.webp').write_bytes(b'webp')
 
-            with patch.object(runtime, 'settings', SimpleNamespace(transcripts_dir=transcripts_dir)):
-                response = asyncio.run(runtime.get_zip('sess-zip', token='token'))
+            with patch.object(
+                runtime_artifact_service,
+                'settings',
+                SimpleNamespace(
+                    transcripts_dir=transcripts_dir,
+                    app_data_dir=Path(tmpdir),
+                    artifact_worker_concurrency=2,
+                    blocking_worker_queue_timeout_seconds=30,
+                ),
+            ):
+                response = runtime_artifact_service.get_zip(
+                    'sess-zip',
+                    user_id=1,
+                    guest_grant_id=None,
+                )
 
-            with zipfile.ZipFile(BytesIO(response.body)) as archive:
+            with zipfile.ZipFile(response.path) as archive:
                 names = sorted(archive.namelist())
+            asyncio.run(response.background())
+            self.assertFalse(Path(response.path).exists())
 
             self.assertIn('sess-zip.txt', names)
             self.assertIn('sess-zip.jsonl', names)
@@ -1084,12 +1350,12 @@ class RegressionTests(unittest.TestCase):
     def test_trim_overlap_prefix_requires_substantial_match(self) -> None:
         previous = '本日の会議では新製品の価格改定について説明します'
         current = '価格改定について説明します。次に販売計画を確認します'
-        self.assertEqual(runtime._trim_overlap_prefix(current, previous), '次に販売計画を確認します')
+        self.assertEqual(text_processing._trim_overlap_prefix(current, previous), '次に販売計画を確認します')
 
     def test_trim_overlap_prefix_fuzzy_match_handles_small_variation(self) -> None:
         previous = '新製品の価格改定について説明いたします'
         current = '価格改定について説明します。次に販売計画です'
-        self.assertEqual(runtime._trim_overlap_prefix(current, previous), '次に販売計画です')
+        self.assertEqual(text_processing._trim_overlap_prefix(current, previous), '次に販売計画です')
 
     def test_build_prompt_includes_shared_vocabulary(self) -> None:
         session = SimpleNamespace(
@@ -1101,7 +1367,7 @@ class RegressionTests(unittest.TestCase):
             context_max_chars=400,
             language='ja',
         )
-        prompt = runtime._build_prompt(session)
+        prompt = text_processing._build_prompt(session)
         self.assertIsNotNone(prompt)
         self.assertIn('共有用語辞典', prompt)
         self.assertIn('PCIe, UCIe, Blackwell', prompt)
@@ -1254,23 +1520,37 @@ class RegressionTests(unittest.TestCase):
     def test_near_duplicate_detection_does_not_drop_extended_text(self) -> None:
         previous = '本日の会議では新製品の価格改定について説明します'
         current = '本日の会議では新製品の価格改定について詳細を説明します'
-        self.assertFalse(runtime._is_near_duplicate(current, previous))
+        self.assertFalse(text_processing._is_near_duplicate(current, previous))
 
     def test_near_duplicate_detection_uses_timestamp_gap(self) -> None:
         previous = '価格改定について説明します'
         current = '価格改定について説明します'
-        self.assertTrue(runtime._is_near_duplicate(current, previous, current_start_ms=1000, previous_end_ms=900))
-        self.assertFalse(runtime._is_near_duplicate(current, previous, current_start_ms=5000, previous_end_ms=900))
+        self.assertTrue(
+            text_processing._is_near_duplicate(
+                current,
+                previous,
+                current_start_ms=1000,
+                previous_end_ms=900,
+            )
+        )
+        self.assertFalse(
+            text_processing._is_near_duplicate(
+                current,
+                previous,
+                current_start_ms=5000,
+                previous_end_ms=900,
+            )
+        )
 
     def test_light_proofread_collapses_fillers_and_normalizes_digits(self) -> None:
-        value = runtime._light_proofread('えーと、えーと ２０ ２５ 年の計画です', language='ja')
+        value = text_processing._light_proofread('えーと、えーと ２０ ２５ 年の計画です', language='ja')
         self.assertIn('えーと', value)
         self.assertNotIn('えーと、えーと', value)
         self.assertIn('2025', value)
 
     def test_boundary_fragment_detection_drops_broken_display_chunk(self) -> None:
         self.assertTrue(
-            runtime._should_drop_boundary_fragment(
+            text_processing._should_drop_boundary_fragment(
                 'おすすめとかえええ\ufffd',
                 '有識者のみなさんぜひ教えてくださいよということでお願いしますよお願いしますほなじゃあなんかありますかおすすめとか',
                 source_mode='display',
@@ -1303,7 +1583,7 @@ class RegressionTests(unittest.TestCase):
 
     def test_weird_transcription_retry_detection_handles_broken_chunk(self) -> None:
         self.assertTrue(
-            runtime._should_retry_weird_transcription(
+            text_processing._should_retry_weird_transcription(
                 'おすすめとかえええ\ufffd',
                 '有識者のみなさんぜひ教えてくださいよということでお願いしますよお願いしますほなじゃあなんかありますかおすすめとか',
                 source_mode='display',
@@ -1315,7 +1595,7 @@ class RegressionTests(unittest.TestCase):
         original = ASRChunkResult(text='おすすめとかえええ\ufffd', start_ms=0, end_ms=1000, suspicious=True)
         retry = ASRChunkResult(text='おすすめとか', start_ms=0, end_ms=1000, suspicious=False)
         self.assertTrue(
-            runtime._prefer_rescue_transcription_result(
+            text_processing._prefer_rescue_transcription_result(
                 original=original,
                 retry=retry,
                 previous_text='有識者のみなさんぜひ教えてくださいよということでお願いしますよお願いしますほなじゃあなんかありますか',
@@ -1324,8 +1604,22 @@ class RegressionTests(unittest.TestCase):
         )
 
     def test_monotonic_bounds_prevent_timestamp_overlap(self) -> None:
-        self.assertEqual(runtime._coerce_monotonic_bounds(ts_start=8100, ts_end=8900, previous_end_ms=9000), (9000, 9000))
-        self.assertEqual(runtime._coerce_monotonic_bounds(ts_start=9100, ts_end=9500, previous_end_ms=9000), (9100, 9500))
+        self.assertEqual(
+            text_processing._coerce_monotonic_bounds(
+                ts_start=8100,
+                ts_end=8900,
+                previous_end_ms=9000,
+            ),
+            (9000, 9000),
+        )
+        self.assertEqual(
+            text_processing._coerce_monotonic_bounds(
+                ts_start=9100,
+                ts_end=9500,
+                previous_end_ms=9000,
+            ),
+            (9100, 9500),
+        )
 
     def test_register_user_rejects_when_self_signup_disabled(self) -> None:
         payload = RegisterRequest(email='user@example.com', password='password123', display_name='User')
@@ -1532,6 +1826,46 @@ class RegressionTests(unittest.TestCase):
         self.assertFalse(rate_limit.consume(bucket='summary', subject='user:1', limit=1, window_seconds=60))
         self.assertTrue(rate_limit.consume(bucket='proofread', subject='user:1', limit=1, window_seconds=60))
         self.assertTrue(rate_limit.consume(bucket='summary', subject='user:2', limit=1, window_seconds=60))
+
+    def test_guest_connection_quota_is_shared_and_released(self) -> None:
+        first = quota_repository.acquire_connection_lease(
+            subject='ip:192.0.2.10',
+            is_guest=True,
+            ttl_seconds=60,
+            guest_total_limit=2,
+            guest_subject_limit=1,
+        )
+        self.assertIsNotNone(first)
+        self.assertIsNone(
+            quota_repository.acquire_connection_lease(
+                subject='ip:192.0.2.10',
+                is_guest=True,
+                ttl_seconds=60,
+                guest_total_limit=2,
+                guest_subject_limit=1,
+            )
+        )
+        second = quota_repository.acquire_connection_lease(
+            subject='ip:192.0.2.11',
+            is_guest=True,
+            ttl_seconds=60,
+            guest_total_limit=2,
+            guest_subject_limit=1,
+        )
+        self.assertIsNotNone(second)
+        self.assertEqual(quota_repository.count_active_connections(), 2)
+        self.assertIsNone(
+            quota_repository.acquire_connection_lease(
+                subject='ip:192.0.2.12',
+                is_guest=True,
+                ttl_seconds=60,
+                guest_total_limit=2,
+                guest_subject_limit=1,
+            )
+        )
+        quota_repository.release_connection_lease(first)
+        quota_repository.release_connection_lease(second)
+        self.assertEqual(quota_repository.count_active_connections(), 0)
 
     def test_password_change_revokes_sessions_and_rotates_cookie_token(self) -> None:
         user = SimpleNamespace(id=7, password_hash='old-hash')

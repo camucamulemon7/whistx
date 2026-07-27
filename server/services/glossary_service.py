@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,10 @@ from ..core.config import settings
 
 def glossary_path() -> Path:
     return settings.app_data_dir / "shared_glossary.json"
+
+
+def glossary_history_path() -> Path:
+    return settings.app_data_dir / "shared_glossary_history.jsonl"
 
 
 def load_shared_glossary() -> dict[str, Any]:
@@ -33,6 +38,7 @@ def load_shared_glossary() -> dict[str, Any]:
 def save_shared_glossary(*, text: str, updated_by: str | None) -> dict[str, Any]:
     clean_text = str(text or "").strip()
     payload = {
+        "revisionId": secrets.token_hex(12),
         "text": clean_text,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
         "updatedBy": str(updated_by or "").strip() or None,
@@ -46,6 +52,8 @@ def save_shared_glossary(*, text: str, updated_by: str | None) -> dict[str, Any]
         handle.write("\n")
         temp_path = Path(handle.name)
     temp_path.replace(path)
+    with glossary_history_path().open("a", encoding="utf-8") as history:
+        history.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
     return payload
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import ipaddress
@@ -15,23 +16,87 @@ from fastapi.responses import Response
 from .config import settings
 from ..transcript_store import resolve_transcript_path
 
+GUEST_ARTIFACT_COOKIE_NAME = "whistx_guest_artifact"
+GUEST_ARTIFACT_GRANT_TTL_SECONDS = 60 * 60
 
-def runtime_access_allowed(*, transcripts_dir, session_id: str, token: str | None) -> bool:
+
+def runtime_access_allowed(
+    *,
+    transcripts_dir,
+    session_id: str,
+    user_id: int | None,
+    guest_grant_id: str | None,
+) -> bool:
     base_path = resolve_transcript_path(transcripts_dir, session_id, "txt")
     if base_path is None:
         return False
     metadata_path = base_path.with_suffix(".meta.json")
     if not metadata_path.exists():
-        return True
+        return False
     try:
         loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
     metadata = loaded if isinstance(loaded, dict) else {}
-    required = str(metadata.get("accessToken") or "").strip()
-    if not required:
-        return True
-    return secrets.compare_digest(required, str(token or ""))
+    owner_user_id = _positive_int(metadata.get("ownerUserId"))
+    if owner_user_id is not None:
+        return user_id is not None and secrets.compare_digest(str(owner_user_id), str(user_id))
+
+    required_guest_digest = str(metadata.get("guestGrantDigest") or "").strip()
+    if not required_guest_digest or not guest_grant_id:
+        return False
+    actual_guest_digest = digest_guest_artifact_grant(guest_grant_id)
+    return secrets.compare_digest(required_guest_digest, actual_guest_digest)
+
+
+def create_guest_artifact_grant() -> str:
+    return secrets.token_urlsafe(24)
+
+
+def digest_guest_artifact_grant(grant_id: str) -> str:
+    return hmac.new(
+        settings.app_session_secret.encode("utf-8"),
+        str(grant_id or "").encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def read_guest_artifact_grant(request: Request) -> str | None:
+    payload = unsigned_payload(request.cookies.get(GUEST_ARTIFACT_COOKIE_NAME))
+    if not isinstance(payload, dict):
+        return None
+    grant_id = str(payload.get("grantId") or "").strip()
+    expires_at = _positive_int(payload.get("expiresAt"))
+    now = int(datetime.now(timezone.utc).timestamp())
+    if not grant_id or expires_at is None or expires_at <= now:
+        return None
+    return grant_id
+
+
+def set_guest_artifact_grant_cookie(
+    *,
+    response: Response,
+    request: Request,
+    grant_id: str,
+) -> None:
+    expires_at = int(datetime.now(timezone.utc).timestamp()) + GUEST_ARTIFACT_GRANT_TTL_SECONDS
+    response.set_cookie(
+        key=GUEST_ARTIFACT_COOKIE_NAME,
+        value=signed_payload({"grantId": grant_id, "expiresAt": expires_at}),
+        httponly=True,
+        samesite="strict",
+        secure=request_is_secure(request),
+        max_age=GUEST_ARTIFACT_GRANT_TTL_SECONDS,
+        path="/api/",
+    )
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def serialize_user(user) -> dict[str, Any] | None:
@@ -99,11 +164,16 @@ def origin_is_allowed(request: Request) -> bool:
     configured = settings.app_public_url or f"{_request_external_scheme(request)}://{_request_external_host(request)}"
     parsed_origin = urlsplit(origin)
     parsed_configured = urlsplit(configured)
+    configured_scheme = parsed_configured.scheme.lower()
+    if configured_scheme == "ws":
+        configured_scheme = "http"
+    elif configured_scheme == "wss":
+        configured_scheme = "https"
     return (
         parsed_origin.scheme.lower(),
         parsed_origin.netloc.lower(),
     ) == (
-        parsed_configured.scheme.lower(),
+        configured_scheme,
         parsed_configured.netloc.lower(),
     )
 

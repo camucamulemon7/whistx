@@ -8,7 +8,14 @@ from sqlalchemy.orm import Session
 
 from ... import runtime
 from ...core.logging import emit_container_log
-from ...core.security import clear_session_cookie, set_session_cookie, serialize_user
+from ...core.security import (
+    clear_session_cookie,
+    create_guest_artifact_grant,
+    read_guest_artifact_grant,
+    set_guest_artifact_grant_cookie,
+    set_session_cookie,
+    serialize_user,
+)
 from ...db import get_db
 from ...deps import get_current_user
 from ...models import User
@@ -30,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.get('/api/auth/me')
-async def auth_me(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+def auth_me(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     emit_container_log(__name__, "debug", "auth me requested")
     logger.debug("auth me requested")
     payload = build_auth_me_payload(request, db)
@@ -44,11 +51,14 @@ async def auth_me(request: Request, db: Session = Depends(get_db)) -> JSONRespon
     )
     if payload.get('sessionInvalid'):
         clear_session_cookie(response=response, request=request, cookie_name='whistx_session')
+    if payload.get('guestTranscriptionAllowed') and not payload.get('authenticated'):
+        grant_id = read_guest_artifact_grant(request) or create_guest_artifact_grant()
+        set_guest_artifact_grant_cookie(response=response, request=request, grant_id=grant_id)
     return response
 
 
 @router.post('/api/auth/login')
-async def auth_login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+def auth_login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     try:
         result = login_user(payload, request, db)
     except AuthServiceError as exc:
@@ -62,7 +72,7 @@ async def auth_login(payload: LoginRequest, request: Request, db: Session = Depe
 
 
 @router.post('/api/auth/bootstrap-admin')
-async def auth_bootstrap_admin(
+def auth_bootstrap_admin(
     payload: BootstrapAdminRequest,
     request: Request,
     db: Session = Depends(get_db),
@@ -87,7 +97,7 @@ async def auth_keycloak_callback(request: Request, db: Session = Depends(get_db)
 
 
 @router.post('/api/auth/register')
-async def auth_register(payload: RegisterRequest, db: Session = Depends(get_db)) -> JSONResponse:
+def auth_register(payload: RegisterRequest, db: Session = Depends(get_db)) -> JSONResponse:
     try:
         result = register_user(payload, db)
     except AuthServiceError as exc:
@@ -96,7 +106,7 @@ async def auth_register(payload: RegisterRequest, db: Session = Depends(get_db))
 
 
 @router.post('/api/auth/logout')
-async def auth_logout(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+def auth_logout(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     logout_user(request, db)
     response = JSONResponse({'ok': True})
     clear_session_cookie(response=response, request=request, cookie_name='whistx_session')
@@ -104,7 +114,7 @@ async def auth_logout(request: Request, db: Session = Depends(get_db)) -> JSONRe
 
 
 @router.patch('/api/auth/profile')
-async def auth_update_profile(
+def auth_update_profile(
     payload: UpdateDisplayNameRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -114,7 +124,7 @@ async def auth_update_profile(
 
 
 @router.post('/api/auth/password')
-async def auth_change_password(
+def auth_change_password(
     payload: ChangePasswordRequest,
     request: Request,
     user: User = Depends(get_current_user),
@@ -137,7 +147,7 @@ async def auth_change_password(
 
 
 @router.post('/api/auth/sessions/revoke-all')
-async def auth_revoke_all_sessions(
+def auth_revoke_all_sessions(
     request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),

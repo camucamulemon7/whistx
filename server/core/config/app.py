@@ -14,12 +14,23 @@ class AppConfig:
     host: str
     port: int
     ws_path: str
+    ws_max_message_bytes: int
+    ws_max_invalid_messages: int
+    ws_screenshot_max_bytes: int
+    ws_prompt_max_chars: int
+    ws_vocabulary_max_chars: int
+    ws_telemetry_max_chars: int
     app_data_dir: Path
     transcripts_dir: Path
     history_dir: Path
     app_log_level: str
     debug_chunks_dir: Path
     app_db_url: str
+    db_pool_size: int
+    db_max_overflow: int
+    db_pool_timeout_seconds: int
+    db_pool_recycle_seconds: int
+    db_pool_pre_ping: bool
     app_session_secret: str
     app_session_days: int
     app_public_url: str | None
@@ -67,12 +78,23 @@ def load_app_config() -> AppConfig:
         host=env_first_non_empty("APP_HOST", "HOST") or "0.0.0.0",
         port=to_int_alias(8005, "APP_PORT", "PORT"),
         ws_path=env_first_non_empty("APP_WS_PATH", "WS_PATH") or "/ws/transcribe",
+        ws_max_message_bytes=max(1024, to_int("WS_MAX_MESSAGE_BYTES", 20 * 1024 * 1024)),
+        ws_max_invalid_messages=max(1, to_int("WS_MAX_INVALID_MESSAGES", 3)),
+        ws_screenshot_max_bytes=max(1024, to_int("WS_SCREENSHOT_MAX_BYTES", 5 * 1024 * 1024)),
+        ws_prompt_max_chars=max(256, to_int("WS_PROMPT_MAX_CHARS", 8_000)),
+        ws_vocabulary_max_chars=max(256, to_int("WS_VOCABULARY_MAX_CHARS", 8_000)),
+        ws_telemetry_max_chars=max(256, to_int("WS_TELEMETRY_MAX_CHARS", 4_096)),
         app_data_dir=app_data_dir,
         transcripts_dir=transcripts_dir,
         history_dir=history_dir,
         app_log_level=app_log_level,
         debug_chunks_dir=debug_chunks_dir,
         app_db_url=app_db_url,
+        db_pool_size=max(1, to_int("DB_POOL_SIZE", 5)),
+        db_max_overflow=max(0, to_int("DB_MAX_OVERFLOW", 10)),
+        db_pool_timeout_seconds=max(1, to_int("DB_POOL_TIMEOUT_SECONDS", 30)),
+        db_pool_recycle_seconds=max(30, to_int("DB_POOL_RECYCLE_SECONDS", 1800)),
+        db_pool_pre_ping=to_bool("DB_POOL_PRE_PING", True),
         app_session_secret=app_session_secret,
         app_session_days=max(1, to_int("APP_SESSION_DAYS", 7)),
         app_public_url=env_first_non_empty("APP_PUBLIC_URL"),

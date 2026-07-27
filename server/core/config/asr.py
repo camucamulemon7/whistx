@@ -34,6 +34,12 @@ class AsrConfig:
     context_term_limit: int
     max_queue_size: int
     max_chunk_bytes: int
+    asr_worker_concurrency: int
+    media_worker_concurrency: int
+    llm_worker_concurrency: int
+    diarization_worker_concurrency: int
+    artifact_worker_concurrency: int
+    blocking_worker_queue_timeout_seconds: float
 
 
 def load_asr_config() -> AsrConfig:
@@ -65,4 +71,13 @@ def load_asr_config() -> AsrConfig:
         context_term_limit=max(8, to_int_alias(80, "ASR_CONTEXT_TERM_LIMIT")),
         max_queue_size=max(1, to_int_alias(8, "ASR_MAX_QUEUE_SIZE", "MAX_QUEUE_SIZE")),
         max_chunk_bytes=max(1024, to_int_alias(12 * 1024 * 1024, "ASR_MAX_CHUNK_BYTES", "MAX_CHUNK_BYTES")),
+        asr_worker_concurrency=max(1, to_int_alias(4, "ASR_WORKER_CONCURRENCY")),
+        media_worker_concurrency=max(1, to_int_alias(2, "MEDIA_WORKER_CONCURRENCY")),
+        llm_worker_concurrency=max(1, to_int_alias(4, "LLM_WORKER_CONCURRENCY")),
+        diarization_worker_concurrency=max(1, to_int_alias(1, "DIARIZATION_WORKER_CONCURRENCY")),
+        artifact_worker_concurrency=max(1, to_int_alias(2, "ARTIFACT_WORKER_CONCURRENCY")),
+        blocking_worker_queue_timeout_seconds=max(
+            1.0,
+            to_float_alias(30.0, "BLOCKING_WORKER_QUEUE_TIMEOUT_SECONDS"),
+        ),
     )

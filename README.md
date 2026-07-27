@@ -190,6 +190,19 @@ APP_TRUSTED_PROXY_IPS=127.0.0.1,10.0.0.0/8
 
 Password changes, session revocation, rate-limit rejection, and protected administrator operations emit audit-friendly server logs without including secrets.
 
+### Initial administrator
+
+HTTP administrator bootstrap is available only in development. Production deployments must create the first administrator from a trusted shell after applying migrations:
+
+```bash
+python -m server.cli.create_user \
+  --email admin@example.com \
+  --display-name Administrator \
+  --admin
+```
+
+The command prompts for the password when it is omitted. Do not pass production passwords on a shared command line. The database serializes the one-time browser bootstrap used in development, so concurrent requests cannot create multiple initial administrators.
+
 ### Podman (rootless)
 
 ```bash
@@ -210,6 +223,21 @@ Container diarization dependency behavior:
 - `CONTAINER_INSTALL_DIARIZATION=0` (default): do not install `torch` / `torchaudio` / `pyannote.audio`
 - `CONTAINER_INSTALL_DIARIZATION=1`: include diarization dependencies in the image
 
+The image runs as non-root UID/GID `10001`. `/app/data` is the only persistent writable
+location; when using `--read-only`, mount `/app/data` as a volume and `/tmp` as a tmpfs:
+
+```bash
+docker run --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+  --mount type=volume,src=whistx-data,dst=/app/data \
+  -e APP_SESSION_SECRET -e ASR_API_KEY -p 8005:8005 whistx:latest
+```
+
+TLS terminates at the trusted reverse proxy. The application emits CSP, frame, MIME-sniffing,
+referrer, and permissions headers; the proxy must add HSTS only on HTTPS virtual hosts.
+Runtime base and tool images use explicit release tags and are rebuilt by CI. Production
+promotion should record the resolved image digest and deploy that digest; dependency update
+PRs are the only place where these tags are advanced.
+
 ## Minimal Configuration
 
 At minimum, set these in `.env`:
@@ -223,6 +251,23 @@ APP_SESSION_SECRET=replace-with-a-long-random-secret
 ```
 
 `APP_ENV=production` では SQLite は許可されません。開発時のみ `APP_DB_URL` 未設定でローカル SQLite にフォールバックします。本番は PostgreSQL を前提にしてください。
+
+### Database migration deployment step
+
+アプリプロセスは起動時にmigrationを実行しません。新しいimageを起動する前に、同じimageと
+`APP_DB_URL`を使うinit jobで次を1回だけ実行してください。
+
+```bash
+alembic upgrade head
+```
+
+`/api/health/live`はプロセスの生存だけを返し、`/api/health/ready`はDB revisionと必須ASR
+providerを検査します。revision不一致ではアプリは診断可能なまま起動し、readinessが503を返します。
+
+migrationが失敗した場合はアプリを新revisionへ切り替えず、DBバックアップとAlembicログを保全して
+ください。DDLが未適用なら原因修正後に`alembic upgrade head`を再実行します。適用済みDDLを戻す必要が
+ある場合だけ、対象migrationの`downgrade()`とデータ互換性を確認したうえで
+`alembic downgrade <previous-revision>`を実行します。破壊的変更は原則roll-forwardで修復します。
 
 If you use an OpenAI-compatible local or self-hosted backend, also set:
 
@@ -393,7 +438,9 @@ Notes:
 
 ### Health
 
-- `GET /api/health`
+- `GET /api/health/live`: process liveness
+- `GET /api/health/ready`: DB/provider readiness
+- `GET /api/health`: backward-compatible readiness alias
 
 ### WebSocket Transcription
 

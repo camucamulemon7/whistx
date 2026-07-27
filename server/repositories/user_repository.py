@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from ..models import User
+from ..models import AdminBootstrapState, User
 
 
 def get_user_by_email(db: Session, email: str) -> User | None:
@@ -21,6 +21,11 @@ def get_user_by_id(db: Session, user_id: int) -> User | None:
 
 def has_admin_account(db: Session) -> bool:
     return db.scalar(select(User.id).where(User.is_admin.is_(True)).limit(1)) is not None
+
+
+def claim_initial_admin_bootstrap(db: Session) -> None:
+    db.add(AdminBootstrapState(key="initial-admin"))
+    db.flush()
 
 
 def count_admin_users(db: Session) -> int:

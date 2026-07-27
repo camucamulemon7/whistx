@@ -36,7 +36,6 @@ class FailedPreparedChunk:
 @dataclass(slots=True)
 class LiveSession:
     session_id: str
-    access_token: str
     language: str | None
     audio_source: str
     base_prompt: str

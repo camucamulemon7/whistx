@@ -13,4 +13,4 @@ mkdir -p "${APP_TRANSCRIPTS_DIR}"
 
 echo "[entrypoint.sh] host=${APP_HOST} port=${APP_PORT} data_dir=${APP_DATA_DIR} transcripts=${APP_TRANSCRIPTS_DIR}" >&2
 
-exec uvicorn "${APP_ENTRYPOINT}" --host "${APP_HOST}" --port "${APP_PORT}"
+exec uvicorn "${APP_ENTRYPOINT}" --host "${APP_HOST}" --port "${APP_PORT}" --ws-max-size "${WS_MAX_MESSAGE_BYTES}"
