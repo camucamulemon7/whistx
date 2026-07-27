@@ -87,7 +87,9 @@ def set_guest_artifact_grant_cookie(
         samesite="strict",
         secure=request_is_secure(request),
         max_age=GUEST_ARTIFACT_GRANT_TTL_SECONDS,
-        path="/api/",
+        # The grant protects both transcript HTTP routes and /ws/transcribe.
+        # A cookie scoped to /api/ is never included in the WebSocket upgrade.
+        path="/",
     )
 
 
