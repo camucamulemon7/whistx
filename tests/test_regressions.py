@@ -62,7 +62,7 @@ from server.core.config.asr import load_asr_config
 from server.core import security
 from server.core import rate_limit
 from server.models import TranscriptHistory, TranscriptSegment, User
-from server.repositories import session_repository, user_repository
+from server.repositories import quota_repository, session_repository, user_repository
 from server.services import admin_service, auth_service, glossary_service, history_service
 from server.deps import get_current_admin, get_current_user
 from server.transcript_store import read_jsonl_records
@@ -100,7 +100,6 @@ def make_security_settings(**overrides):
 
 class RegressionTests(unittest.TestCase):
     def setUp(self) -> None:
-        auth_service.LOGIN_ATTEMPTS.clear()
         rate_limit.clear()
 
     def test_login_route_rate_limits_after_repeated_failures(self) -> None:
@@ -1711,6 +1710,46 @@ class RegressionTests(unittest.TestCase):
         self.assertFalse(rate_limit.consume(bucket='summary', subject='user:1', limit=1, window_seconds=60))
         self.assertTrue(rate_limit.consume(bucket='proofread', subject='user:1', limit=1, window_seconds=60))
         self.assertTrue(rate_limit.consume(bucket='summary', subject='user:2', limit=1, window_seconds=60))
+
+    def test_guest_connection_quota_is_shared_and_released(self) -> None:
+        first = quota_repository.acquire_connection_lease(
+            subject='ip:192.0.2.10',
+            is_guest=True,
+            ttl_seconds=60,
+            guest_total_limit=2,
+            guest_subject_limit=1,
+        )
+        self.assertIsNotNone(first)
+        self.assertIsNone(
+            quota_repository.acquire_connection_lease(
+                subject='ip:192.0.2.10',
+                is_guest=True,
+                ttl_seconds=60,
+                guest_total_limit=2,
+                guest_subject_limit=1,
+            )
+        )
+        second = quota_repository.acquire_connection_lease(
+            subject='ip:192.0.2.11',
+            is_guest=True,
+            ttl_seconds=60,
+            guest_total_limit=2,
+            guest_subject_limit=1,
+        )
+        self.assertIsNotNone(second)
+        self.assertEqual(quota_repository.count_active_connections(), 2)
+        self.assertIsNone(
+            quota_repository.acquire_connection_lease(
+                subject='ip:192.0.2.12',
+                is_guest=True,
+                ttl_seconds=60,
+                guest_total_limit=2,
+                guest_subject_limit=1,
+            )
+        )
+        quota_repository.release_connection_lease(first)
+        quota_repository.release_connection_lease(second)
+        self.assertEqual(quota_repository.count_active_connections(), 0)
 
     def test_password_change_revokes_sessions_and_rotates_cookie_token(self) -> None:
         user = SimpleNamespace(id=7, password_hash='old-hash')

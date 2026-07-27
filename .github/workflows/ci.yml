@@ -24,6 +24,8 @@ jobs:
   quality:
     name: Quality and SQLite
     runs-on: ubuntu-latest
+    env:
+      APP_DB_URL: sqlite:////tmp/whistx-ci.db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -40,6 +42,8 @@ jobs:
         run: ruff check .
       - name: Compile Python
         run: python -m compileall -q server tests
+      - name: Migrate test database
+        run: alembic upgrade head
       - name: Unit and integration tests
         run: python -m unittest discover -s tests
       - name: ASR evaluation regression
@@ -56,8 +60,6 @@ jobs:
       - name: Check shell syntax
         run: git ls-files '*.sh' | xargs bash -n
       - name: Migrate and start with SQLite
-        env:
-          APP_DB_URL: sqlite:////tmp/whistx-ci.db
         run: |
           alembic upgrade head
           python -m uvicorn server.app:app --host 127.0.0.1 --port 8005 &

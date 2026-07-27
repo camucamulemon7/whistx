@@ -62,6 +62,7 @@ from .services.history_service import (
     serialize_app_datetime,
 )
 from .services.glossary_service import apply_shared_glossary_replacements, load_shared_glossary
+from .repositories import quota_repository
 from .services.oidc_service import (
     build_authorization_url as oidc_build_authorization_url,
     exchange_code as oidc_exchange_code,
@@ -274,6 +275,7 @@ async def _periodic_cleanup_loop() -> None:
 
 
 async def health() -> JSONResponse:
+    active_connections = await asyncio.to_thread(quota_repository.count_active_connections)
     return JSONResponse(
         {
             "status": "ok",
@@ -295,7 +297,7 @@ async def health() -> JSONResponse:
             "keycloakEnabled": _keycloak_login_enabled(),
             "keycloakButtonLabel": settings.keycloak_button_label,
             "wsPath": settings.ws_path,
-            "activeConnections": len(ACTIVE_SOCKETS),
+            "activeConnections": active_connections,
         }
     )
 
@@ -2245,7 +2247,8 @@ def _noop_span():
 
 
 async def _broadcast_conn_count() -> None:
-    payload = {"type": "conn", "count": len(ACTIVE_SOCKETS)}
+    count = await asyncio.to_thread(quota_repository.count_active_connections)
+    payload = {"type": "conn", "count": count}
     dead: list[WebSocket] = []
 
     for sock in list(ACTIVE_SOCKETS):

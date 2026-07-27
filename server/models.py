@@ -59,6 +59,30 @@ class AdminBootstrapState(Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class RateLimitBucket(Base):
+    __tablename__ = "rate_limit_buckets"
+
+    key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    window_ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class ConnectionQuotaLock(Base):
+    __tablename__ = "connection_quota_locks"
+
+    key: Mapped[str] = mapped_column(String(32), primary_key=True)
+
+
+class ConnectionLease(Base):
+    __tablename__ = "connection_leases"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    is_guest: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class TranscriptHistory(Base):
     __tablename__ = "transcript_histories"
     __table_args__ = (UniqueConstraint("user_id", "runtime_session_id", name="uq_history_user_runtime_session"),)

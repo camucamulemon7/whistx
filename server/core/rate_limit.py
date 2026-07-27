@@ -1,27 +1,16 @@
 from __future__ import annotations
 
-import threading
-import time
-from collections import defaultdict, deque
-
-_LOCK = threading.Lock()
-_EVENTS: dict[str, deque[float]] = defaultdict(deque)
+from ..repositories import quota_repository
 
 
 def consume(*, bucket: str, subject: str, limit: int, window_seconds: int) -> bool:
-    key = f"{bucket}:{subject}"
-    now = time.monotonic()
-    cutoff = now - window_seconds
-    with _LOCK:
-        events = _EVENTS[key]
-        while events and events[0] <= cutoff:
-            events.popleft()
-        if len(events) >= limit:
-            return False
-        events.append(now)
-        return True
+    return quota_repository.consume_rate_limit(
+        bucket=bucket,
+        subject=subject,
+        limit=limit,
+        window_seconds=window_seconds,
+    )
 
 
 def clear() -> None:
-    with _LOCK:
-        _EVENTS.clear()
+    quota_repository.clear_rate_limit()
