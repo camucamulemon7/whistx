@@ -6,7 +6,7 @@ import getpass
 from sqlalchemy import select
 
 from ..auth import create_user
-from ..db import db_session, init_db
+from ..db import db_session, require_schema_current
 from ..models import User
 
 
@@ -24,7 +24,7 @@ def main() -> int:
     password = args.password or getpass.getpass("Password: ")
     if len(password) < 8:
         raise SystemExit("password must be at least 8 characters")
-    init_db()
+    require_schema_current()
     with db_session() as db:
         existing = db.scalar(select(User).where(User.email == args.email.strip().lower()))
         if existing is not None:

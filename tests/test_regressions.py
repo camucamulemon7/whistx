@@ -53,6 +53,7 @@ from server.schemas import BootstrapAdminRequest, LoginRequest, RegisterRequest
 from server.api.routes import admin as admin_routes
 from server.api.routes import auth as auth_routes
 from server.api.routes import glossary as glossary_routes
+from server.api.routes import health as health_routes
 from server.api.routes import summary as summary_routes
 from server.api.ws import transcribe as ws_routes
 from server.core import application as application_core
@@ -589,6 +590,27 @@ class RegressionTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json(), {'detail': 'login_required'})
+
+    def test_liveness_does_not_depend_on_database_revision(self) -> None:
+        with patch.object(
+            health_routes,
+            'schema_revision_status',
+            side_effect=RuntimeError('database unavailable'),
+        ):
+            response = health_routes.liveness()
+        self.assertEqual(response.status_code, 200)
+
+    def test_readiness_reports_schema_revision_mismatch(self) -> None:
+        schema = SimpleNamespace(
+            ready=False,
+            current_revisions=('20260727_0006',),
+            expected_revisions=('20260727_0007',),
+            error=None,
+        )
+        with patch.object(health_routes, 'schema_revision_status', return_value=schema):
+            response = asyncio.run(health_routes.readiness())
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('not_ready', response.body.decode('utf-8'))
 
     def test_shared_glossary_requires_login_and_admin_for_updates(self) -> None:
         app = FastAPI()

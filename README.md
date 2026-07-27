@@ -237,6 +237,23 @@ APP_SESSION_SECRET=replace-with-a-long-random-secret
 
 `APP_ENV=production` では SQLite は許可されません。開発時のみ `APP_DB_URL` 未設定でローカル SQLite にフォールバックします。本番は PostgreSQL を前提にしてください。
 
+### Database migration deployment step
+
+アプリプロセスは起動時にmigrationを実行しません。新しいimageを起動する前に、同じimageと
+`APP_DB_URL`を使うinit jobで次を1回だけ実行してください。
+
+```bash
+alembic upgrade head
+```
+
+`/api/health/live`はプロセスの生存だけを返し、`/api/health/ready`はDB revisionと必須ASR
+providerを検査します。revision不一致ではアプリは診断可能なまま起動し、readinessが503を返します。
+
+migrationが失敗した場合はアプリを新revisionへ切り替えず、DBバックアップとAlembicログを保全して
+ください。DDLが未適用なら原因修正後に`alembic upgrade head`を再実行します。適用済みDDLを戻す必要が
+ある場合だけ、対象migrationの`downgrade()`とデータ互換性を確認したうえで
+`alembic downgrade <previous-revision>`を実行します。破壊的変更は原則roll-forwardで修復します。
+
 If you use an OpenAI-compatible local or self-hosted backend, also set:
 
 ```env
@@ -406,7 +423,9 @@ Notes:
 
 ### Health
 
-- `GET /api/health`
+- `GET /api/health/live`: process liveness
+- `GET /api/health/ready`: DB/provider readiness
+- `GET /api/health`: backward-compatible readiness alias
 
 ### WebSocket Transcription
 

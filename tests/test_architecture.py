@@ -78,6 +78,7 @@ class ArchitectureTests(unittest.TestCase):
         self.assertNotIn("FastAPI(", source)
         self.assertNotIn("StaticFiles(", source)
         self.assertNotIn("app.mount(", source)
+        self.assertNotIn("init_db(", source)
 
     def test_removed_compatibility_modules_do_not_return(self) -> None:
         self.assertFalse((SERVER / "legacy_app.py").exists())

@@ -26,6 +26,11 @@ class AppConfig:
     app_log_level: str
     debug_chunks_dir: Path
     app_db_url: str
+    db_pool_size: int
+    db_max_overflow: int
+    db_pool_timeout_seconds: int
+    db_pool_recycle_seconds: int
+    db_pool_pre_ping: bool
     app_session_secret: str
     app_session_days: int
     app_public_url: str | None
@@ -85,6 +90,11 @@ def load_app_config() -> AppConfig:
         app_log_level=app_log_level,
         debug_chunks_dir=debug_chunks_dir,
         app_db_url=app_db_url,
+        db_pool_size=max(1, to_int("DB_POOL_SIZE", 5)),
+        db_max_overflow=max(0, to_int("DB_MAX_OVERFLOW", 10)),
+        db_pool_timeout_seconds=max(1, to_int("DB_POOL_TIMEOUT_SECONDS", 30)),
+        db_pool_recycle_seconds=max(30, to_int("DB_POOL_RECYCLE_SECONDS", 1800)),
+        db_pool_pre_ping=to_bool("DB_POOL_PRE_PING", True),
         app_session_secret=app_session_secret,
         app_session_days=max(1, to_int("APP_SESSION_DAYS", 7)),
         app_public_url=env_first_non_empty("APP_PUBLIC_URL"),

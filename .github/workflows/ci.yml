@@ -66,7 +66,7 @@ jobs:
           server_pid=$!
           trap 'kill "$server_pid"' EXIT
           for attempt in {1..20}; do
-            if curl --fail --silent http://127.0.0.1:8005/api/health >/dev/null; then
+            if curl --fail --silent http://127.0.0.1:8005/api/health/ready >/dev/null; then
               exit 0
             fi
             sleep 1
@@ -109,7 +109,7 @@ jobs:
           server_pid=$!
           trap 'kill "$server_pid"' EXIT
           for attempt in {1..20}; do
-            if curl --fail --silent http://127.0.0.1:8005/api/health >/dev/null; then
+            if curl --fail --silent http://127.0.0.1:8005/api/health/ready >/dev/null; then
               exit 0
             fi
             sleep 1
@@ -132,16 +132,24 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Start container and require healthy status
         run: |
+          docker volume create whistx-ci-data
+          docker run --rm \
+            --volume whistx-ci-data:/app/data \
+            --env APP_SESSION_SECRET \
+            --env ASR_API_KEY \
+            whistx:ci alembic upgrade head
           docker run --detach --name whistx-ci \
             --publish 8005:8005 \
+            --volume whistx-ci-data:/app/data \
             --env APP_SESSION_SECRET \
             --env ASR_API_KEY \
             whistx:ci
-          trap 'docker logs whistx-ci; docker rm --force whistx-ci' EXIT
+          trap 'docker logs whistx-ci; docker rm --force whistx-ci; docker volume rm whistx-ci-data' EXIT
           for attempt in {1..30}; do
             status="$(docker inspect --format '{{.State.Health.Status}}' whistx-ci)"
             if [ "$status" = healthy ]; then
-              exit 0
+              curl --fail --silent http://127.0.0.1:8005/api/health/ready >/dev/null
+              exit $?
             fi
             if [ "$status" = unhealthy ]; then
               exit 1

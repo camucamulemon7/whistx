@@ -28,7 +28,7 @@ from .asr import SessionTranscriber
 from .audio_pipeline import AudioPreprocessor
 from .core.config import settings
 from .core.blocking import blocking_work_pool
-from .db import db_session, get_db, init_db
+from .db import db_session, get_db
 from .diarizer import PyannoteSpeakerDiarizer, SpeakerTurn
 from .langfuse_observer import make_langfuse_observer
 from .models import User
@@ -153,7 +153,6 @@ async def on_startup() -> None:
         EVENT_LOOP_MONITOR_TASK
 
     _validate_runtime_configuration()
-    init_db()
     _run_cleanup_once("startup")
     CLEANUP_TASK = asyncio.create_task(_periodic_cleanup_loop())
     EVENT_LOOP_MONITOR_TASK = asyncio.create_task(_event_loop_lag_monitor())
