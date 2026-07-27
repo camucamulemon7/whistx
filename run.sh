@@ -50,4 +50,4 @@ fi
 mkdir -p "${APP_TRANSCRIPTS_DIR}"
 export APP_DATA_DIR APP_TRANSCRIPTS_DIR APP_HOST APP_PORT APP_ENTRYPOINT APP_WS_PATH
 
-exec uvicorn "${APP_ENTRYPOINT}" --host "${APP_HOST}" --port "${APP_PORT}"
+exec uvicorn "${APP_ENTRYPOINT}" --host "${APP_HOST}" --port "${APP_PORT}" --ws-max-size "${WS_MAX_MESSAGE_BYTES}"

@@ -7,7 +7,12 @@ from fastapi import APIRouter, WebSocket
 
 from ... import runtime
 from ...core.config import settings
-from ...core.security import client_ip, digest_guest_artifact_grant, read_guest_artifact_grant
+from ...core.security import (
+    client_ip,
+    digest_guest_artifact_grant,
+    origin_is_allowed,
+    read_guest_artifact_grant,
+)
 from ...db import db_session
 from ...services.auth_service import get_optional_user_from_request
 
@@ -30,6 +35,10 @@ async def _close_safely(ws: WebSocket, code: int, reason: str) -> None:
 @router.websocket(settings.ws_path)
 async def ws_transcribe(ws: WebSocket) -> None:
     global _GUEST_CONNECTIONS_TOTAL
+
+    if not origin_is_allowed(ws):
+        await _close_safely(ws, 4403, "origin_not_allowed")
+        return
 
     with db_session() as db:
         user = get_optional_user_from_request(ws, db)

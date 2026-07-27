@@ -9,9 +9,12 @@ from types import SimpleNamespace
 from server.transcription.factory import create_live_session
 from server.transcription.messages import (
     as_bool,
+    chunk_payload_size_error,
     normalize_asr_language,
     normalize_audio_source,
     parse_chunk_message,
+    validate_start_message,
+    validate_telemetry_message,
     validate_chunk_order,
 )
 
@@ -26,7 +29,6 @@ class TranscriptionMessageTests(unittest.TestCase):
         chunk = parse_chunk_message(
             {
                 "audio": base64.b64encode(b"audio").decode(),
-                "screenshot": "not-base64",
                 "seq": "3",
                 "offsetMs": -10,
                 "durationMs": 50,
@@ -49,6 +51,63 @@ class TranscriptionMessageTests(unittest.TestCase):
     def test_parse_chunk_message_rejects_missing_or_invalid_audio(self) -> None:
         self.assertIsNone(parse_chunk_message({}))
         self.assertIsNone(parse_chunk_message({"audio": "*invalid*"}))
+
+    def test_chunk_limits_apply_before_decode_and_validate_image_format(self) -> None:
+        oversized_audio = base64.b64encode(b"12345").decode()
+        self.assertEqual(
+            chunk_payload_size_error(
+                {"audio": oversized_audio},
+                max_audio_bytes=4,
+                max_screenshot_bytes=16,
+            ),
+            "chunk_too_large",
+        )
+        self.assertIsNone(
+            parse_chunk_message(
+                {
+                    "audio": base64.b64encode(b"audio").decode(),
+                    "screenshot": base64.b64encode(b"not-a-png").decode(),
+                    "screenshotMimeType": "image/png",
+                },
+                max_audio_bytes=16,
+                max_screenshot_bytes=16,
+            )
+        )
+        valid_png = b"\x89PNG\r\n\x1a\npayload"
+        chunk = parse_chunk_message(
+            {
+                "audio": base64.b64encode(b"audio").decode(),
+                "screenshot": base64.b64encode(valid_png).decode(),
+                "screenshotMimeType": "image/png",
+            },
+            max_audio_bytes=16,
+            max_screenshot_bytes=32,
+        )
+        self.assertIsNotNone(chunk)
+        assert chunk is not None
+        self.assertEqual(chunk.screenshot_bytes, valid_png)
+
+    def test_start_and_telemetry_fields_have_explicit_limits(self) -> None:
+        self.assertEqual(
+            validate_start_message(
+                {"prompt": "x" * 5},
+                prompt_max_chars=4,
+                vocabulary_max_chars=8,
+            ),
+            "prompt_too_large",
+        )
+        self.assertEqual(
+            validate_start_message(
+                {"sharedVocabulary": "x" * 9},
+                prompt_max_chars=10,
+                vocabulary_max_chars=8,
+            ),
+            "vocabulary_too_large",
+        )
+        self.assertEqual(
+            validate_telemetry_message({"event": "capture", "detail": {"value": "x" * 20}}, max_chars=8),
+            "telemetry_too_large",
+        )
 
     def test_chunk_order_reports_sequence_and_offset_errors(self) -> None:
         state = SimpleNamespace(last_chunk_seq=4, last_chunk_offset_ms=1000)

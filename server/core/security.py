@@ -164,11 +164,16 @@ def origin_is_allowed(request: Request) -> bool:
     configured = settings.app_public_url or f"{_request_external_scheme(request)}://{_request_external_host(request)}"
     parsed_origin = urlsplit(origin)
     parsed_configured = urlsplit(configured)
+    configured_scheme = parsed_configured.scheme.lower()
+    if configured_scheme == "ws":
+        configured_scheme = "http"
+    elif configured_scheme == "wss":
+        configured_scheme = "https"
     return (
         parsed_origin.scheme.lower(),
         parsed_origin.netloc.lower(),
     ) == (
-        parsed_configured.scheme.lower(),
+        configured_scheme,
         parsed_configured.netloc.lower(),
     )
 

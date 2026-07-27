@@ -83,7 +83,10 @@ from .transcription.factory import create_live_session
 from .transcription.messages import (
     as_int as _as_int,
     as_str as _as_str,
+    chunk_payload_size_error as _chunk_payload_size_error,
     parse_chunk_message as _parse_chunk_message,
+    validate_start_message as _validate_start_message,
+    validate_telemetry_message as _validate_telemetry_message,
     validate_chunk_order as _validate_chunk_order,
 )
 from .transcription.session import ChunkMessage, LiveSession
@@ -791,6 +794,16 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
     raw_text = payload.text.strip()
     if not raw_text:
         return JSONResponse(status_code=400, content={"error": "empty_text"})
+    if len(raw_text) > settings.summary_input_max_chars:
+        return JSONResponse(
+            status_code=413,
+            content={"error": "summary_input_too_large", "maxChars": settings.summary_input_max_chars},
+        )
+    if len(_as_str(payload.prompt)) > settings.ws_prompt_max_chars:
+        return JSONResponse(
+            status_code=413,
+            content={"error": "summary_prompt_too_large", "maxChars": settings.ws_prompt_max_chars},
+        )
 
     language = _as_str(payload.language) or settings.default_language
     prompt = _as_str(payload.prompt)
@@ -836,6 +849,11 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
     raw_text = payload.text.strip()
     if not raw_text:
         return JSONResponse(status_code=400, content={"error": "empty_text"})
+    if len(raw_text) > settings.proofread_input_max_chars:
+        return JSONResponse(
+            status_code=413,
+            content={"error": "proofread_input_too_large", "maxChars": settings.proofread_input_max_chars},
+        )
 
     language = _as_str(payload.language) or settings.default_language
     mode = _normalize_proofread_mode(_as_str(payload.mode))
@@ -886,6 +904,11 @@ async def proofread_stream(payload: ProofreadRequest) -> Response:
     raw_text = payload.text.strip()
     if not raw_text:
         return JSONResponse(status_code=400, content={"error": "empty_text"})
+    if len(raw_text) > settings.proofread_input_max_chars:
+        return JSONResponse(
+            status_code=413,
+            content={"error": "proofread_input_too_large", "maxChars": settings.proofread_input_max_chars},
+        )
 
     language = _as_str(payload.language) or settings.default_language
     mode = _normalize_proofread_mode(_as_str(payload.mode))
@@ -938,18 +961,42 @@ async def ws_transcribe(ws: WebSocket) -> None:
     guest_audio_bytes = 0
     guest_asr_requests = 0
     stop_requested = False
+    invalid_message_count = 0
 
     try:
         while True:
             raw = await ws.receive_text()
+            if len(raw.encode("utf-8")) > settings.ws_max_message_bytes:
+                await _safe_send(
+                    ws,
+                    {
+                        "type": "error",
+                        "message": "message_too_large",
+                        "maxBytes": settings.ws_max_message_bytes,
+                    },
+                )
+                await ws.close(code=4409, reason="message_too_large")
+                break
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
-                await _safe_send(ws, {"type": "error", "message": "invalid_json"})
+                invalid_message_count, should_close = await _reject_invalid_message(
+                    ws,
+                    {"type": "error", "message": "invalid_json"},
+                    invalid_message_count,
+                )
+                if should_close:
+                    break
                 continue
 
             if not isinstance(data, dict):
-                await _safe_send(ws, {"type": "error", "message": "invalid_payload"})
+                invalid_message_count, should_close = await _reject_invalid_message(
+                    ws,
+                    {"type": "error", "message": "invalid_payload"},
+                    invalid_message_count,
+                )
+                if should_close:
+                    break
                 continue
 
             msg_type = str(data.get("type", "")).strip().lower()
@@ -957,6 +1004,20 @@ async def ws_transcribe(ws: WebSocket) -> None:
             if msg_type == "start":
                 if session is not None:
                     await _safe_send(ws, {"type": "error", "message": "already_started"})
+                    continue
+                start_error = _validate_start_message(
+                    data,
+                    prompt_max_chars=settings.ws_prompt_max_chars,
+                    vocabulary_max_chars=settings.ws_vocabulary_max_chars,
+                )
+                if start_error is not None:
+                    invalid_message_count, should_close = await _reject_invalid_message(
+                        ws,
+                        {"type": "error", "message": start_error},
+                        invalid_message_count,
+                    )
+                    if should_close:
+                        break
                     continue
 
                 try:
@@ -1016,9 +1077,34 @@ async def ws_transcribe(ws: WebSocket) -> None:
                     await _safe_send(ws, {"type": "error", "message": "not_started"})
                     continue
 
-                chunk = _parse_chunk_message(data)
+                size_error = _chunk_payload_size_error(
+                    data,
+                    max_audio_bytes=settings.max_chunk_bytes,
+                    max_screenshot_bytes=settings.ws_screenshot_max_bytes,
+                )
+                if size_error is not None:
+                    invalid_message_count, should_close = await _reject_invalid_message(
+                        ws,
+                        {"type": "error", "message": size_error},
+                        invalid_message_count,
+                    )
+                    if should_close:
+                        break
+                    continue
+
+                chunk = _parse_chunk_message(
+                    data,
+                    max_audio_bytes=settings.max_chunk_bytes,
+                    max_screenshot_bytes=settings.ws_screenshot_max_bytes,
+                )
                 if chunk is None:
-                    await _safe_send(ws, {"type": "error", "message": "invalid_chunk"})
+                    invalid_message_count, should_close = await _reject_invalid_message(
+                        ws,
+                        {"type": "error", "message": "invalid_chunk"},
+                        invalid_message_count,
+                    )
+                    if should_close:
+                        break
                     continue
 
                 ordering_error = _validate_chunk_order(session, chunk)
@@ -1108,6 +1194,16 @@ async def ws_transcribe(ws: WebSocket) -> None:
             if msg_type == "telemetry":
                 if session is None:
                     await _safe_send(ws, {"type": "error", "message": "not_started"})
+                    continue
+                telemetry_error = _validate_telemetry_message(data, max_chars=settings.ws_telemetry_max_chars)
+                if telemetry_error is not None:
+                    invalid_message_count, should_close = await _reject_invalid_message(
+                        ws,
+                        {"type": "error", "message": telemetry_error},
+                        invalid_message_count,
+                    )
+                    if should_close:
+                        break
                     continue
                 event_name = _as_str(data.get("event")) or "unknown"
                 detail = data.get("detail")
@@ -2167,6 +2263,21 @@ async def _safe_send(ws: WebSocket, payload: dict[str, Any]) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+async def _reject_invalid_message(
+    ws: WebSocket,
+    payload: dict[str, Any],
+    current_count: int,
+) -> tuple[int, bool]:
+    next_count = current_count + 1
+    message = dict(payload)
+    message["invalidCount"] = next_count
+    await _safe_send(ws, message)
+    if next_count < settings.ws_max_invalid_messages:
+        return next_count, False
+    await ws.close(code=4400, reason="too_many_invalid_messages")
+    return next_count, True
 
 
 def _format_sse(payload: dict[str, Any]) -> str:

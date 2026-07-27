@@ -614,6 +614,22 @@ class RegressionTests(unittest.TestCase):
 
         handler.assert_called_once()
 
+    def test_ws_transcribe_rejects_cross_origin_before_authentication(self) -> None:
+        app = FastAPI()
+        app.include_router(ws_routes.router)
+        client = TestClient(app)
+
+        with patch.object(ws_routes, 'get_optional_user_from_request') as auth_lookup:
+            with self.assertRaises(Exception) as ctx:
+                with client.websocket_connect(
+                    '/ws/transcribe',
+                    headers={'origin': 'https://attacker.example'},
+                ):
+                    pass
+
+        self.assertEqual(getattr(ctx.exception, 'code', None), 4403)
+        auth_lookup.assert_not_called()
+
     def test_ws_transcribe_allows_bounded_guest_when_enabled(self) -> None:
         app = FastAPI()
         app.include_router(ws_routes.router)
@@ -633,6 +649,7 @@ class RegressionTests(unittest.TestCase):
         with (
             patch.object(ws_routes, 'settings', guest_settings),
             patch.object(ws_routes, 'get_optional_user_from_request', return_value=None),
+            patch.object(ws_routes, 'read_guest_artifact_grant', return_value='guest-grant'),
             patch.object(ws_routes.runtime, 'ws_transcribe', side_effect=accept_and_close) as handler,
         ):
             with client.websocket_connect('/ws/transcribe'):

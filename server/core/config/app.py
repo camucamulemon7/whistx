@@ -14,6 +14,12 @@ class AppConfig:
     host: str
     port: int
     ws_path: str
+    ws_max_message_bytes: int
+    ws_max_invalid_messages: int
+    ws_screenshot_max_bytes: int
+    ws_prompt_max_chars: int
+    ws_vocabulary_max_chars: int
+    ws_telemetry_max_chars: int
     app_data_dir: Path
     transcripts_dir: Path
     history_dir: Path
@@ -67,6 +73,12 @@ def load_app_config() -> AppConfig:
         host=env_first_non_empty("APP_HOST", "HOST") or "0.0.0.0",
         port=to_int_alias(8005, "APP_PORT", "PORT"),
         ws_path=env_first_non_empty("APP_WS_PATH", "WS_PATH") or "/ws/transcribe",
+        ws_max_message_bytes=max(1024, to_int("WS_MAX_MESSAGE_BYTES", 20 * 1024 * 1024)),
+        ws_max_invalid_messages=max(1, to_int("WS_MAX_INVALID_MESSAGES", 3)),
+        ws_screenshot_max_bytes=max(1024, to_int("WS_SCREENSHOT_MAX_BYTES", 5 * 1024 * 1024)),
+        ws_prompt_max_chars=max(256, to_int("WS_PROMPT_MAX_CHARS", 8_000)),
+        ws_vocabulary_max_chars=max(256, to_int("WS_VOCABULARY_MAX_CHARS", 8_000)),
+        ws_telemetry_max_chars=max(256, to_int("WS_TELEMETRY_MAX_CHARS", 4_096)),
         app_data_dir=app_data_dir,
         transcripts_dir=transcripts_dir,
         history_dir=history_dir,
