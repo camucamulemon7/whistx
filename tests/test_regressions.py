@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import json
 import re
 import sys
 import tempfile
@@ -35,8 +36,7 @@ if 'argon2' not in sys.modules:
     sys.modules['argon2'] = argon2_mod
     sys.modules['argon2.exceptions'] = argon2_exc
 
-from fastapi import Request
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 import httpx
 from openai import APIConnectionError, BadRequestError
@@ -53,6 +53,7 @@ from server.asr import ASRChunkResult
 from server.schemas import BootstrapAdminRequest, LoginRequest, RegisterRequest
 from server.api.routes import admin as admin_routes
 from server.api.routes import auth as auth_routes
+from server.api.routes import glossary as glossary_routes
 from server.api.routes import summary as summary_routes
 from server.api.ws import transcribe as ws_routes
 from server.core import application as application_core
@@ -63,7 +64,7 @@ from server.core import rate_limit
 from server.models import TranscriptHistory, TranscriptSegment, User
 from server.repositories import session_repository, user_repository
 from server.services import admin_service, auth_service, glossary_service, history_service
-from server.deps import get_current_user
+from server.deps import get_current_admin, get_current_user
 from server.transcript_store import read_jsonl_records
 
 
@@ -555,6 +556,68 @@ class RegressionTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json(), {'detail': 'login_required'})
+
+    def test_shared_glossary_requires_login_and_admin_for_updates(self) -> None:
+        app = FastAPI()
+        app.include_router(glossary_routes.router)
+        client = TestClient(app)
+
+        self.assertEqual(client.get('/api/glossary/shared').status_code, 401)
+        self.assertEqual(client.put('/api/glossary/shared', json={'text': 'secret'}).status_code, 401)
+
+        member = User(
+            id=1,
+            email='member@example.com',
+            password_hash='hash',
+            is_active=True,
+            is_admin=False,
+        )
+        app.dependency_overrides[get_current_user] = lambda: member
+        with patch.object(
+            glossary_routes,
+            'load_shared_glossary',
+            return_value={'text': 'internal', 'updatedAt': None, 'updatedBy': None},
+        ):
+            response = client.get('/api/glossary/shared')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['items'], 'internal')
+
+        def reject_member_update():
+            raise HTTPException(status_code=403, detail='admin_required')
+
+        app.dependency_overrides[get_current_admin] = reject_member_update
+        self.assertEqual(client.put('/api/glossary/shared', json={'text': 'changed'}).status_code, 403)
+
+        admin = User(
+            id=2,
+            email='admin@example.com',
+            password_hash='hash',
+            is_active=True,
+            is_admin=True,
+        )
+        app.dependency_overrides[get_current_admin] = lambda: admin
+        with patch.object(
+            glossary_routes,
+            'save_shared_glossary',
+            return_value={'text': 'changed', 'updatedAt': 'now', 'updatedBy': admin.email},
+        ):
+            response = client.put('/api/glossary/shared', json={'text': 'changed'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['items'], 'changed')
+
+    def test_shared_glossary_writes_append_only_revision_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(
+                glossary_service,
+                'settings',
+                SimpleNamespace(app_data_dir=Path(tmpdir)),
+            ):
+                first = glossary_service.save_shared_glossary(text='alpha', updated_by='admin@example.com')
+                second = glossary_service.save_shared_glossary(text='beta', updated_by='admin@example.com')
+                history_lines = glossary_service.glossary_history_path().read_text(encoding='utf-8').splitlines()
+
+        self.assertNotEqual(first['revisionId'], second['revisionId'])
+        self.assertEqual([json.loads(line)['text'] for line in history_lines], ['alpha', 'beta'])
 
     def test_summary_route_allows_authenticated_user(self) -> None:
         app = FastAPI()
