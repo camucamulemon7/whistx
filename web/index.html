@@ -24,6 +24,7 @@
       })();
     </script>
     <link rel="stylesheet" href="/style.css?v=20260724" />
+    <link rel="stylesheet" href="/runtime-ui.css?v=20260727" />
     <script type="module" src="/main.js?v=20260724"></script>
   </head>
   <body>
@@ -181,9 +182,9 @@
             <section class="settings-panel glass-panel reveal" aria-label="入力設定">
               <div class="settings-intro">
                 <div>
-                  <span class="section-kicker">STEP 1 · RECORD</span>
+                  <span class="section-kicker">録音の準備</span>
                   <h2 class="settings-intro-title">会話を文字にする</h2>
-                  <p class="settings-intro-description">入力を選び、録音を開始してください。録音中も設定と進行状況を確認できます。</p>
+                  <p class="settings-intro-description">言語と音声を選んで録音を始めます。必要な設定は録音中も確認できます。</p>
                 </div>
                 <span class="permission-note">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -345,7 +346,7 @@
             <section
               id="workspacePanels"
               class="workspace-panels reveal delay-2"
-              aria-label="文字起こしとAI結果"
+              aria-label="文字起こしと編集結果"
               style="--panel-left: 1.35fr; --panel-center: 0.95fr; --panel-right: 0.9fr;"
             >
               <section class="transcript-panel glass-panel" aria-labelledby="transcriptPanelTitle">
@@ -360,7 +361,7 @@
                       </svg>
                     </div>
                     <div>
-                      <span class="panel-kicker">STEP 2 · TRANSCRIPT</span>
+                      <span class="panel-kicker">記録</span>
                       <h2 id="transcriptPanelTitle" class="panel-title">文字起こし</h2>
                     </div>
                     <span id="segmentCount" class="panel-badge">0</span>
@@ -442,12 +443,12 @@
                       </svg>
                     </div>
                     <div>
-                      <span class="panel-kicker">STEP 3 · REFINE</span>
+                      <span class="panel-kicker">文章を整える</span>
                       <h2 id="proofreadPanelTitle" class="panel-title">校正</h2>
                     </div>
                     <span id="proofreadMeta" class="panel-badge">未生成</span>
                   </div>
-                  <div class="ai-result-tabs" aria-label="AI結果の切り替え">
+                  <div class="ai-result-tabs" aria-label="編集結果の切り替え">
                     <button type="button" class="ai-result-tab is-active" data-ai-tab="proofread" aria-pressed="true">校正</button>
                     <button type="button" class="ai-result-tab" data-ai-tab="summary" aria-pressed="false">要約</button>
                   </div>
@@ -481,7 +482,7 @@
                 </header>
                 <div id="proofreadText" class="proofread-content">
                   <div class="empty-state small">
-                    <p class="empty-description">「校正」ボタンで校正済みテキストを生成します</p>
+                    <p class="empty-description">文字起こしができたら、ここで表記や文章を整えられます</p>
                   </div>
                 </div>
               </section>
@@ -500,12 +501,12 @@
                       </svg>
                     </div>
                     <div>
-                      <span class="panel-kicker">STEP 3 · SUMMARIZE</span>
+                      <span class="panel-kicker">要点をまとめる</span>
                       <h2 id="summaryPanelTitle" class="panel-title">要約</h2>
                     </div>
                     <span id="summaryMeta" class="panel-badge">未生成</span>
                   </div>
-                  <div class="ai-result-tabs" aria-label="AI結果の切り替え">
+                  <div class="ai-result-tabs" aria-label="編集結果の切り替え">
                     <button type="button" class="ai-result-tab" data-ai-tab="proofread" aria-pressed="false">校正</button>
                     <button type="button" class="ai-result-tab is-active" data-ai-tab="summary" aria-pressed="true">要約</button>
                   </div>
@@ -548,7 +549,7 @@
                 </div>
                 <div id="summaryText" class="summary-content">
                   <div class="empty-state small">
-                    <p class="empty-description">「要約」ボタンでAIによる要約を生成します</p>
+                    <p class="empty-description">文字起こしができたら、ここで要点をまとめられます</p>
                   </div>
                 </div>
               </section>
