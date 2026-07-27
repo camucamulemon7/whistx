@@ -45,7 +45,7 @@ from .services.glossary_service import (
     apply_shared_glossary_replacements,
     load_shared_glossary,
 )
-from .repositories import quota_repository
+from .repositories import quota_repository, session_repository
 from .services.oidc_service import (
     build_authorization_url as oidc_build_authorization_url,
     exchange_code as oidc_exchange_code,
@@ -275,9 +275,28 @@ def _run_cleanup_once(reason: str) -> None:
     try:
         with db_session() as db:
             cleanup_expired_runtime_data(db)
+            deleted_sessions = 0
+            oldest_expired_at = None
+            for _ in range(10):
+                result = session_repository.prune_expired_sessions(
+                    db,
+                    now=datetime.now(timezone.utc),
+                    batch_size=1_000,
+                )
+                deleted_sessions += result.deleted_count
+                oldest_expired_at = oldest_expired_at or result.oldest_expired_at
+                if result.deleted_count < 1_000:
+                    break
+            if deleted_sessions:
+                logger.info(
+                    "expired session cleanup completed: reason=%s deleted=%d oldest_expired_at=%s",
+                    reason,
+                    deleted_sessions,
+                    oldest_expired_at.isoformat() if oldest_expired_at else None,
+                )
     except Exception:
         logger.warning(
-            "runtime artifact cleanup failed during %s", reason, exc_info=True
+            "scheduled cleanup failed during %s", reason, exc_info=True
         )
 
 

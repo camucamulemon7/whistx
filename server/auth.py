@@ -116,7 +116,6 @@ def create_user_session(
     user_agent: str | None,
     ip_address: str | None,
 ) -> str:
-    session_repository.prune_expired_sessions(db, now=utcnow())
     raw_session_id = secrets.token_urlsafe(32)
     session = UserSession(
         id=hash_session_id(raw_session_id),
@@ -137,10 +136,6 @@ def hash_session_id(session_id: str) -> str:
         session_id.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
-
-
-def prune_expired_sessions(db: Session) -> None:
-    session_repository.prune_expired_sessions(db, now=utcnow())
 
 
 def get_user_by_session_id(db: Session, session_id: str | None) -> User | None:

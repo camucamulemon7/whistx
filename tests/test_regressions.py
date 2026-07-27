@@ -538,19 +538,47 @@ class RegressionTests(unittest.TestCase):
             self.assertTrue(user_history_dir.exists())
             self.assertFalse(any(path.name.startswith('.hist_') for path in user_history_dir.glob('**/*')))
 
-    def test_session_repository_handles_aware_expiry(self) -> None:
+    def test_session_lookup_filters_expiry_without_deleting(self) -> None:
         now = datetime.now(timezone.utc)
-        session = SimpleNamespace(expires_at=now + timedelta(minutes=5), user='user')
 
         class DummySessionDB:
             def execute(self, *_args, **_kwargs):
-                return None
+                raise AssertionError('session lookup must not issue DELETE')
 
-            def scalar(self, *_args, **_kwargs):
-                return session
+            def scalar(self, statement, *_args, **_kwargs):
+                sql = str(statement)
+                self.assert_in_sql = 'user_sessions.expires_at >=' in sql
+                return 'user'
 
-        user = session_repository.get_user_by_session_id(DummySessionDB(), 'sess-1', now=now)
+        db = DummySessionDB()
+        user = session_repository.get_user_by_session_id(db, 'sess-1', now=now)
         self.assertEqual(user, 'user')
+        self.assertTrue(db.assert_in_sql)
+
+    def test_session_cleanup_reports_batched_delete(self) -> None:
+        now = datetime.now(timezone.utc)
+        oldest = now - timedelta(days=3)
+
+        class DummyResult:
+            rowcount = 25
+
+        class DummySessionDB:
+            def scalar(self, *_args, **_kwargs):
+                return oldest
+
+            def execute(self, statement, *_args, **_kwargs):
+                self.sql = str(statement)
+                return DummyResult()
+
+        db = DummySessionDB()
+        result = session_repository.prune_expired_sessions(
+            db,
+            now=now,
+            batch_size=25,
+        )
+        self.assertEqual(result.deleted_count, 25)
+        self.assertEqual(result.oldest_expired_at, oldest)
+        self.assertIn('LIMIT', db.sql)
 
     def test_summary_route_requires_login(self) -> None:
         app = FastAPI()
