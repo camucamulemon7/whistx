@@ -52,6 +52,13 @@ class UserSession(Base):
     user: Mapped["User"] = relationship(back_populates="sessions")
 
 
+class AdminBootstrapState(Base):
+    __tablename__ = "admin_bootstrap_state"
+
+    key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class TranscriptHistory(Base):
     __tablename__ = "transcript_histories"
     __table_args__ = (UniqueConstraint("user_id", "runtime_session_id", name="uq_history_user_runtime_session"),)

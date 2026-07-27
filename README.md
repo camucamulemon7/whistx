@@ -190,6 +190,19 @@ APP_TRUSTED_PROXY_IPS=127.0.0.1,10.0.0.0/8
 
 Password changes, session revocation, rate-limit rejection, and protected administrator operations emit audit-friendly server logs without including secrets.
 
+### Initial administrator
+
+HTTP administrator bootstrap is available only in development. Production deployments must create the first administrator from a trusted shell after applying migrations:
+
+```bash
+python -m server.cli.create_user \
+  --email admin@example.com \
+  --display-name Administrator \
+  --admin
+```
+
+The command prompts for the password when it is omitted. Do not pass production passwords on a shared command line. The database serializes the one-time browser bootstrap used in development, so concurrent requests cannot create multiple initial administrators.
+
 ### Podman (rootless)
 
 ```bash

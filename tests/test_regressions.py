@@ -50,7 +50,7 @@ from server import runtime
 from server import openai_whisper
 from server import summarizer as summarizer_module
 from server.asr import ASRChunkResult
-from server.schemas import LoginRequest, RegisterRequest
+from server.schemas import BootstrapAdminRequest, LoginRequest, RegisterRequest
 from server.api.routes import admin as admin_routes
 from server.api.routes import auth as auth_routes
 from server.api.routes import summary as summary_routes
@@ -115,6 +115,36 @@ class RegressionTests(unittest.TestCase):
             response = asyncio.run(auth_routes.auth_login(payload, request, db))
             self.assertEqual(response.status_code, 429)
             self.assertIn('too_many_login_attempts', response.body.decode('utf-8'))
+
+    def test_production_admin_bootstrap_requires_trusted_cli(self) -> None:
+        payload = BootstrapAdminRequest(
+            email='admin@example.com',
+            password='secure-password',
+            display_name='Administrator',
+        )
+        with patch.object(auth_service, 'settings', SimpleNamespace(app_env='production')):
+            with self.assertRaises(auth_service.AuthServiceError) as ctx:
+                auth_service.bootstrap_admin(payload, make_request(), DummyDB())
+        self.assertEqual(ctx.exception.code, 'bootstrap_admin_cli_required')
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_concurrent_admin_bootstrap_claim_is_rejected(self) -> None:
+        payload = BootstrapAdminRequest(
+            email='admin@example.com',
+            password='secure-password',
+            display_name='Administrator',
+        )
+        conflict = auth_service.IntegrityError('insert bootstrap claim', {}, RuntimeError('unique'))
+        with (
+            patch.object(auth_service, 'settings', SimpleNamespace(app_env='development')),
+            patch.object(auth_service.auth, 'has_admin_account', return_value=False),
+            patch.object(auth_service.auth, 'get_user_by_email', return_value=None),
+            patch.object(auth_service.user_repository, 'claim_initial_admin_bootstrap', side_effect=conflict),
+        ):
+            with self.assertRaises(auth_service.AuthServiceError) as ctx:
+                auth_service.bootstrap_admin(payload, make_request(), DummyDB())
+        self.assertEqual(ctx.exception.code, 'admin_already_exists')
+        self.assertEqual(ctx.exception.status_code, 409)
 
     def test_runtime_artifact_access_fails_closed_and_checks_owner_or_guest_grant(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
