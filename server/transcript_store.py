@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import uuid
@@ -73,15 +74,30 @@ class TranscriptStore:
         )
 
     def append_final(self, record: TranscriptRecord) -> None:
-        payload = asdict(record)
+        self.append_record(asdict(record))
+
+    def append_record(self, payload: dict) -> None:
 
         with self.jsonl_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
         with self.txt_path.open("a", encoding="utf-8") as handle:
             line = _render_txt_line(payload)
             if line:
                 handle.write(line + "\n")
+
+    def append_revision(self, event: dict, records: list[dict]) -> list[dict]:
+        from .transcription.revisions import apply_revision
+        from .services.meeting_refinement import _atomic_text
+        updated = apply_revision(records, event)
+        with self.jsonl_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        _atomic_text(self.txt_path, "".join(_render_txt_line(row) + "\n" for row in updated if row.get("type") == "final"))
+        return updated
 
     def save_audio_chunk(self, *, seq: int, mime_type: str, audio_bytes: bytes) -> Path:
         ext = _ext_from_mime(mime_type)
@@ -204,7 +220,7 @@ def iter_debug_chunk_dirs(root_dir: Path, session_id: str) -> list[Path]:
 
 
 
-def read_jsonl_records(path: Path, *, strict: bool = False) -> list[dict]:
+def read_jsonl_records(path: Path, *, strict: bool = False, materialize: bool = True) -> list[dict]:
     out: list[dict] = []
     if not path.exists():
         return out
@@ -220,6 +236,12 @@ def read_jsonl_records(path: Path, *, strict: bool = False) -> list[dict]:
             continue
         if isinstance(row, dict):
             out.append(row)
+    if materialize and any(row.get("type") == "revision" for row in out):
+        from .transcription.revisions import apply_revision
+        current: list[dict] = []
+        for row in out:
+            current = apply_revision(current, row) if row.get("type") == "revision" else [*current, row]
+        return current
     return out
 
 

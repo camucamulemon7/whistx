@@ -1,11 +1,15 @@
 # whistx
 
 `whistx` is a browser-based transcription app built around an OpenAI-compatible Whisper ASR API.
-It records microphone audio, shared screen audio, or both, sends chunked audio to a FastAPI backend, and streams finalized transcript segments back to the UI.
+It records microphone audio, shared screen audio, or both, and provides live transcripts, chapter summaries with captured screens, and a meeting assistant grounded in transcript citations.
 
 ## What It Does
 
-- Real-time chunk-based transcription over WebSocket
+- Live PCM transcription with partial text, LocalAgreement-2, durable audio ACKs, and reconnect/replay
+- Chapter summaries with decisions, actions, citations, and actual captured screen images
+- Streaming meeting questions grounded in the selected meeting
+- Post-recording audio re-recognition with original text retained
+- Legacy chunk-based transcription over WebSocket
 - OpenAI-compatible Whisper ASR backend support
   - OpenAI `whisper-1`
   - OpenAI-compatible Whisper deployments
@@ -32,7 +36,9 @@ By default, diarization dependencies are not installed in local or container set
 
 Files: [`web/`](./web)
 
-- Uses `MediaRecorder` and WebSocket
+- Uses `AudioWorklet` (16 kHz mono PCM, one-second packets) and a resumable WebSocket by default
+- Uses `MediaRecorder` and the existing chunk protocol when live capture is disabled or AudioWorklet is unavailable
+- The following chunk/VAD policy describes that legacy path
 - Captures audio from the selected source
 - Uses lightweight RMS-based VAD in the browser
 - Finalizes chunks with this policy:
@@ -60,7 +66,8 @@ Current backend layout after the refactor:
 - `docs/architecture.md`: dependency direction and source-of-truth guide
 
 - FastAPI application
-- `ws://.../ws/transcribe` receives audio chunks and returns finalized transcript segments
+- `ws://.../ws/transcribe/live` journals PCM and returns partial/final events; microphone and shared audio can remain separate
+- `ws://.../ws/transcribe` retains the existing chunk protocol
 - Applies audio preprocessing with `ffmpeg`
 - Maintains short context memory per session
   - recent transcript lines
@@ -78,7 +85,88 @@ Current backend layout after the refactor:
 5. Finalized text is normalized and stored
 6. UI updates immediately with final segments
 
-Realtime ASR models are not supported in the current build. The old `server/voxtral_realtime.py` path has been removed because `_build_transcriber_factory()` rejects realtime models before runtime. Use a Whisper-compatible `ASR_MODEL`.
+Qwen3-ASR realtime is supported through `ASR_BACKEND=qwen3_vllm` (see below). Voxtral realtime remains unsupported. `ASR_BACKEND=whisper` retains the Whisper-compatible HTTP backend.
+
+## Meeting workspace
+
+1. Log in, choose the audio source, and start recording. **ライブ文字起こし** in the settings enables the new PCM path. Browser capture requires localhost or HTTPS; shared audio depends on the browser and selected share target.
+2. Ask questions such as **決まったこと** or **直近5分の要点** in the meeting assistant. Answers include links to the supporting utterances and identify the transcript time used. Unstable recognition hypotheses are excluded from its evidence.
+3. Stop recording and wait for finalization. Optionally use **音声から再認識** before saving to history. This runs the configured ASR again on saved utterance audio; it does not guarantee an accuracy improvement. Failures before the commit retain the current transcript. The first original transcript is retained, and each revised record includes `originalText`.
+4. Select **会議の要約** and **要約する**. Chapter cards contain cited key points, decisions, actions, open questions, and time-matched captured screens. **共有資料** shows the captured images. **画像付きで保存** exports a self-contained HTML recap with embedded images.
+5. Save the meeting to history. The chapter recap, assistant turns, audio, and screenshots travel with the history artifacts. Its ZIP includes `meeting.json` and, after re-recognition, `transcript.original.jsonl`. New transcript revisions mark an existing recap as stale; regenerate it to update the sources.
+
+Both live adapters use the existing `.env` `ASR_BASE_URL`, `ASR_MODEL`, and API key. The Whisper adapter implements rolling HTTP inference and LocalAgreement-2; the Qwen adapter uses vLLM realtime WebSockets and concurrent long-interval re-recognition. Neither is a SimulStreaming decoder. `SUMMARY_*` configures both chapter summaries and meeting QA. If `PROOFREAD_MODEL` is unset, it falls back to `SUMMARY_MODEL`. No new model server or schema migration is required for meeting insights; the application's existing database migrations are still required.
+
+For a Xinference instance on the same host, the tested base URL is `http://localhost:9997/v1` with `whisper-large-v3-turbo`. Inside a container, use an address reachable from that container instead of assuming container localhost reaches the host. Existing `.env` values must be loaded by the launch command (as `run.sh` already does).
+
+The new endpoint is `<APP_WS_PATH>/live`. Configure the proxy for WebSocket upgrades on that path and disable response buffering for `/api/meeting/ask` and `/api/meeting/refine`. Authentication, origin checks, connection quotas, and expensive API limits apply. Recap, QA, and refinement require login. Optional final speaker labeling reuses the configured `pyannote.audio` diarizer; without it, input-track labels are available. Diarization dependencies are not installed automatically by this feature.
+
+Live capture keeps at most 16 MiB of unacknowledged PCM in browser memory, uses a 120-second server backlog threshold, and limits a session to four hours. Short disconnects replay from the server ACK. A full page reload loses browser-only packets; the server retains acknowledged audio. Capture failures expose a download for pending audio. The energy gate suppresses silence but is not neural VAD. Whisper recognition uses windows up to 24 seconds; long speech at window boundaries and difficult Japanese audio still require accuracy evaluation.
+
+Screenshots are actual captured frames, not generated images. The assistant currently grounds answers in transcript text; it does not OCR or interpret image contents. Long meetings use bounded lexical retrieval, so answers are not guaranteed to cover every relevant statement. Citation validation verifies IDs and source ranges, not semantic truth. Inspect the linked utterance/audio for consequential decisions.
+
+### Measure the configured ASR
+
+Use an uncompressed 16 kHz mono, signed 16-bit PCM WAV:
+
+```bash
+python scripts/bench_streaming_asr.py sample.wav --language ja --realtime --reference reference.txt --output benchmark.json
+```
+
+The harness invokes the same live adapter and `.env` ASR, records actual partial/final events, first-partial and finalization timing, request counts, and optional raw character edit rate (CER). Temporary artifacts are isolated; the harness bypasses application quotas and excludes browser/WebSocket latency. It sends the supplied audio to the configured ASR endpoint. Use representative Japanese recordings and references before drawing accuracy conclusions.
+
+Validation performed during implementation: Python service/regression tests, JavaScript tests, browser layout and recording lifecycle tests, mocked live capture/refinement and chapter/QA interactions, a real configured LLM recap/QA call on a fictional Japanese meeting, and real Xinference inference on a short public English audio fixture. These checks do not establish Japanese meeting accuracy, sustained multi-hour performance, or real-device screen-audio compatibility.
+
+### Qwen3-ASR: one vLLM process, two inference lanes
+
+Run one audio-enabled vLLM server with the realtime architecture and priority scheduling. This configuration uses the same resident weights for both APIs; Whistx does not load an ASR model or a forced aligner:
+
+```bash
+# In the vLLM environment, using the installed version's audio extra:
+pip install 'vllm[audio]==0.29.0'
+vllm serve Qwen/Qwen3-ASR-1.7B \
+  --served-model-name Qwen3-ASR-1.7B --port 8004 \
+  --hf-overrides '{"architectures":["Qwen3ASRRealtimeGeneration"]}' \
+  --scheduling-policy priority --max-model-len 8192
+```
+
+Use `.env` values below, then restart Whistx with its usual launch command:
+
+```dotenv
+ASR_BACKEND=qwen3_vllm
+ASR_BASE_URL=http://localhost:8004/v1
+ASR_MODEL=Qwen3-ASR-1.7B
+ASR_DEFAULT_LANGUAGE=auto
+ASR_REALTIME_WINDOW_SECONDS=5
+ASR_HIGH_ACCURACY_ENABLED=1
+ASR_HIGH_ACCURACY_WINDOW_SECONDS=60
+ASR_HIGH_ACCURACY_PRIORITY=10
+ASR_HIGH_ACCURACY_MAX_RT_LAG_SECONDS=2.0
+ASR_HIGH_ACCURACY_TIMEOUT_SECONDS=180.0
+```
+
+Configure `ASR_API_KEY` if the server requires authentication. Containers must use a host address reachable from the container. Keep `SUMMARY_*` / `PROOFREAD_*` pointing to the existing text model endpoints. To switch back, set `ASR_BACKEND=whisper` together with the Whisper server URL/model. An unfinished recording must be resumed with its original backend/model; its interval sizes remain fixed from creation.
+
+- **Realtime:** the browser sends 250 ms packets of PCM16 / 16 kHz / mono. Saved PCM is forwarded as it arrives to `/v1/realtime`. A bounded realtime window (default 5 seconds, configurable 1–10) has its own upstream WebSocket; incoming deltas update the active text, and completion commits a sample-anchored record. This limits upstream context reuse and aligns windows with high-accuracy boundaries. Choose Automatic for mixed Japanese/English streaming. With Japanese or English selected, each short window uses the same model’s `/audio/transcriptions` endpoint with the selected language; updates arrive at window completion rather than as token deltas. High-accuracy and manual re-recognition preserve that language selection. The vLLM Realtime protocol itself has no language parameter.
+- **High accuracy:** once realtime has committed a complete 30–120 second interval, a separate async worker reads that continuous range from the same PCM journal and sends WAV audio to `/v1/chat/completions` with the **same URL/model** and lower scheduling priority (`10`; realtime uses `0`). The glossary and ASR prompt provide contextual vocabulary. The persisted high-accuracy cursor is a disk-backed queue, with at most one in-flight high-accuracy request across app workers sharing the transcript directory. Realtime can continue during that request. Admission waits when realtime is behind; priority scheduling does not guarantee GPU preemption or a hard latency bound.
+- **Mixed-language safeguard:** a coarse Japanese/Latin-script coverage check catches wholesale language loss or translation relative to realtime text. When it triggers, the same model re-recognizes consecutive source groups separately (at most eight groups). If a group still loses a language, its realtime text is retained; an entirely unusable revision is skipped. This adds requests and can shorten the fallback context. It is not a complete omission/accuracy detector. Manual re-recognition also rejects detected language loss.
+- **Replacement:** only the exact listed realtime segment IDs, track, and complete sample interval can be replaced. Each revision is appended and fsynced before the checkpoint advances. JSONL readers and downloads materialize revisions; TXT, meeting QA, recap and history consume the revised transcript. Runtime ZIPs include a separate revision journal. The browser applies revisions during recording, ignores superseded late events and reconciles the transcript on reconnect. Original realtime text, sample ranges and audio remain in `realtimeSegments` / `originalText`; history ZIPs include `transcript.revisions.jsonl`.
+- **Timestamps:** ranges come from the retained PCM sample clock, not text length or response arrival time. A high-accuracy row covers its full 30–120 second source interval. This backend does **not** claim word-level alignment. The optional existing diarizer can label these intervals; a long interval can contain several speakers, so retained realtime ranges remain useful for inspection. No additional ASR/alignment model is installed.
+- **Recovery:** upstream failures retain acknowledged PCM and current realtime text. High-accuracy failures retry during recording; failed stop processing leaves the session unfinalized and exposes retry. Silence intervals advance coverage without inserting hallucinated text. On reconnect, sample positions and materialized records are recovered from disk. Browser-only, unacknowledged packets still require the existing pending-audio recovery behavior.
+
+Validate the server separately before a meeting:
+
+```bash
+python scripts/probe_qwen_asr.py --url http://localhost:8004/v1
+# Add --audio sample.wav to verify actual recognition; the default is silence.
+python scripts/bench_streaming_asr.py sample.wav --realtime --output benchmark.json
+```
+
+The probe checks both APIs concurrently and returns failure when either lane fails. `Please install vllm[audio]` is a server dependency error. Realtime support needs the architecture override; nonzero batch priorities need priority scheduling. The health capability `asrReady` means the app adapter is configured, not a completed upstream audio probe.
+
+Measured on the configured local vLLM 0.29.0 endpoint with an 80.26-second repeated [Qwen public English fixture](https://github.com/QwenLM/Qwen3-ASR/blob/main/examples/example_qwen3_asr_vllm_streaming.py), 30-second high-accuracy windows: first partial 5.12 seconds; revisions at 31.70 and 61.61 seconds while capture continued; final tail completed about 1.08 seconds after capture. A separate 38.48-second fixture alternating the [JSUT Japanese sample distributed by ttslearn](https://r9y9.github.io/ttslearn/latest/_modules/ttslearn/util.html) and that English sample reproduced majority-language omission in a plain long request. The safeguard re-recognized four source groups, retained Japanese and English in the resulting transcript, and applied the first revision at 32.95 seconds, before capture ended. These are adapter timings and script-retention checks, not microphone-to-browser latency or accuracy scores. Default vLLM buffering produces multi-second updates; evaluate representative meetings before tuning the realtime window.
+
+Protocol/configuration references: [vLLM realtime connection](https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/speech_to_text/realtime/connection.py), [Qwen realtime architecture](https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/models/qwen3_asr_realtime.py), [vLLM scheduler](https://docs.vllm.ai/en/latest/api/vllm/config/scheduler/).
 
 ## Requirements
 
@@ -96,6 +184,8 @@ Realtime ASR models are not supported in the current build. The old `server/voxt
 
 ```bash
 cp .env.example .env
+# Set APP_SESSION_SECRET in .env to a unique value, e.g. generated with:
+python3 -c 'import secrets; print(secrets.token_hex(32))'
 ./run.sh
 ```
 
@@ -122,6 +212,8 @@ Then open:
 
 ```bash
 cp .env.example .env
+# Set APP_SESSION_SECRET in .env to a unique value, e.g. generated with:
+python3 -c 'import secrets; print(secrets.token_hex(32))'
 ./start.sh
 ```
 
@@ -149,7 +241,7 @@ Local startup and container builds consume the runtime lock. CI consumes the dev
 
 ### Configuration registry
 
-[`server/core/config/registry.py`](./server/core/config/registry.py) is the canonical registry for application environment variables. It records each variable's type, default, accepted range, secret status, and aliases. `.env.example`, the Python loaders, and container forwarding are checked against it by the test suite.
+[`server/core/config/registry.py`](./server/core/config/registry.py) is the canonical registry for application environment variables. It records each variable's type, default, accepted range, secret status, and aliases. `.env.advanced.example`, the Python loaders, and container forwarding are checked against it by the test suite. `.env.example` contains the smaller starter configuration.
 
 Aliases listed in `deprecated_aliases` are compatibility-only and scheduled for removal in the next major release. New deployments should use the canonical `APP_*`, `ASR_*`, `SUMMARY_*`, `PROOFREAD_*`, and `DIARIZATION_*` names.
 
@@ -207,6 +299,8 @@ The command prompts for the password when it is omitted. Do not pass production 
 
 ```bash
 cp .env.example .env
+# Set APP_SESSION_SECRET in .env to a unique value, e.g. generated with:
+python3 -c 'import secrets; print(secrets.token_hex(32))'
 ./podman-run.sh
 ```
 
@@ -398,7 +492,7 @@ For rootless Podman, if Langfuse runs on the host machine, use:
 - `LANGFUSE_HOST=http://host.containers.internal:3000`
 - `PODMAN_NETWORK=slirp4netns:allow_host_loopback=true`
 
-See [`.env.example`](./.env.example) for the full template.
+Start with [`.env.example`](./.env.example). It contains common settings only; [`.env.advanced.example`](./.env.advanced.example) is the commented reference for optional overrides. Generate a unique `APP_SESSION_SECRET` before startup; the template deliberately leaves it blank.
 
 ## Prompt Templates
 
@@ -531,3 +625,7 @@ MIT. See [LICENSE](./LICENSE).
 - Runtime configuration has one implementation under `server/core/config/`. Add new env-backed settings and registry entries there first.
 - `web/main.js` is now a thin module entrypoint that loads `web/src/app.js`.
 - Dependency declarations remain in `requirements*.txt`; generated `requirements*.lock` files are the reproducible install inputs. `pyproject.toml` is metadata-only for now.
+
+### Meeting workspace access
+
+The meeting assistant requires an authenticated account; guest access covers transcription only. The UI displays this requirement above the question field. During recording, authenticated users can ask about recognized speech without stopping. The question field and Send button remain visible while the transcript and answers scroll independently.

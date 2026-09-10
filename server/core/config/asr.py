@@ -7,6 +7,13 @@ from .base import env_first_non_empty, to_bool_alias, to_float_alias, to_int_ali
 
 @dataclass(frozen=True)
 class AsrConfig:
+    asr_backend: str
+    asr_realtime_window_seconds: int
+    asr_high_accuracy_enabled: bool
+    asr_high_accuracy_window_seconds: int
+    asr_high_accuracy_priority: int
+    asr_high_accuracy_max_rt_lag_seconds: float
+    asr_high_accuracy_timeout_seconds: float
     openai_api_key: str
     openai_base_url: str | None
     asr_model: str
@@ -43,7 +50,17 @@ class AsrConfig:
 
 
 def load_asr_config() -> AsrConfig:
+    backend = (env_first_non_empty("ASR_BACKEND") or "whisper").lower()
+    if backend not in {"whisper", "qwen3_vllm"}:
+        raise ValueError("ASR_BACKEND must be whisper or qwen3_vllm")
     return AsrConfig(
+        asr_backend=backend,
+        asr_realtime_window_seconds=max(1, min(10, to_int_alias(5, "ASR_REALTIME_WINDOW_SECONDS"))),
+        asr_high_accuracy_enabled=to_bool_alias(True, "ASR_HIGH_ACCURACY_ENABLED"),
+        asr_high_accuracy_window_seconds=max(30, min(120, to_int_alias(60, "ASR_HIGH_ACCURACY_WINDOW_SECONDS"))),
+        asr_high_accuracy_priority=max(1, to_int_alias(10, "ASR_HIGH_ACCURACY_PRIORITY")),
+        asr_high_accuracy_max_rt_lag_seconds=max(0.25, to_float_alias(2.0, "ASR_HIGH_ACCURACY_MAX_RT_LAG_SECONDS")),
+        asr_high_accuracy_timeout_seconds=max(1.0, to_float_alias(180.0, "ASR_HIGH_ACCURACY_TIMEOUT_SECONDS")),
         openai_api_key=env_first_non_empty("ASR_API_KEY", "OPENAI_API_KEY") or "",
         openai_base_url=env_first_non_empty("ASR_BASE_URL", "OPENAI_BASE_URL"),
         asr_model=env_first_non_empty("ASR_MODEL") or env_first_non_empty("WHISPER_MODEL") or "whisper-1",

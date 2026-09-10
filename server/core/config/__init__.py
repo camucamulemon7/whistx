@@ -74,7 +74,7 @@ def load_settings() -> Settings:
         summary_prompt_template=summary_prompt_template,
         proofread_api_key=proofread_api_key,
         proofread_base_url=proofread_base_url,
-        proofread_model=os.getenv("PROOFREAD_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
+        proofread_model=os.getenv("PROOFREAD_MODEL", "").strip() or os.getenv("SUMMARY_MODEL", "").strip() or "gpt-4o-mini",
         proofread_temperature=to_float("PROOFREAD_TEMPERATURE", 0.0),
         proofread_input_max_chars=max(2_000, to_int("PROOFREAD_INPUT_MAX_CHARS", 24_000)),
         proofread_system_prompt=proofread_system_prompt,

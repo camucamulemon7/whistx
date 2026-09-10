@@ -336,6 +336,8 @@ async def health() -> JSONResponse:
             "status": "ok",
             "model": settings.asr_model,
             "asrReady": TRANSCRIBER_FACTORY is not None,
+            "asrBackend": settings.asr_backend,
+            "capturePacketMs": 250 if settings.asr_backend == "qwen3_vllm" else 1000,
             "summaryModel": settings.summary_model if SUMMARIZER else None,
             "proofreadModel": settings.proofread_model if PROOFREADER else None,
             "diarizationEnabled": DIARIZER is not None,
@@ -352,6 +354,8 @@ async def health() -> JSONResponse:
             "keycloakEnabled": _keycloak_login_enabled(),
             "keycloakButtonLabel": settings.keycloak_button_label,
             "wsPath": settings.ws_path,
+            "liveWsPath": settings.ws_path + "/live",
+            "meetingInsights": True,
             "activeConnections": active_connections,
         }
     )
@@ -1085,6 +1089,9 @@ def _create_session(
 
 
 def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
+    if settings.asr_backend == "qwen3_vllm":
+        from .qwen_asr import QwenBatchTranscriber
+        return lambda: QwenBatchTranscriber(api_key=settings.openai_api_key, base_url=settings.openai_base_url, model=settings.asr_model)
     if _use_realtime_asr(settings.asr_model):
         raise RuntimeError(
             "Realtime ASR models are not supported in the current build. Use a Whisper-compatible ASR_MODEL."

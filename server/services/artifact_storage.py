@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 import re
 import shutil
@@ -198,6 +199,16 @@ class LocalArtifactStorage:
 
     def cleanup_expired_runtime_data(self, *, protected_runtime_session_ids: set[str]) -> None:
         now = datetime.now(timezone.utc)
+        active = set()
+        for lock_path in self.transcripts_root.glob("**/*.live.lock"):
+            try:
+                with lock_path.open("a") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                active.add(lock_path.name.removesuffix(".live.lock"))
+            except OSError:
+                continue
+        self._active_live_sessions = active
         self._cleanup_runtime_transcripts(now=now, protected_runtime_session_ids=protected_runtime_session_ids)
         self._cleanup_screenshots(now=now)
         self._cleanup_debug_chunks(now=now)
@@ -209,10 +220,11 @@ class LocalArtifactStorage:
         for txt_path in candidates:
             base_path = txt_path.with_suffix("")
             session_id = base_path.name
-            if not session_id:
+            if not session_id or session_id in getattr(self, "_active_live_sessions", set()):
                 continue
             cutoff = keep_saved_cutoff if session_id in protected_runtime_session_ids else keep_unsaved_cutoff
-            if _path_mtime(base_path.with_suffix(".txt")) > cutoff.timestamp():
+            last_write = max(_path_mtime(base_path.with_suffix(".txt")), _path_mtime(base_path.with_suffix(".live.json")))
+            if last_write > cutoff.timestamp():
                 continue
             self._delete_runtime_session(session_id)
 
@@ -224,6 +236,8 @@ class LocalArtifactStorage:
         for directory in roots:
             if not directory.is_dir():
                 continue
+            if any(part in getattr(self, "_active_live_sessions", set()) for part in directory.parts) or any(directory.glob("*/*/*")):
+                continue
             if _path_mtime(directory) > cutoff.timestamp():
                 continue
             shutil.rmtree(directory, ignore_errors=True)
@@ -234,6 +248,8 @@ class LocalArtifactStorage:
         for directory in roots:
             if not directory.is_dir():
                 continue
+            if any(part in getattr(self, "_active_live_sessions", set()) for part in directory.parts) or any(directory.glob("*/*/*")):
+                continue
             if _path_mtime(directory) > cutoff.timestamp():
                 continue
             shutil.rmtree(directory, ignore_errors=True)
@@ -242,8 +258,9 @@ class LocalArtifactStorage:
         for txt_path in list(self.transcripts_root.glob(f"*/*/*/{session_id}.txt")) + [
             (self.transcripts_root / session_id).with_suffix(".txt")
         ]:
-            for path in [txt_path, txt_path.with_suffix(".jsonl"), txt_path.with_suffix(".meta.json")]:
+            for path in [txt_path, *(txt_path.with_suffix(suffix) for suffix in (".jsonl", ".meta.json", ".live.json", ".live.lock", ".meeting.json", ".meeting.lock", ".original.jsonl", ".revisions.jsonl"))]:
                 path.unlink(missing_ok=True)
+        shutil.rmtree(self.transcripts_root / "_chunks" / session_id, ignore_errors=True)
 
     def _history_artifact_dir(self, *, user_id: int, history_id: str, saved_at: datetime) -> Path:
         stamp = saved_at.astimezone(timezone.utc)
@@ -286,6 +303,15 @@ def build_history_zip(*, zip_path: Path, artifact_dir: Path, include_summary: bo
         archive.write(artifact_dir / "transcript.txt", arcname="transcript.txt")
         archive.write(artifact_dir / "transcript.jsonl", arcname="transcript.jsonl")
         archive.write(artifact_dir / "metadata.json", arcname="metadata.json")
+        insights = artifact_dir / "transcript.meeting.json"
+        if insights.is_file():
+            archive.write(insights, arcname="meeting.json")
+        original = artifact_dir / "transcript.original.jsonl"
+        if original.is_file():
+            archive.write(original, arcname="transcript.original.jsonl")
+        revisions = artifact_dir / "transcript.revisions.jsonl"
+        if revisions.is_file():
+            archive.write(revisions, arcname="transcript.revisions.jsonl")
         if include_summary:
             archive.write(artifact_dir / "summary.txt", arcname="summary.txt")
         if include_proofread:

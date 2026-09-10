@@ -5,6 +5,10 @@ import { deleteHistoryRequest, fetchHistoryList as fetchHistoryListRequest, fetc
 import { fetchSharedGlossary as fetchSharedGlossaryRequest, saveSharedGlossary as saveSharedGlossaryRequest } from "./api/glossary.js";
 import { fetchJson } from "./api/client.js";
 import { readSseJsonStream } from "./api/sse.js";
+import { applyTranscriptRevision } from "./transcription/revisions.js";
+import { LiveCapture } from "./meeting/live-capture.js";
+import { createMeetingWorkspace } from "./meeting/workspace.js";
+import { transcriptParagraphs, transcriptJoiner } from "./meeting/paragraphs.js";
 import { applyHistoryDetailPayload, applyHistoryListPayload, clearHistoryState } from "./history/state.js";
 import { readStoredJson, readStoredValue, writeStoredValue } from "./state/storage.js";
 import { normalizeTheme, resolveInitialTheme, themeMetaColor } from "./ui/theme.js";
@@ -40,6 +44,8 @@ import {
 } from "./audio/vad.js";
 
 const $ = (selector) => document.querySelector(selector);
+let meetingWorkspace = null;
+let refinementController = null;
 
 const statusTextEl = $("#statusText");
 const connCountEl = $("#connCount");
@@ -205,7 +211,7 @@ const SCREENSHOT_DIFF_WIDTH = 64;
 const SCREENSHOT_DIFF_HEIGHT = 36;
 const SCREENSHOT_DIFF_PIXEL_THRESHOLD = 12;
 const SCREENSHOT_DIFF_MEAN_THRESHOLD = 4;
-const SCREENSHOT_DIFF_CHANGED_RATIO_THRESHOLD = 0.015;
+const SCREENSHOT_DIFF_CHANGED_RATIO_THRESHOLD = 0.06;
 const SCREENSHOT_ZOOM_MIN = 1;
 const SCREENSHOT_ZOOM_MAX = 5;
 const SCREENSHOT_ZOOM_STEP = 0.25;
@@ -216,7 +222,7 @@ const CLIENT_VAD_DROP_ENABLED = false;
 const HISTORY_SEARCH_DEBOUNCE_MS = 180;
 const BACKLOG_WARN_THRESHOLD = 2;
 const BACKLOG_DANGER_THRESHOLD = 4;
-const SCREENSHOT_MIN_INTERVAL_MS = 18_000;
+const SCREENSHOT_MIN_INTERVAL_MS = 45_000;
 const SCREENSHOT_DEGRADED_INTERVAL_MS = 45_000;
 const DEFAULT_SOC_PROMPT_TEMPLATE = `SoC, ASIC, chiplet, CPU, GPU, NPU, DSP, ISP, VPU, DPU, MCU, PMU, NoC, interconnect, AXI, AXI4, AXI-Lite, AHB, APB, ACE, CHI, UCIe, PCIe, CXL, DDR, DDR4, DDR5, LPDDR4, LPDDR5, HBM, SRAM, ROM, eMMC, UFS, PHY, SerDes, PLL, DLL, RC oscillator, clock, clock tree, clock gating, reset, async reset, sync reset, power domain, voltage island, retention, isolation, level shifter, DVFS, AVS, UPF, CPF, RTL, SystemVerilog, Verilog, VHDL, UVM, testbench, assertion, SVA, lint, SpyGlass, CDC, RDC, STA, MCMM, OCV, AOCV, POCV, derate, setup, hold, recovery, removal, skew, jitter, uncertainty, timing closure, timing path, false path, multicycle path, path group, endpoint, startpoint, slack, WNS, TNS, violating path, critical path, synthesis, logic synthesis, Design Compiler, Genus, netlist, mapped netlist, unmapped netlist, compile, incremental compile, retiming, boundary optimization, datapath optimization, resource sharing, register balancing, ECO, formal, equivalence check, LEC, Conformal, Formality, gate-level simulation, GLS, SDF, back annotation, place and route, place-and-route, PnR, floorplan, floorplanning, macro placement, standard cell, utilization, density, congestion, global placement, detailed placement, legalization, CTS, clock tree synthesis, useful skew, hold fixing, setup fixing, routing, global route, detailed route, track assignment, antenna, filler cell, decap, tap cell, endcap, spare cell, spare gate, metal fill, density fill, ECO route, route guide, signoff, sign-off, DRC, LVS, ERC, extraction, parasitic extraction, RC extraction, SPEF, DEF, LEF, Liberty, .lib, TLU+, QRC, StarRC, Quantus, IR drop, dynamic IR drop, static IR drop, EM, electromigration, voltage drop, power integrity, signal integrity, SI, crosstalk, noise, glitch, overshoot, undershoot, hotspot, thermal, leakage, dynamic power, switching power, internal power, leakage power, power analysis, PrimeTime PX, PrimePower, Voltus, RedHawk, vectorless, VCD, FSDB, SAIF, toggle rate, activity factor, inrush current, rush current, decoupling capacitor, decap cell, package model, bump, substrate, interposer, TSV, process node, 28nm, 16nm, 12nm, 7nm, 5nm, 4nm, 3nm, FinFET, GAA, foundry, TSMC, Samsung, Intel, PDK, DFM, manufacturability, yield, wafer, lot, mask, reticle, tape-out, respin, metal fix, MPW, shuttle, bring-up, validation, characterization, errata, workaround, DFT, scan, scan chain, scan compression, EDT, ATPG, stuck-at, transition fault, path delay fault, bridging fault, JTAG, boundary scan, MBIST, LBIST, BISR, repair, fuse, eFuse, OTP, secure boot, TrustZone, TEE, firmware, bootloader, NAND, NAND flash, Toggle NAND, ONFI, raw NAND, managed NAND, SLC, MLC, TLC, QLC, PLC, 3D NAND, V-NAND, charge trap, floating gate, page, block, plane, die, LUN, bad block, bad block management, BBT, ECC, BCH, LDPC, RAID, read disturb, program disturb, erase disturb, wear leveling, garbage collection, overprovisioning, endurance, retention, BER, bit error rate, read retry, soft decoding, threshold voltage, ISPP, incremental step pulse programming, erase verify, program verify, copyback, cache read, cache program, multi-plane, interleaving, channel, CE, RE, WE, ALE, CLE, R/B, spare area, OOB, metadata, FTL, flash translation layer, NVMe, SATA, controller, queue depth, throughput, latency, bandwidth, QoS, arbiter, scheduler, mux, demux, crossbar, SRAM compiler, memory compiler, register file, dual port RAM, single port RAM, SRAM macro, macro, hard macro, soft macro, black box, hierarchy, partition, block-level, top-level, full-chip, chip top, top module, hierarchy flattening, dont_touch, set_false_path, set_multicycle_path, create_clock, generated clock, propagated clock, ideal clock, set_input_delay, set_output_delay, set_clock_uncertainty, set_clock_groups, operating condition, corner, slow corner, fast corner, typical corner, SS, FF, TT, RCmax, RCmin, setup view, hold view.`;
 
@@ -295,9 +301,9 @@ const state = {
   sidebarOpen: false,
   historyCollapsed: false,
   activeResizer: null,
-  panelLeftRatio: 1.35,
-  panelCenterRatio: 0.95,
-  panelRightRatio: 0.9,
+  panelLeftRatio: 1.8,
+  panelCenterRatio: 0.72,
+  panelRightRatio: 0.72,
   diarizationAvailable: true,
   diarizationEnabled: true,
   diarizationSpeakerMode: "auto",
@@ -403,35 +409,11 @@ function selectedLanguage() {
   return value;
 }
 
-function syncJourneyStage(stage = "") {
-  const requested = String(stage || "").toLowerCase();
-  const activeStage = requested === "recording" || requested === "stopping"
-    ? "transcript"
-    : state.segments.length > 0 || state.viewingHistoryId
-      ? "result"
-      : "record";
-  const order = ["record", "transcript", "result"];
-  const activeIndex = order.indexOf(activeStage);
-
-  document.querySelectorAll("[data-journey-step]").forEach((step) => {
-    const index = order.indexOf(String(step.dataset.journeyStep || ""));
-    const current = index === activeIndex;
-    step.classList.toggle("is-current", current);
-    step.classList.toggle("is-complete", index >= 0 && index < activeIndex);
-    if (current) {
-      step.setAttribute("aria-current", "step");
-    } else {
-      step.removeAttribute("aria-current");
-    }
-  });
-}
-
 function setStatus(text) {
   const raw = String(text || "").trim();
   state.latestStatus = raw || "idle";
   statusTextEl.textContent = formatStatusText(raw);
   statusTextEl.dataset.state = String(raw || "idle").toLowerCase();
-  syncJourneyStage(raw);
 }
 
 function applyBranding(title, tagline) {
@@ -452,7 +434,7 @@ function setProofreadButtonBusy(busy) {
   if (!proofreadBtn) return;
   proofreadBtn.disabled = false;
   if (proofreadBtnLabelEl) {
-    proofreadBtnLabelEl.textContent = busy ? "キャンセル" : "生成";
+    proofreadBtnLabelEl.textContent = busy ? "キャンセル" : `${proofreadActionLabel()}する`;
   }
   proofreadBtn.setAttribute("aria-busy", busy ? "true" : "false");
   proofreadBtn.setAttribute("aria-label", busy ? `${proofreadActionLabel()}をキャンセル` : `${proofreadActionLabel()}を開始`);
@@ -472,7 +454,7 @@ function applyProofreadMode(value) {
   }
   if (proofreadBtn && !state.proofreadInFlight) {
     if (proofreadBtnLabelEl) {
-      proofreadBtnLabelEl.textContent = "生成";
+      proofreadBtnLabelEl.textContent = `${proofreadActionLabel()}する`;
     }
     proofreadBtn.setAttribute("aria-label", `${proofreadActionLabel()}を開始`);
     proofreadBtn.title = proofreadActionLabel();
@@ -699,6 +681,8 @@ function applyCaptureScreenshotsEnabled(value, options = {}) {
   const persist = options.persist !== false;
   const enabled = !!value;
   state.captureScreenshotsEnabled = enabled;
+  const meetingCaptureEnabled = document.querySelector("#meetingCaptureEnabled");
+  if (meetingCaptureEnabled) meetingCaptureEnabled.checked = enabled;
   if (captureScreenshotsEnabledEl) {
     captureScreenshotsEnabledEl.checked = enabled;
   }
@@ -1670,11 +1654,11 @@ function setSaveBadge(label, saved = false) {
 }
 
 function isRecordingInteractionLocked() {
-  return state.recordingPhase !== "idle" || !!state.finalizingStop;
+  return state.recordingPhase !== "idle" || !!state.finalizingStop || Boolean(refinementController);
 }
 
 function shouldProtectWorkspaceFromUnload() {
-  return state.workspaceDirty || isRecordingInteractionLocked();
+  return state.workspaceDirty || isRecordingInteractionLocked() || Boolean(state.liveCapture?.pending.size);
 }
 
 function handleBeforeUnload(event) {
@@ -1722,10 +1706,15 @@ function updateSaveControls() {
   const saved = !!state.savedHistoryId;
   const viewingHistory = !!state.viewingHistoryId;
   const recordingLocked = isRecordingInteractionLocked();
+  const refineButton = document.querySelector("#refineAudioBtn");
+  if (refineButton) {
+    refineButton.disabled = !refinementController && (!authenticated || isGuest || recordingLocked || !hasSegments || !state.runtimeSessionFinalized || saved || viewingHistory || Boolean(meetingWorkspace?.busy));
+    refineButton.textContent = refinementController ? "再認識をキャンセル" : "音声から再認識";
+  }
 
   if (saveBtn) {
     saveBtn.disabled =
-      !authenticated || isGuest || recordingLocked || !hasSegments || state.saveInFlight || saved || viewingHistory;
+      !authenticated || isGuest || recordingLocked || !hasSegments || state.saveInFlight || saved || viewingHistory || Boolean(meetingWorkspace?.busy) || Boolean(state.liveCapture && !state.runtimeSessionFinalized);
     saveBtn.textContent = state.saveInFlight ? "保存中..." : "保存";
     saveBtn.title = recordingLocked
       ? "録音中は保存できません"
@@ -1750,6 +1739,7 @@ function updateSaveControls() {
 
 function setSessionSettingsLocked(locked = isRecordingInteractionLocked()) {
   const sessionInputs = [
+    document.querySelector("#liveTranscriptionEnabled"),
     languageEl,
     audioSourceEl,
     chunkSecondsEl,
@@ -1758,8 +1748,9 @@ function setSessionSettingsLocked(locked = isRecordingInteractionLocked()) {
   ];
   sessionInputs.forEach((element) => {
     if (!element) return;
-    element.disabled = !!locked;
-    element.title = locked ? "録音中・停止処理中は変更できません" : "";
+    const qwenFixed = state.asrBackend === "qwen3_vllm" && element.id === "liveTranscriptionEnabled";
+    element.disabled = !!locked || qwenFixed;
+    element.title = qwenFixed ? "日本語・英語を自動認識するライブ文字起こしを使用します" : locked ? "録音中・停止処理中は変更できません" : "";
   });
   presetButtons.forEach((button) => {
     button.disabled = !!locked;
@@ -2043,7 +2034,6 @@ function updateSegmentCount() {
   segmentCountEl.classList.remove("updated");
   void segmentCountEl.offsetWidth;
   segmentCountEl.classList.add("updated");
-  syncJourneyStage(state.recording ? "recording" : "");
 }
 
 function extractTranscriptText() {
@@ -2059,6 +2049,7 @@ function extractTranscriptText() {
 }
 
 function updateDownloadLinks() {
+  meetingWorkspace?.syncSource();
   const links = [
     [dlTxt, "txt"],
     [dlJsonl, "jsonl"],
@@ -2110,7 +2101,7 @@ function setSummary(text, meta) {
     `;
   }
 
-  summaryMetaEl.textContent = meta || "未生成";
+  summaryMetaEl.textContent = meta || "未実行";
 }
 
 async function copySummaryText() {
@@ -2147,7 +2138,7 @@ function setProofread(text, meta) {
     `;
   }
 
-  proofreadMetaEl.textContent = meta || "未生成";
+  proofreadMetaEl.textContent = meta || "未実行";
 }
 
 function markProofreadStale() {
@@ -2176,7 +2167,39 @@ function scrollLogToBottom() {
   });
 }
 
-function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", rawAudioPath = "", audioPath = "") {
+document.querySelector("#transcriptDetailsToggle").addEventListener("click", (event) => {
+  const expanded = logEl.classList.toggle("show-transcript-details");
+  event.currentTarget.setAttribute("aria-pressed", String(expanded));
+});
+
+function renderTranscriptParagraphs() {
+  const nodes = new Map([...logEl.querySelectorAll(".log-row")].map(node => [node.dataset.segmentId, node]));
+  const oldGroups = new Map([...logEl.querySelectorAll(".transcript-paragraph")].map(node => [node.dataset.firstSegment, node]));
+  for (const segments of transcriptParagraphs(state.segments)) {
+    const first = segments[0];
+    const key = String(first.segmentId || first.seq);
+    const paragraph = oldGroups.get(key) || document.createElement("section");
+    oldGroups.delete(key);
+    paragraph.className = "transcript-paragraph";
+    paragraph.dataset.firstSegment = key;
+    let heading = paragraph.querySelector(".transcript-paragraph-heading");
+    if (!heading) { heading = document.createElement("div"); heading.className = "transcript-paragraph-heading"; paragraph.prepend(heading); }
+    heading.textContent = `${formatMs(first.tsStart)}${first.speaker ? ` · ${first.speaker}` : first.track === "display" ? " · 共有音声" : ""}`;
+    for (let index = 0; index < segments.length; index += 1) {
+      const segment = segments[index];
+      const row = nodes.get(String(segment.segmentId || segment.seq));
+      if (!row) continue;
+      const text = row.querySelector(".text");
+      text.textContent = (index ? transcriptJoiner(segments[index - 1].text, segment.text) : "") + segment.text;
+      paragraph.append(row);
+    }
+    logEl.append(paragraph);
+  }
+  for (const paragraph of oldGroups.values()) paragraph.remove();
+}
+
+function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", rawAudioPath = "", audioPath = "", segmentId = "", metadata = {}) {
+  if (segmentId && state.segments.some((item) => item.segmentId === segmentId)) return;
   const shouldAutoScroll = state.logAutoScrollEnabled || isLogNearBottom();
 
   // Hide empty state on first log entry
@@ -2187,6 +2210,8 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", raw
 
   const row = document.createElement("div");
   row.className = "log-row new";
+  row.dataset.segmentId = segmentId || String(seq);
+  row.tabIndex = -1;
 
   const range = document.createElement("span");
   range.className = "time";
@@ -2228,17 +2253,7 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", raw
       showScreenshotModal(screenshotPath, `${formatMs(tsStart)} の画面キャプチャ`);
     });
 
-    const image = document.createElement("img");
-    image.className = "log-screenshot";
-    image.src = screenshotPath;
-    image.alt = `${formatMs(tsStart)} の画面キャプチャ`;
-    image.loading = "lazy";
-    image.addEventListener("click", (event) => {
-      event.preventDefault();
-      showScreenshotModal(screenshotPath, image.alt);
-    });
-
-    link.append(image);
+    link.textContent = "共有画面を表示 ↗";
     mediaGroup.append(link);
   }
 
@@ -2320,6 +2335,8 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", raw
 
   state.log.push(text);
   state.segments.push({
+    ...metadata,
+    segmentId: segmentId || String(seq),
     text,
     tsStart,
     tsEnd,
@@ -2329,6 +2346,7 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", raw
     rawAudioPath,
     audioPath,
   });
+  renderTranscriptParagraphs();
   markWorkspaceDirty();
   updateSegmentCount();
   markProofreadStale();
@@ -2362,6 +2380,7 @@ function applySpeakerPatch(segments) {
       target.speaker = speaker;
     }
   }
+  renderTranscriptParagraphs();
 }
 
 function wsUrl() {
@@ -2520,8 +2539,8 @@ function commitNewRecordingWorkspace() {
     saveTitleInputEl.value = "";
   }
   renderEmptyTranscriptState();
-  setSummary("", "未生成");
-  setProofread("", "未生成");
+  setSummary("", "未実行");
+  setProofread("", "未実行");
   updateSegmentCount();
   updateDownloadLinks();
   updateSaveControls();
@@ -2665,6 +2684,7 @@ async function captureDisplayScreenshot() {
   }
 
   const buffer = await blob.arrayBuffer();
+  state.previousScreenshotSignature = signature;
   state.screenshotLastCapturedAt = now;
   return {
     mimeType: blob.type || "image/webp",
@@ -2692,15 +2712,11 @@ function buildScreenshotSignature(sourceCanvas) {
 
 function shouldSkipScreenshotByDiff(signature) {
   if (!state.screenshotDiffSkipEnabled || !signature) {
-    if (signature) {
-      state.previousScreenshotSignature = signature;
-    }
     return false;
   }
 
   const previous = state.previousScreenshotSignature;
   if (!(previous instanceof Uint8Array) || previous.length !== signature.length) {
-    state.previousScreenshotSignature = signature;
     return false;
   }
 
@@ -2716,11 +2732,10 @@ function shouldSkipScreenshotByDiff(signature) {
 
   const meanDiff = diffSum / signature.length;
   const changedRatio = changedPixels / signature.length;
-  if (meanDiff < SCREENSHOT_DIFF_MEAN_THRESHOLD && changedRatio < SCREENSHOT_DIFF_CHANGED_RATIO_THRESHOLD) {
+  if (meanDiff < SCREENSHOT_DIFF_MEAN_THRESHOLD || changedRatio < SCREENSHOT_DIFF_CHANGED_RATIO_THRESHOLD) {
     return true;
   }
 
-  state.previousScreenshotSignature = signature;
   return false;
 }
 
@@ -3544,8 +3559,224 @@ async function finalizeStop() {
   }
 }
 
+function currentMeetingSource() {
+  if (!state.meetingInsights || !state.auth.authenticated) return null;
+  if (state.liveCapture?.running && state.liveCapture.sessionId) return { runtimeSessionId: state.liveCapture.sessionId };
+  const historyId = state.viewingHistoryId || state.savedHistoryId;
+  return historyId ? { historyId } : state.runtimeSessionId ? { runtimeSessionId: state.runtimeSessionId } : null;
+}
+
+function navigateMeetingSource(source) {
+  const rows = [...logEl.querySelectorAll(".log-row")];
+  const row = rows.find((item) => item.dataset.segmentId === source.id)
+    || rows.find((item) => Number(item.dataset.seq) === Number(source.seq));
+  if (!row) {
+    showToast(`${formatMs(source.startMs)}: ${source.text}`, "default", 10000);
+    return;
+  }
+  state.logAutoScrollEnabled = false;
+  row.scrollIntoView({ behavior: "smooth", block: "center" });
+  row.focus({ preventScroll: true });
+  row.classList.add("meeting-highlight");
+  setTimeout(() => row.classList.remove("meeting-highlight"), 3000);
+}
+
+async function startLiveRecording(health, selectedAudioSource) {
+  state.liveCapture?.dispose();
+  document.querySelector("#hqStatus").hidden = true;
+  state.liveCapture = null;
+  if (state.ws) {
+    state.ws.__whistxGracefulStop = true;
+    state.ws.close();
+    state.ws = null;
+  }
+  const stream = await prepareInputStream(selectedAudioSource);
+  if (!hasAudioTrack(stream)) throw new Error("audio_track_not_found");
+  state.stream = stream;
+  await setupVad(stream);
+  const separate = state.recordingAudioSource === "both" && hasAudioTrack(state.micStream) && hasAudioTrack(state.displayStream);
+  const streams = separate ? { mic: state.micStream, display: state.displayStream } : { [state.recordingAudioSource === "display" ? "display" : "mic"]: stream };
+  const superseded = new Set();
+  const renderRow = (row) => addLogLine(row.text, row.tsStart, row.tsEnd, row.seq, row.speaker || "", row.screenshotPath || "", row.rawAudioPath || "", row.audioPath || "", row.segmentId, row);
+  const reconcileRows = (records) => {
+    const wanted = new Map(records.map((row) => [row.segmentId, row]));
+    const changed = new Set(state.segments.filter((row) => {
+      const replacement = wanted.get(row.segmentId);
+      return replacement && ["text", "speaker", "tsStart", "tsEnd", "rawAudioPath", "screenshotPath", "quality"]
+        .some((key) => row[key] !== replacement[key]);
+    }).map((row) => row.segmentId));
+    for (const row of logEl.querySelectorAll(".log-row")) {
+      if (!wanted.has(row.dataset.segmentId) || changed.has(row.dataset.segmentId)) row.remove();
+    }
+    state.segments = state.segments.filter((row) => wanted.has(row.segmentId) && !changed.has(row.segmentId));
+    for (const row of records) renderRow(row);
+    state.segments = records;
+    state.log = records.map((row) => row.text);
+    const nodes = new Map([...logEl.querySelectorAll(".log-row")].map((row) => [row.dataset.segmentId, row]));
+    for (const row of records) {
+      const node = nodes.get(row.segmentId);
+      if (node) {
+        node.dataset.quality = row.quality || "";
+        node.title = row.retainedRealtimeSegmentIds?.length ? "再認識済み・一部の区間は言語の脱落を避けるため速報を維持" : row.quality === "high_accuracy" ? "長区間の音声から再認識済み" : "リアルタイム認識";
+        logEl.append(node);
+      }
+    }
+    renderTranscriptParagraphs();
+    updateSegmentCount();
+    markProofreadStale();
+    markWorkspaceDirty();
+  };
+  const capture = new LiveCapture({
+    path: health.liveWsPath,
+    packetMs: health.capturePacketMs,
+    streams,
+    start: { sessionId: generateSessionSeed(), language: selectedLanguage() || "auto", audioSource: state.recordingAudioSource,
+      diarizationEnabled: !!diarizationToggleEl?.checked,
+      ...resolveDiarizationStartOptions(),
+      prompt: promptEl.value.trim(), sharedVocabulary: String(sharedVocabularyEl?.value || state.sharedVocabulary || "").trim() },
+    screenshot: captureDisplayScreenshot,
+    onEvent: (data) => {
+      if (state.liveCapture !== capture) return;
+      meetingWorkspace.liveEvent(data);
+      if (data.type === "info") {
+        state.runtimeSessionId = data.sessionId || state.runtimeSessionId;
+        if (data.message === "ready") state.runtimeSessionFinalized = !!data.finalized;
+        if (data.message === "finalized") state.runtimeSessionFinalized = true;
+        updateDownloadLinks();
+      } else if (data.type === "transcript_snapshot") {
+        for (const row of data.records) {
+          for (const original of row.realtimeSegments || []) superseded.add(original.segmentId);
+        }
+        reconcileRows(data.records);
+      } else if (data.type === "transcript_revision") {
+        try {
+          const updated = applyTranscriptRevision(state.segments, data);
+          for (const id of data.replacesSegmentIds) superseded.add(id);
+          reconcileRows(updated);
+        } catch {
+          document.querySelector("#liveConnection").textContent = "再認識結果の同期に失敗しました。再接続で復元できます。";
+        }
+      } else if (data.type === "hq_status") {
+        const status = document.querySelector("#hqStatus");
+        status.hidden = false;
+        status.textContent = data.state === "running" ? `高精度認識中 ${formatMs(data.tsStart)}–${formatMs(data.tsEnd)}`
+          : data.state === "completed" ? `高精度認識を反映 ${formatMs(data.tsStart)}–${formatMs(data.tsEnd)}` : data.message;
+      } else if (data.type === "final") {
+        if (!superseded.has(data.segmentId)) renderRow(data);
+      } else if (data.type === "speaker_patch") {
+        applySpeakerPatch(data.segments || []);
+      } else if (data.type === "capture_state") {
+        state.pendingOutboundChunks = Math.ceil(data.pendingBytes / 32000);
+        state.offsetMs = data.samples / 16;
+        state.recordedChunkCount = Math.floor(data.samples / 16000);
+        if (data.samples) markWorkspaceDirty();
+      } else if (data.type === "error") {
+        document.querySelector("#liveConnection").textContent = data.message === "transcription_failed"
+          ? "認識サービスを再試行しています。受信済みの音声は保存されています。" : data.detail || data.message;
+      }
+    },
+    onFatal: (error) => {
+      if (state.liveCapture !== capture) return;
+      cleanupMedia();
+      setUiRecording(false);
+      document.querySelector("#downloadPendingAudio").hidden = !capture.pending.size;
+      document.querySelector("#liveConnection").textContent = "録音を停止しました。未送信音声を保存できます。";
+      showToast(`ライブ録音を継続できません: ${error.message}`, "error", 7000);
+    },
+  });
+  state.liveCapture = capture;
+  try {
+    await capture.start();
+  } catch (error) {
+    capture.dispose();
+    state.liveCapture = null;
+    throw error;
+  }
+  commitNewRecordingWorkspace();
+  state.recordingStartedAt = performance.now();
+  setUiRecording(true);
+  setStatus("recording");
+  document.querySelector("#liveConnection").textContent = "ライブ文字起こし · 音声を保存中";
+  document.querySelector("#retryLiveStop").hidden = true;
+  document.querySelector("#downloadPendingAudio").hidden = true;
+  meetingWorkspace.setView("transcript");
+}
+
+async function finalizeLiveRecording() {
+  const capture = state.liveCapture;
+  if (!capture || state.finalizingStop) return;
+  state.recording = false;
+  state.finalizingStop = true;
+  setUiRecordingStopping(true);
+  document.querySelector("#retryLiveStop").hidden = true;
+  try {
+    await capture.stop();
+    state.runtimeSessionFinalized = true;
+    state.liveCapture = null;
+    document.querySelector("#liveTranscript").replaceChildren();
+    document.querySelector("#liveTranscript").hidden = true;
+    document.querySelector("#liveConnection").textContent = "録音完了 · 発話の音声を再生できます";
+    setStatus("completed");
+    meetingWorkspace.refresh();
+  } catch (error) {
+    document.querySelector("#retryLiveStop").hidden = capture.closed;
+    document.querySelector("#downloadPendingAudio").hidden = !capture.pending.size;
+    document.querySelector("#liveConnection").textContent = "最終処理を完了できませんでした。再試行できます。";
+    showToast(`最終処理に失敗しました: ${error.message}`, "error", 7000);
+  } finally {
+    cleanupMedia();
+    state.finalizingStop = false;
+    setUiRecording(false);
+    updateDownloadLinks();
+    updateSaveControls();
+    updateRecordingTelemetry();
+  }
+}
+
+async function refineMeetingAudio() {
+  if (refinementController) { refinementController.abort(); return; }
+  const source = currentMeetingSource();
+  if (!source?.runtimeSessionId || !state.runtimeSessionFinalized || isRecordingInteractionLocked() || meetingWorkspace?.busy) return;
+  const controller = new AbortController();
+  refinementController = controller;
+  updateSaveControls();
+  setSessionSettingsLocked();
+  renderHistoryList();
+  const status = document.querySelector("#liveConnection");
+  let completed = false;
+  try {
+    const response = await fetch("/api/meeting/refine", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(source), signal: controller.signal });
+    if (!response.ok) throw new Error("音声の再認識を開始できませんでした");
+    await readSseJsonStream(response, (event) => {
+      if (event.type === "error") throw new Error(event.error);
+      if (event.type === "status") status.textContent = event.message;
+      if (event.type === "done") {
+        completed = true;
+        state.log = [];
+        state.segments = [];
+        renderEmptyTranscriptState();
+        for (const row of event.records || []) {
+          addLogLine(row.text, row.tsStart, row.tsEnd, row.seq, row.speaker || "", row.screenshotPath || "", row.rawAudioPath || "", row.audioPath || "", row.segmentId);
+        }
+        markWorkspaceDirty();
+        status.textContent = "音声から再認識しました。元の文は保存時のZIPに含まれます。";
+        meetingWorkspace.refresh();
+      }
+    });
+    if (!completed) throw new Error("再認識が中断されました");
+  } catch (error) {
+    status.textContent = controller.signal.aborted ? "再認識をキャンセルしました" : "再認識に失敗しました。原文から再試行できます。";
+    if (!controller.signal.aborted) showToast(error.message, "error");
+  } finally {
+    refinementController = null;
+    updateSaveControls();
+    setSessionSettingsLocked();
+    renderHistoryList();
+  }
+}
+
 async function startRecording() {
-  if (state.recordingPhase !== "idle" || state.finalizingStop) return;
+  if (state.recordingPhase !== "idle" || state.finalizingStop || refinementController) return;
   if (!canUseWorkspace()) {
     showToast("ログインが必要です", "error");
     setAppLocked(true);
@@ -3588,6 +3819,12 @@ async function startRecording() {
     const health = await loadCapabilities();
     if (!health?.asrReady || !health?.model) {
       throw new Error("asr_not_ready");
+    }
+
+    if (health.asrBackend === "qwen3_vllm" && typeof AudioWorkletNode === "undefined") throw new Error("audio_worklet_required");
+    if (health.liveWsPath && (health.asrBackend === "qwen3_vllm" || document.querySelector("#liveTranscriptionEnabled")?.checked) && typeof AudioWorkletNode !== "undefined") {
+      await startLiveRecording(health, selectedAudioSource);
+      return;
     }
 
     const ws = await ensureSocket();
@@ -3682,6 +3919,10 @@ async function startRecording() {
 
 function stopRecording() {
   if (!state.recording) return;
+  if (state.liveCapture) {
+    finalizeLiveRecording();
+    return;
+  }
   state.recording = false;
   setUiRecordingStopping(false);
   clearChunkTimer();
@@ -3962,10 +4203,10 @@ async function proofreadAll() {
       metaParts.push(`chunks: ${chunkCount}`);
     }
 
-    setProofread(correctedText, metaParts.join(" | ") || "生成完了");
+    setProofread(correctedText, metaParts.join(" | ") || "完了");
     markWorkspaceDirty();
     setStatus("proofread_done");
-    showToast(`${proofreadActionLabel()}を生成しました`, "success");
+    showToast(`${proofreadActionLabel()}が完了しました`, "success");
   } catch (err) {
     if (isLoginRequiredError(err)) {
       showToast("ログインが必要です", "error");
@@ -4003,6 +4244,10 @@ async function proofreadAll() {
 }
 
 async function summarizeAll() {
+  if (state.meetingInsights && currentMeetingSource()) {
+    await meetingWorkspace.generateRecap();
+    return;
+  }
   if (state.summaryInFlight) {
     state.summaryController?.abort("user_cancelled");
     return;
@@ -4025,12 +4270,12 @@ async function summarizeAll() {
   state.summaryInFlight = true;
   summaryBtn.disabled = false;
   summaryBtn.setAttribute("aria-busy", "true");
-  summaryBtn.setAttribute("aria-label", "要約生成をキャンセル");
+  summaryBtn.setAttribute("aria-label", "要約をキャンセル");
   if (summaryBtnLabelEl) {
     summaryBtnLabelEl.textContent = "キャンセル";
   }
   setStatus("summarizing");
-  showToast("要約を生成中...", "default", 5000);
+  showToast("要約しています...", "default", 5000);
 
   try {
     const payload = await fetchJson("/api/summarize", {
@@ -4060,10 +4305,10 @@ async function summarizeAll() {
       metaParts.push("統合済み");
     }
 
-    setSummary(summaryText, metaParts.join(" | ") || "生成完了");
+    setSummary(summaryText, metaParts.join(" | ") || "完了");
     markWorkspaceDirty();
     setStatus("summarized");
-    showToast("要約を生成しました", "success");
+    showToast("要約が完了しました", "success");
   } catch (err) {
     if (isLoginRequiredError(err)) {
       showToast("ログインが必要です", "error");
@@ -4098,7 +4343,7 @@ async function summarizeAll() {
     summaryBtn.setAttribute("aria-busy", "false");
     summaryBtn.setAttribute("aria-label", "要約を開始");
     if (summaryBtnLabelEl) {
-      summaryBtnLabelEl.textContent = "生成";
+      summaryBtnLabelEl.textContent = "要約する";
     }
   }
 }
@@ -4144,8 +4389,8 @@ function clearView(options = {}) {
   renderEmptyTranscriptState();
 
   updateSegmentCount();
-  setSummary("", "未生成");
-  setProofread("", "未生成");
+  setSummary("", "未実行");
+  setProofread("", "未実行");
   updateDownloadLinks();
   updateSaveControls();
   renderHistoryList();
@@ -4405,8 +4650,12 @@ if (saveBtn) {
 }
 
 if (captureScreenshotsEnabledEl) {
+  const meetingCaptureEnabled = document.querySelector("#meetingCaptureEnabled");
+  meetingCaptureEnabled.checked = state.captureScreenshotsEnabled;
+  meetingCaptureEnabled.addEventListener("change", () => applyCaptureScreenshotsEnabled(meetingCaptureEnabled.checked));
   captureScreenshotsEnabledEl.addEventListener("change", () => {
     applyCaptureScreenshotsEnabled(captureScreenshotsEnabledEl.checked);
+    meetingCaptureEnabled.checked = captureScreenshotsEnabledEl.checked;
   });
 }
 
@@ -4797,6 +5046,12 @@ async function loadCapabilities() {
   try {
     const health = await fetchCapabilities();
     state.wsPath = normalizeWsPath(health.wsPath || state.wsPath);
+    state.meetingInsights = !!health.meetingInsights;
+    state.asrBackend = health.asrBackend || "whisper";
+    if (state.asrBackend === "qwen3_vllm") {
+      document.querySelector("#liveTranscriptionEnabled").checked = true;
+    }
+    setSessionSettingsLocked();
     renderBanners(health.banners);
     applyBranding(health.uiBrandTitle, health.uiBrandTagline);
     if (Array.isArray(health.uiPromptTemplates) && health.uiPromptTemplates.length > 0) {
@@ -5119,8 +5374,8 @@ async function logout() {
   state.segments = [];
   state.logAutoScrollEnabled = true;
   renderEmptyTranscriptState();
-  setSummary("", "未生成");
-  setProofread("", "未生成");
+  setSummary("", "未実行");
+  setProofread("", "未実行");
   resetRuntimeSessionState();
   markWorkspaceClean();
   persistGuestMode(false);
@@ -5237,7 +5492,8 @@ function renderHistoryDetail(payload) {
       String(segment.speaker || ""),
       String(segment.screenshotUrl || ""),
       String(segment.rawAudioUrl || segment.rawAudioPath || ""),
-      String(segment.audioUrl || segment.audioPath || "")
+      String(segment.audioUrl || segment.audioPath || ""),
+      String(segment.segmentId || "")
     );
   });
   if (!payload.segments || payload.segments.length === 0) {
@@ -5393,13 +5649,13 @@ setAppLocked(true);
 // Initialize empty states
 updateSegmentCount();
 updateDownloadLinks();
-setSummary("", "未生成");
-setProofread("", "未生成");
+setSummary("", "未実行");
+setProofread("", "未実行");
 renderAuthState();
 updateSharedVocabularyMeta();
 applyProofreadMode(proofreadModeEl?.value || "proofread");
 if (summaryBtnLabelEl) {
-  summaryBtnLabelEl.textContent = "生成";
+  summaryBtnLabelEl.textContent = "要約する";
 }
 applyAdvancedSettingsOpen(false);
 applySummaryPromptEditorOpen(false);
@@ -5494,6 +5750,24 @@ if (logEl && !logEl.querySelector(".log-row")) {
     { persist: false }
   );
 })();
+
+meetingWorkspace = createMeetingWorkspace({
+  getSource: currentMeetingSource,
+  getAccess: () => !state.auth.authenticated ? "login" : !state.meetingInsights ? "unavailable" : "ready",
+  onNavigate: navigateMeetingSource,
+  onRecap: (text, meta) => { setSummary(text, meta); markWorkspaceDirty(); },
+  onImage: showScreenshotModal,
+  onBusy: () => updateSaveControls(),
+});
+meetingWorkspace.syncSource();
+document.querySelector("#refineAudioBtn")?.addEventListener("click", refineMeetingAudio);
+document.querySelector("#retryLiveStop")?.addEventListener("click", finalizeLiveRecording);
+document.querySelector("#downloadPendingAudio")?.addEventListener("click", () => state.liveCapture?.downloadPending());
+const liveToggle = document.querySelector("#liveTranscriptionEnabled");
+if (liveToggle) {
+  liveToggle.checked = readStoredValue("whistx_live_transcription", "1") !== "0";
+  liveToggle.addEventListener("change", () => writeStoredValue("whistx_live_transcription", liveToggle.checked ? "1" : "0"));
+}
 
 (async () => {
   logClientEvent("bootstrap.start");

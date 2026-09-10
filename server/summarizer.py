@@ -61,6 +61,44 @@ class OpenAISummarizer:
         self.proofread_prompt_template = proofread_prompt_template.strip()
         self.observer = observer
 
+    def complete_meeting(self, messages: list[dict[str, str]], *, json_output: bool = False) -> str:
+        """Use the same configured model for structured, grounded meeting notes."""
+        payload: dict[str, Any] = {
+            "model": self.model, "messages": messages,
+            "temperature": self.temperature, "max_tokens": 6000,
+        }
+        if json_output:
+            payload["response_format"] = {"type": "json_object"}
+        for _ in range(3):
+            try:
+                result = self.client.chat.completions.create(**payload)
+                if result.choices and result.choices[0].finish_reason == "length":
+                    raise ValueError("meeting_output_truncated")
+                return _extract_text(result)
+            except BadRequestError as exc:
+                if "temperature" in payload and _is_temperature_unsupported_error(exc):
+                    payload.pop("temperature")
+                elif "response_format" in payload and "response_format" in str(exc):
+                    # Some compatible providers support JSON prompting but not
+                    # JSON mode. The service still validates the entire result.
+                    payload.pop("response_format")
+                else:
+                    raise
+        raise ValueError("meeting_model_options_unsupported")
+
+    def stream_meeting(self, messages: list[dict[str, str]]):
+        stream = self._create_chat_completion_stream({
+            "model": self.model, "messages": messages,
+            "temperature": self.temperature, "max_tokens": 3000, "stream": True,
+        })
+        try:
+            for event in stream:
+                delta = _extract_stream_delta_text(event)
+                if delta:
+                    yield delta
+        finally:
+            stream.close()
+
     def summarize(
         self,
         *,

@@ -39,16 +39,17 @@ test("runtime UI styles do not override the static history rail layout", async (
   assert.match(html, /runtime-ui\.css\?v=20260728/);
 });
 
-test("guided journey and responsive design tokens are present", async () => {
-  const [html, css, app] = await Promise.all([
+test("workspace uses a direct task hierarchy and responsive design tokens", async () => {
+  const [html, css] = await Promise.all([
     readFile(new URL("web/index.html", root), "utf8"),
     readFile(new URL("web/style.css", root), "utf8"),
-    readFile(new URL("web/src/app.js", root), "utf8"),
   ]);
-  assert.equal((html.match(/data-journey-step=/g) || []).length, 3);
+  assert.doesNotMatch(html, /data-journey-step=/);
+  assert.match(html, /class="settings-intro-title">録音</);
+  assert.match(html, /id="transcriptPanelTitle"[^>]*>文字起こし</);
+  assert.match(html, /id="proofreadBtnLabel">校正する</);
+  assert.match(html, /id="summaryBtnLabel">要約する</);
   assert.match(css, /--surface-canvas:/);
   assert.match(css, /@media \(min-width: 1440px\)/);
   assert.match(css, /@media \(max-width: 640px\)/);
-  assert.match(app, /function syncJourneyStage/);
-  assert.match(app, /setAttribute\("aria-current", "step"\)/);
 });

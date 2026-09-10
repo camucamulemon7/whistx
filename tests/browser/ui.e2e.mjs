@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -98,6 +98,10 @@ class CdpClient {
       const message = JSON.parse(event.data);
       if (!message.id) {
         this.events.push(message);
+        // Physical clicks activate beforeunload protection; test reloads are intentional.
+        if (message.method === "Page.javascriptDialogOpening" && message.params.type === "beforeunload") {
+          void this.send("Page.handleJavaScriptDialog", { accept: true });
+        }
         return;
       }
       if (!this.pending.has(message.id)) return;
@@ -112,7 +116,14 @@ class CdpClient {
     const id = this.nextId++;
     this.socket.send(JSON.stringify({ id, method, params }));
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`CDP timeout: ${method} ${String(params.expression || "").slice(0, 180)}`));
+      }, 30_000);
+      this.pending.set(id, {
+        resolve: value => { clearTimeout(timeout); resolve(value); },
+        reject: error => { clearTimeout(timeout); reject(error); },
+      });
     });
   }
 
@@ -238,6 +249,7 @@ async function verifyHistoryDrawerAtWidth(client, width) {
   );
 
   await evaluate(client, `document.querySelector("#historyDrawerOpen").click()`);
+  await evaluate(client, `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))).then(() => Promise.all(document.querySelector("#historyRail").getAnimations().map(animation => animation.finished.catch(() => {}))))`);
   state = await drawerState(client);
   const drawerLayout = await evaluate(
     client,
@@ -296,198 +308,40 @@ async function verifyHistoryDrawerAtWidth(client, width) {
 }
 
 async function verifyDesktopPanelLayout(client) {
-  await client.send("Emulation.setDeviceMetricsOverride", {
-    width: 1280,
-    height: 900,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
-  const desktopHistoryPosition = await evaluate(
-    client,
-    `(() => {
-      const rail = document.querySelector("#historyRail");
-      const main = document.querySelector(".workspace-main");
-      const railRect = rail.getBoundingClientRect();
-      const mainRect = main.getBoundingClientRect();
+  for (const width of [1280, 1440, 1920]) {
+    await client.send("Emulation.setDeviceMetricsOverride", { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
+    const layout = await evaluate(client, `(() => {
+      document.querySelector('[data-meeting-tab="transcript"]').click();
+      const rail = document.querySelector("#historyRail").getBoundingClientRect();
+      const main = document.querySelector(".workspace-main").getBoundingClientRect();
       return {
-        position: getComputedStyle(rail).position,
-        topDifference: Math.abs(railRect.top - mainRect.top)
+        columns: getComputedStyle(document.querySelector("#workspacePanels")).gridTemplateColumns.split(" ").length,
+        assistantVisible: document.querySelector("#meetingAssistantPanel").getBoundingClientRect().width > 0,
+        resizer: getComputedStyle(document.querySelector('[data-resizer="left"]')).display,
+        historyAligned: Math.abs(rail.top - main.top) <= 1,
+        overflow: document.documentElement.scrollWidth > innerWidth
       };
-    })()`,
-  );
-  assert.equal(desktopHistoryPosition.position, "sticky", "desktop history must retain its sticky sidebar position");
-  assert.ok(desktopHistoryPosition.topDifference <= 1, "desktop history must align with the workspace content");
-  let layout = await evaluate(
-    client,
-    `({
-      columns: getComputedStyle(document.querySelector("#workspacePanels")).gridTemplateColumns.split(" ").length,
-      resizerDisplay: getComputedStyle(document.querySelector('[data-resizer="left"]')).display
-    })`,
-  );
-  assert.equal(layout.columns, 1, "1280px should use a single workspace column");
-  assert.equal(layout.resizerDisplay, "none", "1280px should hide desktop-only resizers");
-
-  await client.send("Emulation.setDeviceMetricsOverride", {
-    width: 1440,
-    height: 900,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
-  const historyLayout = await evaluate(
-    client,
-    `(() => {
-      const rail = document.querySelector("#historyRail");
-      const workspace = document.querySelector(".workspace-main");
-      const railRect = rail.getBoundingClientRect();
-      const workspaceRect = workspace.getBoundingClientRect();
-      return {
-        railTop: railRect.top,
-        workspaceTop: workspaceRect.top,
-        railHeight: railRect.height,
-        workspaceHeight: workspaceRect.height,
-        minHeight: getComputedStyle(rail).minHeight,
-        position: getComputedStyle(rail).position
-      };
-    })()`,
-  );
-  assert.ok(
-    Math.abs(historyLayout.railTop - historyLayout.workspaceTop) <= 1,
-    "desktop history rail should align with the workspace top",
-  );
-  assert.equal(historyLayout.position, "sticky", "desktop history rail should retain its sticky positioning");
-  assert.notEqual(historyLayout.minHeight, "100%", "runtime styles must not stretch the static history rail");
-  assert.ok(
-    historyLayout.railHeight < historyLayout.workspaceHeight,
-    "history rail should size to its contents instead of the full workspace",
-  );
-  const beforeCollapse = await evaluate(
-    client,
-    `({
-      transcript: document.querySelector(".transcript-panel").getBoundingClientRect().width,
-      proofread: document.querySelector(".proofread-panel").getBoundingClientRect().width,
-      resizerDisplay: getComputedStyle(document.querySelector('[data-resizer="left"]')).display
-    })`,
-  );
-  assert.notEqual(beforeCollapse.resizerDisplay, "none", "1440px should expose panel resizers");
-  await evaluate(client, `document.querySelector('[data-panel-toggle="transcript"]').click()`);
-  const afterCollapse = await evaluate(
-    client,
-    `({
-      transcript: document.querySelector(".transcript-panel").getBoundingClientRect().width,
-      proofread: document.querySelector(".proofread-panel").getBoundingClientRect().width
-    })`,
-  );
-  assert.ok(afterCollapse.transcript <= 92, "collapsed transcript should shrink to its compact desktop width");
-  assert.ok(
-    afterCollapse.transcript < beforeCollapse.transcript - 100,
-    "collapsing transcript should release substantial workspace width",
-  );
-  assert.ok(afterCollapse.proofread > beforeCollapse.proofread, "adjacent panels should use released width");
-
-  await client.send("Emulation.setDeviceMetricsOverride", {
-    width: 1280,
-    height: 900,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
-  const narrowAfterCollapse = await evaluate(
-    client,
-    `({
-      collapsedClass: document.querySelector(".transcript-panel").classList.contains("is-collapsed"),
-      transcriptVisible: getComputedStyle(document.querySelector("#log")).display !== "none",
-      toggleHidden: document.querySelector('[data-panel-toggle="transcript"]').hidden,
-      columns: getComputedStyle(document.querySelector("#workspacePanels")).gridTemplateColumns.split(" ").length
-    })`,
-  );
-  assert.deepEqual(
-    narrowAfterCollapse,
-    { collapsedClass: false, transcriptVisible: true, toggleHidden: true, columns: 1 },
-    "one-column layout should suspend desktop collapse without hiding transcript content",
-  );
-
-  await client.send("Emulation.setDeviceMetricsOverride", {
-    width: 1440,
-    height: 900,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
-  const restoredCollapse = await evaluate(
-    client,
-    `({
-      collapsedClass: document.querySelector(".transcript-panel").classList.contains("is-collapsed"),
-      width: document.querySelector(".transcript-panel").getBoundingClientRect().width,
-      toggleHidden: document.querySelector('[data-panel-toggle="transcript"]').hidden
-    })`,
-  );
-  assert.equal(restoredCollapse.collapsedClass, true, "desktop collapse preference should return after widening");
-  assert.ok(restoredCollapse.width <= 92, "restored desktop collapse should use compact width");
-  assert.equal(restoredCollapse.toggleHidden, false, "desktop collapse control should return after widening");
-  await evaluate(client, `document.querySelector('[data-panel-toggle="transcript"]').click()`);
-
-  await client.send("Emulation.setDeviceMetricsOverride", {
-    width: 1920,
-    height: 1000,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await evaluate(client, `window.dispatchEvent(new Event("resize"))`);
-  const beforeResize = await evaluate(
-    client,
-    `(() => {
-      const transcript = document.querySelector(".transcript-panel").getBoundingClientRect();
-      const proofread = document.querySelector(".proofread-panel").getBoundingClientRect();
-      const handle = document.querySelector('[data-resizer="left"]').getBoundingClientRect();
-      return {
-        transcript: transcript.width,
-        proofread: proofread.width,
-        handleX: handle.left + handle.width / 2,
-        handleY: handle.top + Math.min(80, handle.height / 2)
-      };
-    })()`,
-  );
-  await evaluate(
-    client,
-    `(() => {
-      const handle = document.querySelector('[data-resizer="left"]');
-      handle.dispatchEvent(new PointerEvent("pointerdown", {
-        bubbles: true,
-        pointerId: 1,
-        clientX: ${beforeResize.handleX},
-        clientY: ${beforeResize.handleY}
-      }));
-      window.dispatchEvent(new PointerEvent("pointermove", {
-        bubbles: true,
-        pointerId: 1,
-        clientX: ${beforeResize.handleX + 120},
-        clientY: ${beforeResize.handleY}
-      }));
-      window.dispatchEvent(new PointerEvent("pointerup", {
-        bubbles: true,
-        pointerId: 1,
-        clientX: ${beforeResize.handleX + 120},
-        clientY: ${beforeResize.handleY}
-      }));
-    })()`,
-  );
-  const afterResize = await evaluate(
-    client,
-    `({
-      transcript: document.querySelector(".transcript-panel").getBoundingClientRect().width,
-      proofread: document.querySelector(".proofread-panel").getBoundingClientRect().width
-    })`,
-  );
-  assert.ok(
-    afterResize.transcript > beforeResize.transcript + 40,
-    `dragging should widen the transcript panel: ${JSON.stringify({ beforeResize, afterResize })}`,
-  );
-  assert.ok(
-    afterResize.proofread < beforeResize.proofread - 20,
-    `dragging should resize the adjacent panel: ${JSON.stringify({ beforeResize, afterResize })}`,
-  );
+    })()`);
+    assert.equal(layout.columns, 2, `${width}px: transcript and assistant should share the workspace`);
+    assert.equal(layout.assistantVisible, true);
+    assert.equal(layout.resizer, "none");
+    assert.equal(layout.historyAligned, true);
+    assert.equal(layout.overflow, false);
+    for (const [tab, panel] of [["summary", "meetingSummaryPanel"], ["proofread", "meetingProofreadPanel"], ["materials", "meetingMaterialsPanel"]]) {
+      const state = await evaluate(client, `(() => {
+        const tab = document.querySelector('[data-meeting-tab="${tab}"]');
+        tab.click();
+        return { selected: tab.getAttribute("aria-selected"), visible: document.querySelector("#${panel}").getBoundingClientRect().width > 0, transcriptHidden: getComputedStyle(document.querySelector("#meetingTranscriptPanel")).display === "none" };
+      })()`);
+      assert.deepEqual(state, { selected: "true", visible: true, transcriptHidden: true });
+    }
+  }
+  await client.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await evaluate(client, `document.querySelector('[data-meeting-tab="assistant"]').click()`);
+  assert.equal(await evaluate(client, `document.querySelector("#meetingAssistantPanel").getBoundingClientRect().width > 0`), true);
+  assert.equal(await evaluate(client, `getComputedStyle(document.querySelector("#meetingTranscriptPanel")).display`), "none");
+  await evaluate(client, `document.querySelector('[data-meeting-tab="transcript"]').click()`);
 }
 
 const recordingMocks = String.raw`
@@ -1473,7 +1327,7 @@ async function verifySummaryCanBeCancelled(client) {
     })`,
   );
   await evaluate(client, `window.__restoreSummaryFetch()`);
-  assert.equal(result.label, "生成", "cancelled summary should restore its action label");
+  assert.equal(result.label, "要約する", "cancelled summary should restore its action label");
   assert.equal(result.busy, "false", "cancelled summary should clear busy state");
   assert.equal(result.disabled, false, "cancelled summary should remain usable");
   assert.equal(result.status, "要約キャンセル", "cancelled summary should leave processing state");
@@ -1515,7 +1369,7 @@ async function verifySummaryCanBeCancelled(client) {
     })`,
   );
   await evaluate(client, `window.__restoreSummaryTimeoutTest()`);
-  assert.equal(result.label, "生成", "timed-out summary should restore its action label");
+  assert.equal(result.label, "要約する", "timed-out summary should restore its action label");
   assert.equal(result.busy, "false", "timed-out summary should clear busy state");
   assert.equal(result.disabled, false, "timed-out summary should remain usable");
   assert.equal(result.status, "要約失敗", "timed-out summary should leave processing state");
@@ -1805,6 +1659,254 @@ async function verifyInvalidSessionDoesNotBecomeGuest(client) {
     { locked: false, guestMode: "1" },
     "guest mode should begin only after the explicit guest action",
   );
+  assert.match(await evaluate(client, `document.querySelector("#assistantAccessNotice").textContent`), /ログインが必要/, "guests must see why the assistant is unavailable");
+  assert.equal(await evaluate(client, `document.querySelector("#assistantAsk").disabled`), true);
+}
+
+async function verifyMeetingInsights(client) {
+  await client.send("Page.addScriptToEvaluateOnNewDocument", { source: recordingMocks });
+  await client.send("Page.addScriptToEvaluateOnNewDocument", { source: String.raw`
+    (() => {
+      const original = window.fetch;
+      const source = { id: "000001", seq: 1, text: "履歴の文字起こし", startMs: 0, endMs: 1000 };
+      const recap = { revision: "r1", throughMs: 1000, sources: [source], chapters: [{ id: "chapter-1", title: "公開準備 <script>unsafe</script>", startMs: 0, endMs: 1000, sourceIds: [source.id], summary: [{ text: "公開日は未定", sourceIds: [source.id] }], decisions: [], actions: [], open_questions: [], imageIds: [] }] };
+      window.fetch = async (input, options = {}) => {
+        const url = String(input);
+        const json = data => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
+        if (url.includes("/api/health")) return json({ asrReady: true, model: "browser-test", wsPath: "/ws/transcribe", meetingInsights: true });
+        if (url.includes("/api/meeting/insights")) return json({ revision: "r1", throughMs: 1000, images: [], turns: [], recap: null });
+        if (url.includes("/api/meeting/recap")) return json({ revision: "r1", throughMs: 1000, images: [], recap, summary: "公開日は未定" });
+        if (url.includes("/api/meeting/ask")) {
+          window.__meetingQuestion = JSON.parse(options.body);
+          const events = [{ type: "delta", text: "公開日は未定です。[S1]" }, { type: "done", question: "公開日は？", answer: "公開日は未定です。[S1]", citations: [{ ...source, label: "S1" }] }];
+          return new Response(events.map(e => "data: " + JSON.stringify(e) + "\n\n").join(""), { headers: { "Content-Type": "text/event-stream" } });
+        }
+        return original(input, options);
+      };
+    })();
+  ` });
+  await client.send("Page.reload", { ignoreCache: true });
+  await waitForApp(client);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  await client.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await evaluate(client, `(() => { window.confirm = () => true; document.querySelector(".history-item-main").click(); })()`);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  await evaluate(client, `document.querySelector("#summaryBtn").click()`);
+  await new Promise(resolve => setTimeout(resolve, 150));
+  const recap = await evaluate(client, `({ text: document.querySelector("#summaryText").textContent, scripts: document.querySelectorAll("#summaryText script").length, cards: document.querySelectorAll(".chapter-card").length })`);
+  assert.equal(recap.cards, 1, "saved meeting should render a chapter card");
+  assert.match(recap.text, /公開日は未定/);
+  assert.equal(recap.scripts, 0, "model strings must remain text");
+  await evaluate(client, `(() => { document.querySelector("#assistantQuestion").value = "公開日は？"; document.querySelector("#assistantAsk").click(); })()`);
+  await new Promise(resolve => setTimeout(resolve, 150));
+  const answer = await evaluate(client, `({ text: document.querySelector("#assistantTurns").textContent, source: window.__meetingQuestion, citations: document.querySelectorAll("#assistantTurns .meeting-citation").length })`);
+  assert.match(answer.text, /公開日は未定です/);
+  assert.equal(answer.source.historyId, "history-1", "assistant must use the selected meeting");
+  assert.equal(answer.citations, 1);
+  if (process.env.MEETING_SCREENSHOT) {
+    const shot = await client.send("Page.captureScreenshot", { format: "png" });
+    await writeFile(process.env.MEETING_SCREENSHOT, Buffer.from(shot.data, "base64"));
+  }
+  await evaluate(client, `document.querySelector("#assistantTurns .meeting-citation").click()`);
+  assert.equal(await evaluate(client, `document.querySelector("#workspacePanels").dataset.meetingView`), "transcript");
+}
+
+async function verifyLiveRecordingAndRefinement(client) {
+  await client.send("Page.addScriptToEvaluateOnNewDocument", { source: recordingMocks });
+  await client.send("Page.addScriptToEvaluateOnNewDocument", { source: String.raw`
+    (() => {
+      const originalFetch = window.fetch;
+      window.fetch = async (input, options = {}) => {
+        const url = String(input);
+        const json = data => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
+        if (url.includes("/api/health")) return json({ asrReady: true, model: "browser-test", wsPath: "/ws/transcribe", liveWsPath: "/ws/transcribe/live", meetingInsights: true });
+        if (url.includes("/api/meeting/insights")) {
+          if (JSON.parse(options.body || "{}").runtimeSessionId === "live-browser") {
+            await new Promise(resolve => { window.__releaseLiveInsights = resolve; });
+          }
+          return json({ images: [], turns: [], recap: null });
+        }
+        if (url.includes("/api/meeting/ask")) {
+          window.__liveQuestion = JSON.parse(options.body);
+          const event = { type: "done", id: "live-answer", question: window.__liveQuestion.question, answer: "録音を続けながら回答できました", throughMs: 1000, citations: [] };
+          return new Response("data: " + JSON.stringify(event) + "\n\n", { headers: { "Content-Type": "text/event-stream" } });
+        }
+        if (url.includes("/api/meeting/refine")) {
+          const event = { type: "done", records: [{ type: "final", segmentId: "mic-0", seq: 0, tsStart: 0, tsEnd: 2000, text: "音声から再認識した結果", originalText: "ライブ録音の結果" }] };
+          return new Response("data: " + JSON.stringify(event) + "\n\n", { headers: { "Content-Type": "text/event-stream" } });
+        }
+        return originalFetch(input, options);
+      };
+      const OldContext = window.AudioContext;
+      window.AudioContext = class extends OldContext {
+        constructor() { super(); this.sampleRate = 16000; this.audioWorklet = { addModule: async () => {} }; }
+      };
+      window.AudioWorkletNode = class {
+        constructor() {
+          this.port = { postMessage: () => queueMicrotask(() => this.port.onmessage({ data: { type: "flushed" } })) };
+          window.__liveNode = this;
+        }
+        connect() {}
+        disconnect() {}
+      };
+      const OldSocket = window.WebSocket;
+      window.WebSocket = class extends OldSocket {
+        emit(data) { queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ sessionId: "live-browser", ...data }) }))); }
+        send(raw) {
+          const data = JSON.parse(raw);
+          if (data.type === "start") {
+            window.__liveStart = data;
+            this.emit({ type: "info", message: "ready", protocolVersion: 2, tracks: { mic: { seq: -1, samples: 0 } } });
+          } else if (data.type === "audio") {
+            window.__liveAudio = data;
+            this.emit({ type: "capture_ack", track: data.track, seq: data.seq, samples: data.sampleStart + atob(data.pcm).length/2 });
+            this.emit({ type: "partial", track: "mic", text: "ライブ録音の", stableText: "ライブ" });
+          } else if (data.type === "stop") {
+            this.emit({ type: "final", segmentId: "mic-0", seq: 0, text: "ライブ録音の結果", tsStart: 0, tsEnd: 2000 });
+            this.emit({ type: "info", message: "finalized" });
+          }
+        }
+      };
+      localStorage.setItem("whistx_live_transcription", "1");
+      localStorage.setItem("whistx_audio_source", "mic");
+    })();
+  ` });
+  await client.send("Page.reload", { ignoreCache: true });
+  await waitForApp(client);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  await evaluate(client, `document.querySelector("#startBtn").click()`);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(await evaluate(client, `window.__liveStart?.protocolVersion`), 2, "live capture must use the PCM protocol: " + await evaluate(client, `document.querySelector("#toastContainer").textContent + " / " + document.querySelector("#statusText").textContent`));
+  await evaluate(client, `window.__liveNode.port.onmessage({ data: { type: "pcm", sampleStart: 0, pcm: new Int16Array(16000).buffer } })`);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.match(await evaluate(client, `document.querySelector("#liveTranscript").textContent`), /ライブ録音の/);
+  await evaluate(client, `document.querySelector("#assistantQuestion").value = "ここまでの要点は？"`);
+  for (const [width, height] of [[1440, 1000], [1280, 720], [390, 844]]) {
+    await client.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 640 });
+    await evaluate(client, `document.querySelector('[data-meeting-tab="${width < 1051 ? "assistant" : "transcript"}"]').click()`);
+    const visible = await evaluate(client, `(() => {
+      const button = document.querySelector("#assistantAsk"); const r = button.getBoundingClientRect();
+      return { clickable: !button.disabled && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight && button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)), top:r.top, bottom:r.bottom, height:innerHeight,
+        hit:document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.id, panel:document.querySelector('#meetingAssistantPanel').getBoundingClientRect().toJSON() };
+    })()`);
+    if (!visible.clickable && process.env.MEETING_MOBILE_SCREENSHOT) {
+      const shot = await client.send("Page.captureScreenshot", { format: "png" });
+      await writeFile(process.env.MEETING_MOBILE_SCREENSHOT, Buffer.from(shot.data, "base64"));
+    }
+    assert.equal(visible.clickable, true, `${width}x${height}: assistant Send must remain reachable while recording: ${JSON.stringify(visible)}`);
+  }
+  const sendPoint = await evaluate(client, `(() => {
+    const button = document.querySelector("#assistantAsk");
+    const rect = button.getBoundingClientRect();
+    const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+    return { x, y, clickable: !button.disabled && y < innerHeight && y > 0 && button.contains(document.elementFromPoint(x, y)) };
+  })()`);
+  assert.equal(sendPoint.clickable, true, "recording assistant Send must be visible and physically clickable");
+  await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x: sendPoint.x, y: sendPoint.y, button: "left", clickCount: 1 });
+  await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: sendPoint.x, y: sendPoint.y, button: "left", clickCount: 1 });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(await evaluate(client, `window.__liveQuestion?.runtimeSessionId`), "live-browser", "assistant must query the active recording");
+  assert.match(await evaluate(client, `document.querySelector("#assistantTurns").textContent`), /録音を続けながら回答できました/);
+  await evaluate(client, `window.__releaseLiveInsights?.()`);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.match(await evaluate(client, `document.querySelector("#assistantTurns").textContent`), /録音を続けながら回答できました/, "late insights must preserve the completed answer");
+  if (process.env.MEETING_MOBILE_SCREENSHOT) {
+    const shot = await client.send("Page.captureScreenshot", { format: "png" });
+    await writeFile(process.env.MEETING_MOBILE_SCREENSHOT, Buffer.from(shot.data, "base64"));
+  }
+  await client.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await evaluate(client, `document.querySelector('[data-meeting-tab="transcript"]').click()`);
+  await evaluate(client, `document.querySelector("#startBtn").click()`);
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.match(await evaluate(client, `document.querySelector("#log").textContent`), /ライブ録音の結果/);
+  assert.equal(await evaluate(client, `document.querySelector("#refineAudioBtn").disabled`), false);
+  await evaluate(client, `document.querySelector("#refineAudioBtn").click()`);
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.match(await evaluate(client, `document.querySelector("#log").textContent`), /音声から再認識した結果/);
+}
+
+async function verifyQwenLiveRevision(client) {
+  await client.send("Page.addScriptToEvaluateOnNewDocument", { source: String.raw`
+    (() => {
+      const originalFetch = window.fetch;
+      window.fetch = async (input, options) => {
+        if (String(input).includes("/api/health")) return new Response(JSON.stringify({
+          asrReady: true, model: "Qwen3-ASR-1.7B", asrBackend: "qwen3_vllm", capturePacketMs: 250,
+          wsPath: "/ws/transcribe", liveWsPath: "/ws/transcribe/live", meetingInsights: true,
+        }), { headers: { "Content-Type": "application/json" } });
+        return originalFetch(input, options);
+      };
+      const OldNode = window.AudioWorkletNode;
+      window.AudioWorkletNode = class extends OldNode {
+        constructor(context, name, options) { super(context, name, options); window.__qwenPacketSamples = options.processorOptions.packetSamples; }
+      };
+      const OldSocket = window.WebSocket;
+      window.WebSocket = class extends OldSocket {
+        send(raw) {
+          const data = JSON.parse(raw);
+          window.__qwenSocket = this;
+          if (data.type === "start") {
+            window.__liveStart = data;
+            this.emit({ type: "info", message: "ready", protocolVersion: 2, asrBackend: "qwen3_vllm", records: [], tracks: { mic: { seq: -1, samples: 0 } } });
+          } else if (data.type === "stop") this.emit({ type: "info", message: "finalized" });
+          else super.send(raw);
+        }
+      };
+      localStorage.setItem("whistx_live_transcription", "0");
+    })();
+  ` });
+  await client.send("Page.reload", { ignoreCache: true });
+  await waitForApp(client);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  await evaluate(client, `document.querySelector("#startBtn").click()`);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(await evaluate(client, `window.__liveStart?.language`), "ja", "Qwen must preserve the selected language");
+  assert.equal(await evaluate(client, `window.__qwenPacketSamples`), 4000);
+  await evaluate(client, `(() => {
+    const row = (i, text) => ({ type: "final", track: "mic", segmentId: "rt-"+i, seq: i, text,
+      startSample: i*80000, endSample: (i+1)*80000, tsStart: i*5000, tsEnd: (i+1)*5000, quality: "realtime" });
+    window.__rtRows = [row(0, "速報一"), row(1, "速報二")].map(item => ({ ...item, screenshotPath: "/api/transcripts/live-browser/screenshots/slide.webp" }));
+    for (const item of window.__rtRows) window.__qwenSocket.emit(item);
+    window.__qwenSocket.emit({ type: "partial", track: "mic", text: "次の発言", stableText: "" });
+  })()`);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(await evaluate(client, `document.querySelectorAll("#log .log-row").length`), 2);
+  assert.equal(await evaluate(client, `document.querySelectorAll("#log .transcript-paragraph").length`), 1, "adjacent chunks should read as one paragraph");
+  assert.equal(await evaluate(client, `getComputedStyle(document.querySelector("#log .log-row")).display`), "inline", "chunk boundaries must not create separate rows");
+  assert.match(await evaluate(client, `document.querySelector("#log .transcript-paragraph").textContent`), /速報一.*速報二/);
+  assert.equal(await evaluate(client, `document.querySelectorAll("#log img").length`), 0, "repeated frames must not flood the live transcript");
+  assert.equal(await evaluate(client, `document.querySelectorAll("#log .log-screenshot-link").length`), 2, "each utterance keeps its screen reference");
+  await evaluate(client, `document.querySelector("#transcriptDetailsToggle").click()`);
+  assert.equal(await evaluate(client, `getComputedStyle(document.querySelector("#log .log-media-group")).display`), "flex", "source tools remain available on demand");
+  await evaluate(client, `document.querySelector("#transcriptDetailsToggle").click()`);
+  if (process.env.MEETING_READING_SCREENSHOT) {
+    await evaluate(client, `document.querySelector("#workspacePanels").scrollIntoView({ block: "start" })`);
+    const shot = await client.send("Page.captureScreenshot", { format: "png" });
+    await writeFile(process.env.MEETING_READING_SCREENSHOT, Buffer.from(shot.data, "base64"));
+  }
+  await evaluate(client, `(() => {
+    const revision = { type: "transcript_revision", track: "mic", startSample: 0, endSample: 160000,
+      replacesSegmentIds: ["rt-0", "rt-1"], record: { type: "final", track: "mic", segmentId: "hq-0", seq: 0,
+        startSample: 0, endSample: 160000, tsStart: 0, tsEnd: 10000, text: "APIのreviewを実施します。", quality: "high_accuracy" } };
+    window.__qwenSocket.emit(revision);
+    window.__qwenSocket.emit(revision);
+    window.__qwenSocket.emit(window.__rtRows[0]);
+    window.__qwenSocket.emit({ type: "hq_status", state: "completed", tsStart: 0, tsEnd: 10000 });
+  })()`);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(await evaluate(client, `document.querySelectorAll("#log .log-row").length`), 1);
+  assert.match(await evaluate(client, `document.querySelector("#log").textContent`), /APIのreview/);
+  assert.match(await evaluate(client, `document.querySelector("#liveTranscript").textContent`), /次の発言/);
+  assert.equal(await evaluate(client, `document.querySelector("#log .log-row").dataset.quality`), "high_accuracy");
+  assert.match(await evaluate(client, `document.querySelector("#hqStatus").textContent`), /高精度認識を反映/);
+  await evaluate(client, `window.__qwenSocket.emit({ type: "info", message: "ready", asrBackend: "qwen3_vllm", records: [
+    { type: "final", track: "mic", segmentId: "hq-snapshot", seq: 0, text: "再接続で復元", tsStart: 0, tsEnd: 10000, startSample: 0, endSample: 160000, quality: "high_accuracy" }
+  ], tracks: { mic: { seq: -1, samples: 0 } } })`);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(await evaluate(client, `document.querySelectorAll("#log .log-row").length`), 1);
+  assert.match(await evaluate(client, `document.querySelector("#log").textContent`), /再接続で復元/);
+  await evaluate(client, `document.querySelector("#startBtn").click()`);
+  await new Promise(resolve => setTimeout(resolve, 150));
 }
 
 const chrome = await findChrome();
@@ -1837,23 +1939,43 @@ try {
       if (overlay) overlay.hidden = true;
     })()`,
   );
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyDesktopPanelLayout\n');
   await verifyDesktopPanelLayout(client);
   for (const width of [390, 640, 768, 1100]) {
     await verifyHistoryDrawerAtWidth(client, width);
   }
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyRecordingStartIsSingleFlight\n');
   await verifyRecordingStartIsSingleFlight(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyDestructiveActionsAreLocked\n');
   await verifyDestructiveActionsAreLocked(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyTranscriptMediaResponsive\n');
   await verifyTranscriptMediaResponsive(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyTranscriptAutoScroll\n');
   await verifyTranscriptAutoScroll(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyModalKeyboardManagement\n');
   await verifyModalKeyboardManagement(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyGracefulStopIsSerialized\n');
   await verifyGracefulStopIsSerialized(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyIdleDestructiveActions\n');
   await verifyIdleDestructiveActions(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifySummaryCanBeCancelled\n');
   await verifySummaryCanBeCancelled(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('startSecondRecordingAndRejectStaleMessages\n');
   await startSecondRecordingAndRejectStaleMessages(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifySocketLossStopsRecording\n');
   await verifySocketLossStopsRecording(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyFailedStartPreservesTranscript\n');
   await verifyFailedStartPreservesTranscript(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyEffectiveAudioSourceFallback\n');
   await verifyEffectiveAudioSourceFallback(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyInvalidSessionDoesNotBecomeGuest\n');
   await verifyInvalidSessionDoesNotBecomeGuest(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyMeetingInsights\n');
+  await verifyMeetingInsights(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyLiveRecordingAndRefinement\n');
+  await verifyLiveRecordingAndRefinement(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyQwenLiveRevision\n');
+  await verifyQwenLiveRevision(client);
   process.stdout.write("Browser UI and recording lifecycle checks passed.\n");
 } finally {
   client?.close();

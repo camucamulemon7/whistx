@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import zipfile
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -12,6 +13,7 @@ from ..core.config import settings
 from ..core.security import runtime_access_allowed as security_runtime_access_allowed
 from ..transcript_store import (
     iter_runtime_screenshot_dirs,
+    read_jsonl_records,
     resolve_debug_audio_path,
     resolve_screenshot_path,
     resolve_transcript_path,
@@ -47,6 +49,13 @@ def get_txt(
     return FileResponse(str(path), media_type="text/plain")
 
 
+def _qwen_jsonl_snapshot(path: Path) -> str | None:
+    from .meeting_source import read_json
+    if read_json(path.with_suffix(".meta.json")).get("asrBackend") != "qwen3_vllm":
+        return None
+    return "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in read_jsonl_records(path))
+
+
 def get_jsonl(
     session_id: str, *, user_id: int | None, guest_grant_id: str | None
 ) -> Response:
@@ -57,6 +66,9 @@ def get_jsonl(
     path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
     if not path or not path.exists():
         return HTMLResponse(status_code=404, content="not found")
+    snapshot = _qwen_jsonl_snapshot(path)
+    if snapshot is not None:
+        return Response(content=snapshot, media_type="application/x-ndjson")
     return FileResponse(str(path), media_type="application/x-ndjson")
 
 
@@ -101,7 +113,13 @@ def get_zip(
                 temp_path, "w", compression=zipfile.ZIP_DEFLATED
             ) as archive:
                 archive.write(txt_path, arcname=f"{session_id}.txt")
-                archive.write(jsonl_path, arcname=f"{session_id}.jsonl")
+                snapshot = _qwen_jsonl_snapshot(jsonl_path)
+                if snapshot is None:
+                    archive.write(jsonl_path, arcname=f"{session_id}.jsonl")
+                else:
+                    archive.writestr(f"{session_id}.jsonl", snapshot)
+                    journal = jsonl_path.with_suffix(".revisions.jsonl")
+                    archive.write(journal if journal.exists() else jsonl_path, arcname=f"{session_id}.revisions.jsonl")
 
                 seen_screenshots: set[str] = set()
                 for screenshots_dir in iter_runtime_screenshot_dirs(

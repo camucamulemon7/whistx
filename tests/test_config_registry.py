@@ -48,14 +48,17 @@ def config_environment_names() -> set[str]:
     return names
 
 
-def example_values() -> dict[str, str]:
+def example_values(filename: str = ".env.advanced.example", *, commented: bool = True) -> dict[str, str]:
     values: dict[str, str] = {}
-    for raw_line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines():
+    for raw_line in (ROOT / filename).read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
+        if commented:
+            line = line.removeprefix("# ")
         if not line or line.startswith("#") or "=" not in line:
             continue
         name, value = line.split("=", 1)
-        values[name] = value
+        if re.fullmatch(r"[A-Z][A-Z0-9_]+", name):
+            values[name] = value
     return values
 
 
@@ -78,6 +81,14 @@ class ConfigRegistryTests(unittest.TestCase):
             if not item.secret and values[item.name] != item.default
         }
         self.assertEqual(mismatches, {})
+
+    def test_quick_start_example_has_known_settings_and_no_shared_secret(self) -> None:
+        values = example_values('.env.example', commented=False)
+        reference = example_values()
+        self.assertFalse(set(values) - set(reference))
+        self.assertIn('ASR_BASE_URL', values)
+        self.assertIn('SUMMARY_MODEL', values)
+        self.assertEqual(values['APP_SESSION_SECRET'], '')
 
     def test_container_forwards_every_canonical_variable(self) -> None:
         source = (ROOT / "scripts" / "container_common.sh").read_text(encoding="utf-8")
