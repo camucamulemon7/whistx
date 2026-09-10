@@ -63,6 +63,17 @@ def example_values(filename: str = ".env.advanced.example", *, commented: bool =
 
 
 class ConfigRegistryTests(unittest.TestCase):
+    def test_asr_rejects_invalid_endpoint_before_recording_without_leaking_value(self) -> None:
+        for value in ['', 'misplaced-provider-secret-value', 'localhost:8004/v1', 'ftp://localhost/v1',
+                      'http://user:secret@localhost/v1', 'http://localhost:invalid/v1', 'http://local host/v1']:
+            with self.subTest(value=value), patch.dict(os.environ, {'ASR_BACKEND': 'qwen3_vllm', 'ASR_BASE_URL': value, 'OPENAI_BASE_URL': ''}):
+                with self.assertRaisesRegex(ValueError, 'ASR_BASE_URL') as error:
+                    load_asr_config()
+                self.assertNotIn('misplaced-provider-secret-value', str(error.exception))
+                self.assertNotIn('user:secret', str(error.exception))
+        with patch.dict(os.environ, {'ASR_BACKEND': 'qwen3_vllm', 'ASR_BASE_URL': 'http://localhost:8004/v1/'}):
+            self.assertEqual(load_asr_config().openai_base_url, 'http://localhost:8004/v1')
+
     def test_registry_covers_every_config_loader_variable_and_alias(self) -> None:
         registered = set(ENV_BY_NAME)
         for item in ENV_REGISTRY:
