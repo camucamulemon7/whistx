@@ -220,6 +220,15 @@ def save_history(
                 copied["audioPath"] = f"/api/history/{history_id}/audio/{asr_audio_filename}"
             elif "audioPath" in copied:
                 copied["audioPath"] = None
+            if isinstance(copied.get("realtimeSegments"), list):
+                originals = []
+                for original in copied["realtimeSegments"]:
+                    original = dict(original)
+                    for key, category, copier in [("rawAudioPath", "audio", copy_runtime_debug_audio), ("screenshotPath", "screenshots", copy_runtime_screenshot)]:
+                        filename = copier(runtime_session_id, original, audio_dir, key=key) if category == "audio" else copier(runtime_session_id, original, screenshots_dir)
+                        original[key] = f"/api/history/{history_id}/{category}/{filename}" if filename else None
+                    originals.append(original)
+                copied["realtimeSegments"] = originals
             copied_records.append(copied)
 
             if copied.get("type") != "final":
@@ -240,6 +249,15 @@ def save_history(
                 )
             )
 
+        insight_path = snapshot.jsonl_path.with_suffix(".meeting.json")
+        if insight_path.is_file():
+            shutil.copy2(insight_path, staged_artifacts.temp_dir / "transcript.meeting.json")
+        revision_path = snapshot.jsonl_path.with_suffix(".revisions.jsonl")
+        if revision_path.is_file():
+            shutil.copy2(revision_path, staged_artifacts.temp_dir / "transcript.revisions.jsonl")
+        original_path = snapshot.jsonl_path.with_suffix(".original.jsonl")
+        if original_path.is_file():
+            shutil.copy2(original_path, staged_artifacts.temp_dir / "transcript.original.jsonl")
         metadata_path = staged_artifacts.temp_dir / "metadata.json"
         metadata_path.write_text(
             json.dumps(

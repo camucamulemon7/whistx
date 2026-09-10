@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from .base import env_first_non_empty, to_bool_alias, to_float_alias, to_int_alias
 
 
 @dataclass(frozen=True)
 class AsrConfig:
+    asr_backend: str
+    asr_realtime_window_seconds: int
+    asr_high_accuracy_enabled: bool
+    asr_high_accuracy_window_seconds: int
+    asr_high_accuracy_priority: int
+    asr_high_accuracy_max_rt_lag_seconds: float
+    asr_high_accuracy_timeout_seconds: float
     openai_api_key: str
     openai_base_url: str | None
     asr_model: str
@@ -43,9 +51,33 @@ class AsrConfig:
 
 
 def load_asr_config() -> AsrConfig:
+    backend = (env_first_non_empty("ASR_BACKEND") or "whisper").lower()
+    if backend not in {"whisper", "qwen3_vllm"}:
+        raise ValueError("ASR_BACKEND must be whisper or qwen3_vllm")
+    base_url = env_first_non_empty("ASR_BASE_URL", "OPENAI_BASE_URL")
+    if base_url is not None or backend == "qwen3_vllm":
+        try:
+            parsed = urlsplit(base_url or "")
+            valid = parsed.scheme in {"http", "https"} and bool(parsed.hostname) and not any(
+                (parsed.username, parsed.password, parsed.query, parsed.fragment)
+            ) and not any(char.isspace() for char in base_url or "")
+            if parsed.port is not None and not 1 <= parsed.port <= 65535:
+                valid = False
+        except ValueError:
+            valid = False
+        if not valid:
+            # Never interpolate the invalid value: it may be a misplaced API key.
+            raise ValueError("ASR_BASE_URL must be an absolute http:// or https:// URL without credentials, query, or fragment; check that ASR_BASE_URL and ASR_API_KEY are not swapped")
     return AsrConfig(
+        asr_backend=backend,
+        asr_realtime_window_seconds=max(1, min(10, to_int_alias(5, "ASR_REALTIME_WINDOW_SECONDS"))),
+        asr_high_accuracy_enabled=to_bool_alias(True, "ASR_HIGH_ACCURACY_ENABLED"),
+        asr_high_accuracy_window_seconds=max(30, min(120, to_int_alias(60, "ASR_HIGH_ACCURACY_WINDOW_SECONDS"))),
+        asr_high_accuracy_priority=max(1, to_int_alias(10, "ASR_HIGH_ACCURACY_PRIORITY")),
+        asr_high_accuracy_max_rt_lag_seconds=max(0.25, to_float_alias(2.0, "ASR_HIGH_ACCURACY_MAX_RT_LAG_SECONDS")),
+        asr_high_accuracy_timeout_seconds=max(1.0, to_float_alias(180.0, "ASR_HIGH_ACCURACY_TIMEOUT_SECONDS")),
         openai_api_key=env_first_non_empty("ASR_API_KEY", "OPENAI_API_KEY") or "",
-        openai_base_url=env_first_non_empty("ASR_BASE_URL", "OPENAI_BASE_URL"),
+        openai_base_url=base_url.rstrip('/') if base_url else None,
         asr_model=env_first_non_empty("ASR_MODEL") or env_first_non_empty("WHISPER_MODEL") or "whisper-1",
         asr_api_timeout_seconds=max(1.0, to_float_alias(60.0, "ASR_API_TIMEOUT_SECONDS")),
         summary_api_timeout_seconds=max(1.0, to_float_alias(60.0, "SUMMARY_API_TIMEOUT_SECONDS")),

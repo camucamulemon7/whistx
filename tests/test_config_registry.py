@@ -48,18 +48,32 @@ def config_environment_names() -> set[str]:
     return names
 
 
-def example_values() -> dict[str, str]:
+def example_values(filename: str = ".env.advanced.example", *, commented: bool = True) -> dict[str, str]:
     values: dict[str, str] = {}
-    for raw_line in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines():
+    for raw_line in (ROOT / filename).read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
+        if commented:
+            line = line.removeprefix("# ")
         if not line or line.startswith("#") or "=" not in line:
             continue
         name, value = line.split("=", 1)
-        values[name] = value
+        if re.fullmatch(r"[A-Z][A-Z0-9_]+", name):
+            values[name] = value
     return values
 
 
 class ConfigRegistryTests(unittest.TestCase):
+    def test_asr_rejects_invalid_endpoint_before_recording_without_leaking_value(self) -> None:
+        for value in ['', 'misplaced-provider-secret-value', 'localhost:8004/v1', 'ftp://localhost/v1',
+                      'http://user:secret@localhost/v1', 'http://localhost:invalid/v1', 'http://local host/v1']:
+            with self.subTest(value=value), patch.dict(os.environ, {'ASR_BACKEND': 'qwen3_vllm', 'ASR_BASE_URL': value, 'OPENAI_BASE_URL': ''}):
+                with self.assertRaisesRegex(ValueError, 'ASR_BASE_URL') as error:
+                    load_asr_config()
+                self.assertNotIn('misplaced-provider-secret-value', str(error.exception))
+                self.assertNotIn('user:secret', str(error.exception))
+        with patch.dict(os.environ, {'ASR_BACKEND': 'qwen3_vllm', 'ASR_BASE_URL': 'http://localhost:8004/v1/'}):
+            self.assertEqual(load_asr_config().openai_base_url, 'http://localhost:8004/v1')
+
     def test_registry_covers_every_config_loader_variable_and_alias(self) -> None:
         registered = set(ENV_BY_NAME)
         for item in ENV_REGISTRY:
@@ -78,6 +92,14 @@ class ConfigRegistryTests(unittest.TestCase):
             if not item.secret and values[item.name] != item.default
         }
         self.assertEqual(mismatches, {})
+
+    def test_quick_start_example_has_known_settings_and_no_shared_secret(self) -> None:
+        values = example_values('.env.example', commented=False)
+        reference = example_values()
+        self.assertFalse(set(values) - set(reference))
+        self.assertIn('ASR_BASE_URL', values)
+        self.assertIn('SUMMARY_MODEL', values)
+        self.assertEqual(values['APP_SESSION_SECRET'], '')
 
     def test_container_forwards_every_canonical_variable(self) -> None:
         source = (ROOT / "scripts" / "container_common.sh").read_text(encoding="utf-8")
@@ -124,6 +146,15 @@ class ConfigRegistryTests(unittest.TestCase):
             self.assertIn('source "${SCRIPT_DIR}/scripts/container_common.sh"', source)
             self.assertIn("build_common_container_env", source)
             self.assertIn('"${COMMON_CONTAINER_ENV[@]}"', source)
+
+    def test_local_container_scripts_migrate_as_host_user_before_startup(self) -> None:
+        common = (ROOT / "scripts" / "container_common.sh").read_text(encoding="utf-8")
+        self.assertIn('CONTAINER_USER="${CONTAINER_USER:-$(id -u):$(id -g)}"', common)
+        for script_name in ("start.sh", "podman-run.sh"):
+            source = (ROOT / script_name).read_text(encoding="utf-8")
+            self.assertIn('alembic upgrade head', source)
+            self.assertIn('--user "${CONTAINER_USER}"', source)
+            self.assertLess(source.index('alembic upgrade head'), source.rindex('"${CONTAINER_IMAGE_NAME}"'))
 
     def test_aliases_have_an_explicit_removal_policy(self) -> None:
         for item in ENV_REGISTRY:

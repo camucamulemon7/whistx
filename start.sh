@@ -37,8 +37,17 @@ case "${CONTAINER_BUILD_POLICY}" in
     ;;
 esac
 
+echo "[start.sh] DB migrationを実行します" >&2
+docker run --rm \
+  --user "${CONTAINER_USER}" \
+  "${COMMON_CONTAINER_ENV[@]}" \
+  -v "${APP_DATA_DIR}:/app/data" \
+  "${CONTAINER_IMAGE_NAME}" \
+  alembic upgrade head
+
 docker run --rm \
   --name "${CONTAINER_NAME}" \
+  --user "${CONTAINER_USER}" \
   -p "${APP_PORT}:${APP_PORT}" \
   "${COMMON_CONTAINER_ENV[@]}" \
   -v "${APP_DATA_DIR}:/app/data" \

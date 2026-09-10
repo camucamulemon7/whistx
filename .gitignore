@@ -26,6 +26,7 @@ dist-ssr
 # Python virtual environments
 venv/
 .venv/
+.venv-meeting/
 backend/venv/
 frontend/venv/
 

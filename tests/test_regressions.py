@@ -1298,6 +1298,26 @@ class RegressionTests(unittest.TestCase):
         self.assertIn('whistx_session=', response.headers.get('set-cookie', ''))
         self.assertIn('Max-Age=0', response.headers.get('set-cookie', ''))
 
+    def test_auth_me_guest_grant_cookie_is_available_to_websocket(self) -> None:
+        app = FastAPI()
+        app.include_router(auth_routes.router)
+        app.dependency_overrides[auth_routes.get_db] = lambda: DummyDB()
+        payload = {
+            'authenticated': False,
+            'sessionInvalid': False,
+            'user': None,
+            'guestTranscriptionAllowed': True,
+        }
+
+        with patch.object(auth_routes, 'build_auth_me_payload', return_value=payload):
+            response = TestClient(app).get('/api/auth/me')
+
+        self.assertEqual(response.status_code, 200)
+        cookie = response.headers.get('set-cookie', '')
+        self.assertIn('whistx_guest_artifact=', cookie)
+        self.assertIn('Path=/', cookie)
+        self.assertNotIn('Path=/api/', cookie)
+
     def test_admin_users_route_forwards_search_query(self) -> None:
         app = FastAPI()
         app.include_router(admin_routes.router)

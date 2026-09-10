@@ -15,6 +15,7 @@ from ...core.security import (
 from ...db import db_session
 from ...repositories import quota_repository
 from ...services.auth_service import get_optional_user_from_request
+from ...transcription.live import live_transcribe
 
 router = APIRouter()
 
@@ -30,6 +31,7 @@ async def _close_safely(ws: WebSocket, code: int, reason: str) -> None:
         pass
 
 
+@router.websocket(settings.ws_path + "/live")
 @router.websocket(settings.ws_path)
 async def ws_transcribe(ws: WebSocket) -> None:
     if not origin_is_allowed(ws):
@@ -54,7 +56,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
         ws.state.authenticated_user_id = user.id
         ws.state.rate_limit_subject = f"user:{user.id}"
         try:
-            await runtime.ws_transcribe(ws)
+            await _run_transcription(ws)
         finally:
             await asyncio.to_thread(quota_repository.release_connection_lease, lease_id)
         return
@@ -85,8 +87,15 @@ async def ws_transcribe(ws: WebSocket) -> None:
     ws.state.rate_limit_subject = f"ip:{client_ip}"
     ws.state.guest_artifact_grant_digest = digest_guest_artifact_grant(guest_grant_id)
     try:
-        await asyncio.wait_for(runtime.ws_transcribe(ws), timeout=settings.guest_ws_max_duration_seconds)
+        await asyncio.wait_for(_run_transcription(ws), timeout=settings.guest_ws_max_duration_seconds)
     except TimeoutError:
         await _close_safely(ws, 4408, "guest_duration_limit")
     finally:
         await asyncio.to_thread(quota_repository.release_connection_lease, lease_id)
+
+
+async def _run_transcription(ws: WebSocket) -> None:
+    if ws.url.path == getattr(settings, "ws_path", "/ws/transcribe") + "/live":
+        await live_transcribe(ws)
+    else:
+        await runtime.ws_transcribe(ws)

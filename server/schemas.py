@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -31,3 +31,22 @@ class HistorySaveRequest(BaseModel):
     title: str | None = Field(default=None, max_length=255)
     summaryText: str | None = None
     proofreadText: str | None = None
+
+
+class MeetingSourceRequest(BaseModel):
+    runtimeSessionId: str = Field(default="", max_length=128)
+    historyId: str = Field(default="", max_length=128)
+
+    @model_validator(mode="after")
+    def one_source(self):
+        if bool(self.runtimeSessionId) == bool(self.historyId):
+            raise ValueError("one_meeting_source_required")
+        return self
+
+
+class MeetingRecapRequest(MeetingSourceRequest):
+    prompt: str = Field(default="", max_length=4000)
+
+
+class MeetingQuestionRequest(MeetingSourceRequest):
+    question: str = Field(min_length=1, max_length=2000)

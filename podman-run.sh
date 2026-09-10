@@ -50,6 +50,7 @@ fi
 run_args=(
   --rm
   --name "${CONTAINER_NAME}"
+  --user "${CONTAINER_USER}"
   -p "${APP_PORT}:${APP_PORT}"
 )
 
@@ -64,7 +65,25 @@ fi
 run_args+=(
   "${COMMON_CONTAINER_ENV[@]}"
   -v "${volume_spec}"
-  "${CONTAINER_IMAGE_NAME}"
 )
 
-podman run "${run_args[@]}"
+echo "[podman-run.sh] DB migrationを実行します" >&2
+migration_args=(
+  --rm
+  --user "${CONTAINER_USER}"
+)
+if [[ -n "${PODMAN_USERNS}" ]]; then
+  migration_args+=(--userns "${PODMAN_USERNS}")
+fi
+if [[ -n "${PODMAN_NETWORK}" ]]; then
+  migration_args+=(--network "${PODMAN_NETWORK}")
+fi
+migration_args+=(
+  "${COMMON_CONTAINER_ENV[@]}"
+  -v "${volume_spec}"
+  "${CONTAINER_IMAGE_NAME}"
+  alembic upgrade head
+)
+podman run "${migration_args[@]}"
+
+podman run "${run_args[@]}" "${CONTAINER_IMAGE_NAME}"
