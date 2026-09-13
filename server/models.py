@@ -138,3 +138,15 @@ class TranscriptSegment(Base):
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     history: Mapped["TranscriptHistory"] = relationship(back_populates="segments")
+
+
+class ArtifactDeletion(Base):
+    """Durable deletion request; deliberately independent of the removed history FK."""
+    __tablename__ = "artifact_deletions"
+
+    history_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    artifact_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(String(128), nullable=True)

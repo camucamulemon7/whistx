@@ -105,7 +105,6 @@ from .core.security import (
 from .core.logging import emit_container_log
 from .core.rate_limit import consume as consume_rate_limit
 
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -114,18 +113,15 @@ logger = logging.getLogger(__name__)
 
 MAX_DIARIZATION_SPEAKERS = 12
 
-
 class SummarizeRequest(BaseModel):
     text: str = Field(min_length=1)
     language: str | None = None
     prompt: str | None = None
 
-
 class ProofreadRequest(BaseModel):
     text: str = Field(min_length=1)
     language: str | None = None
     mode: str | None = None
-
 
 TRANSCRIBER_FACTORY: Callable[[], SessionTranscriber] | None = None
 AUDIO_PREPROCESSOR: AudioPreprocessor | None = None
@@ -297,6 +293,11 @@ def _run_cleanup_once(reason: str) -> None:
                     deleted_sessions,
                     oldest_expired_at.isoformat() if oldest_expired_at else None,
                 )
+        from .services.artifact_deletion import process_deletions
+        from .services.artifact_reconciliation import scan
+        with db_session() as db:
+            process_deletions(db, settings.history_dir)
+            scan(db, settings.history_dir)
     except Exception:
         logger.warning(
             "scheduled cleanup failed during %s", reason, exc_info=True
