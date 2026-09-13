@@ -833,7 +833,7 @@ async function verifyTranscriptMediaResponsive(client) {
           mediaTypes: [...document.querySelectorAll(".log-media-group")].map(
             (media) => [media.dataset.hasAudio, media.dataset.hasScreenshot].join("/")
           ),
-          textWidths: [...document.querySelectorAll(".log-row .text")].map(
+          textWidths: [...document.querySelectorAll(".log-row .log-body")].map(
             (text) => text.getBoundingClientRect().width
           )
         };
