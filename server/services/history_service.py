@@ -18,10 +18,10 @@ from ..models import TranscriptHistory, TranscriptSegment, User
 from ..repositories import history_repository
 from ..transcript_store import is_runtime_transcript_finalized, read_jsonl_records, resolve_transcript_path
 from . import artifact_storage as artifact_storage_module
+from . import artifact_deletion
 from .artifact_storage import (
     LocalArtifactStorage,
     StagedHistoryArtifacts,
-    StoredHistoryArtifacts,
     build_history_zip as build_history_zip_file,
 )
 
@@ -357,6 +357,7 @@ def delete_history_for_user(db: Session, *, user: User, history_id: str) -> bool
     if history is None:
         return False
 
+    artifact_deletion.enqueue(db, history)
     history_repository.delete_history(db, history)
     try:
         db.commit()
@@ -364,14 +365,7 @@ def delete_history_for_user(db: Session, *, user: User, history_id: str) -> bool
         db.rollback()
         raise
 
-    _storage().delete_history_artifacts(
-        StoredHistoryArtifacts(
-            artifact_key=history.artifact_dir or "",
-            txt_key=history.txt_path,
-            jsonl_key=history.jsonl_path,
-            zip_key=history.zip_path,
-        )
-    )
+    artifact_deletion.process_deletions(db, _storage().history_root)
     return True
 
 
@@ -644,19 +638,8 @@ def cleanup_expired_histories(db: Session) -> int:
     if not expired_histories:
         return 0
 
-    stored_artifacts = [
-        StoredHistoryArtifacts(
-            artifact_key=history.artifact_dir or "",
-            txt_key=history.txt_path,
-            jsonl_key=history.jsonl_path,
-            zip_key=history.zip_path,
-        )
-        for history in expired_histories
-    ]
     for history in expired_histories:
+        artifact_deletion.enqueue(db, history)
         history_repository.delete_history(db, history)
     db.flush()
-
-    for stored in stored_artifacts:
-        _storage().delete_history_artifacts(stored)
     return len(expired_histories)

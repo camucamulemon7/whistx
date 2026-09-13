@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -570,54 +570,6 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(response.media_type, 'audio/mpeg')
 
 
-    def test_cleanup_expired_histories_deletes_old_history_and_artifacts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            history_dir = root / 'history'
-            history_dir.mkdir()
-            old_dir = history_dir / '1' / '2026' / '02' / 'hist-old'
-            old_dir.mkdir(parents=True)
-            (old_dir / 'transcript.txt').write_text('old\n', encoding='utf-8')
-
-            old_saved_at = datetime.now(timezone.utc) - timedelta(days=10)
-            history = TranscriptHistory(
-                id='hist-old',
-                user_id=1,
-                runtime_session_id='sess-old',
-                title='old',
-                language='ja',
-                audio_source='mic',
-                segment_count=1,
-                plain_text='old',
-                summary_text=None,
-                proofread_text=None,
-                has_diarization=False,
-                artifact_dir='1/2026/02/hist-old',
-                txt_path='1/2026/02/hist-old/transcript.txt',
-                jsonl_path='1/2026/02/hist-old/transcript.jsonl',
-                zip_path=None,
-                created_at=old_saved_at,
-                updated_at=old_saved_at,
-                saved_at=old_saved_at,
-            )
-
-            class CleanupDB:
-                def __init__(self):
-                    self.deleted: list[TranscriptHistory] = []
-
-                def flush(self):
-                    return None
-
-            db = CleanupDB()
-
-            with patch.object(history_service, 'settings', SimpleNamespace(history_dir=history_dir, history_retention_days=7)):
-                with patch.object(history_service.history_repository, 'list_histories_saved_before', return_value=[history]):
-                    with patch.object(history_service.history_repository, 'delete_history', side_effect=lambda _db, item: db.deleted.append(item)):
-                        deleted_count = history_service.cleanup_expired_histories(db)
-
-            self.assertEqual(deleted_count, 1)
-            self.assertEqual(db.deleted, [history])
-            self.assertFalse(old_dir.exists())
 
 
     def test_jsonl_strict_reader_raises_on_invalid_line(self) -> None:

@@ -106,10 +106,6 @@ class LocalArtifactStorage:
             zip_key=staged.zip_key,
         )
 
-    def delete_history_artifacts(self, stored: StoredHistoryArtifacts) -> None:
-        for path in self._candidate_history_dirs(stored):
-            shutil.rmtree(path, ignore_errors=True)
-
     def open_download(self, history: TranscriptHistory, kind: str) -> tuple[Path, str, str, bool] | None:
         if kind == "txt":
             path = self._resolve_history_key(history.txt_path)
@@ -132,7 +128,9 @@ class LocalArtifactStorage:
         if artifact_dir is None or not artifact_dir.exists():
             return None
 
-        fd, temp_zip_name = tempfile.mkstemp(prefix=f"{history.id}.", suffix=".zip")
+        export_dir = self.history_root / "_exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        fd, temp_zip_name = tempfile.mkstemp(prefix=f"{history.id}.", suffix=".zip", dir=export_dir)
         temp_zip = Path(temp_zip_name)
         os.close(fd)
         build_history_zip(
@@ -284,18 +282,6 @@ class LocalArtifactStorage:
             if path:
                 return path.parent
         return None
-
-    def _candidate_history_dirs(self, stored: StoredHistoryArtifacts) -> list[Path]:
-        candidates: list[Path] = []
-        resolved = self._resolve_history_key(stored.artifact_key)
-        if resolved:
-            candidates.append(resolved)
-            parts = Path(stored.artifact_key).parts
-            if len(parts) >= 4:
-                legacy = self.history_root / parts[0] / parts[-1]
-                if legacy != resolved:
-                    candidates.append(legacy)
-        return candidates
 
 
 def build_history_zip(*, zip_path: Path, artifact_dir: Path, include_summary: bool, include_proofread: bool) -> None:
