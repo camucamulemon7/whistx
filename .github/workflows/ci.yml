@@ -38,6 +38,8 @@ jobs:
           node-version: "22"
       - name: Install locked development dependencies
         run: python -m pip install --require-hashes -r requirements-dev.lock
+      - name: Repository hygiene
+        run: python scripts/check_repository.py
       - name: Ruff
         run: ruff check .
       - name: Compile Python
