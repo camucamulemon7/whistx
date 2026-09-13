@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -49,10 +50,12 @@ class LangfuseObserver:
         host: str | None = None,
         environment: str | None = None,
         release: str | None = None,
-        enabled: bool = True,
+        enabled: bool = False,
+        capture_content: bool = False,
     ) -> None:
         self._client: Any = None
         self.enabled = False
+        self.capture_content = capture_content
 
         if not enabled or not public_key or not secret_key:
             return
@@ -80,61 +83,49 @@ class LangfuseObserver:
             logger.warning("langfuse disabled: init failed: %s", exc)
 
     @contextmanager
-    def span(
-        self,
-        *,
-        name: str,
-        input: Any = None,
-        output: Any = None,
-        metadata: Any = None,
-    ) -> Iterator[Any]:
+    def _observe(self, method: str, **values: Any) -> Iterator[Any]:
         if not self.enabled or self._client is None:
             yield _NoopObservation()
             return
-
+        arguments = {key: _safe_serialize(value, capture_content=self.capture_content)
+                     for key, value in values.items()}
+        arguments['name'] = values['name'] if re.fullmatch(r'[a-zA-Z0-9_.:-]{1,100}', values['name']) else 'observation'
+        if 'trace_context' in values:
+            arguments['trace_context'] = values['trace_context']
+        if 'as_type' in values:
+            arguments['as_type'] = values['as_type']
         try:
-            with self._client.start_as_current_span(
-                name=name,
-                input=_safe_serialize(input),
-                output=_safe_serialize(output),
-                metadata=_safe_serialize(metadata),
-            ) as span:
-                yield span
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("langfuse span skipped: %s", exc, exc_info=True)
-            yield _NoopObservation()
-
-    @contextmanager
-    def generation(
-        self,
-        *,
-        name: str,
-        model: str | None = None,
-        input: Any = None,
-        output: Any = None,
-        metadata: Any = None,
-        model_parameters: dict[str, Any] | None = None,
-        trace_context: dict[str, str] | None = None,
-    ) -> Iterator[Any]:
-        if not self.enabled or self._client is None:
+            context = getattr(self._client, method)(**arguments)
+            observation = context.__enter__()
+        except Exception:
+            logger.debug('langfuse observation could not start', exc_info=True)
             yield _NoopObservation()
             return
-
         try:
-            with self._client.start_as_current_observation(
-                name=name,
-                as_type="generation",
-                model=model,
-                input=_safe_serialize(input),
-                output=_safe_serialize(output),
-                metadata=_safe_serialize(metadata),
-                model_parameters=_safe_serialize(model_parameters),
-                trace_context=trace_context,
-            ) as generation:
-                yield generation
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("langfuse generation skipped: %s", exc, exc_info=True)
-            yield _NoopObservation()
+            yield _PrivateObservation(observation, self.capture_content)
+        except BaseException:
+            try:
+                # Provider exceptions may contain URLs or request text. Do not
+                # pass them to an SDK context manager that exports exceptions.
+                context.__exit__(None, None, None)
+            except Exception:
+                logger.debug('langfuse observation cleanup failed', exc_info=True)
+            raise
+        else:
+            try:
+                context.__exit__(None, None, None)
+            except Exception:
+                logger.debug('langfuse observation cleanup failed', exc_info=True)
+
+    def span(self, *, name: str, input: Any = None, output: Any = None, metadata: Any = None):
+        return self._observe('start_as_current_span', name=name, input=input, output=output, metadata=metadata)
+
+    def generation(self, *, name: str, model: str | None = None, input: Any = None,
+                   output: Any = None, metadata: Any = None, model_parameters: Any = None,
+                   trace_context: dict[str, str] | None = None):
+        return self._observe('start_as_current_observation', name=name, as_type='generation',
+                             model=model, input=input, output=output, metadata=metadata,
+                             model_parameters=model_parameters, trace_context=trace_context)
 
     def flush(self) -> None:
         if not self.enabled or self._client is None:
@@ -183,8 +174,8 @@ class LangfuseObserver:
         try:
             with self._client.start_as_current_span(
                 name=name,
-                input=_safe_serialize(input),
-                metadata=_safe_serialize(metadata),
+                input=_safe_serialize(input, capture_content=self.capture_content),
+                metadata=_safe_serialize(metadata, capture_content=self.capture_content),
             ):
                 trace_id = self._client.get_current_trace_id()
                 observation_id = self._client.get_current_observation_id()
@@ -208,6 +199,7 @@ def make_langfuse_observer(
     environment: str | None,
     release: str | None,
     enabled: bool,
+    capture_content: bool = False,
 ) -> LangfuseObserver | _NoopObserver:
     observer = LangfuseObserver(
         public_key=public_key,
@@ -216,30 +208,56 @@ def make_langfuse_observer(
         environment=environment,
         release=release,
         enabled=enabled,
+        capture_content=capture_content,
     )
     if observer.enabled:
         return observer
     return _NoopObserver()
 
 
-def _safe_serialize(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, (str, int, float, bool)):
-        if isinstance(value, str):
-            return _clip_text(value)
+class _PrivateObservation:
+    def __init__(self, observation: Any, capture_content: bool):
+        self._observation = observation
+        self._capture_content = capture_content
+
+    def update(self, **values: Any) -> None:
+        self._call('update', values)
+
+    def end(self, **values: Any) -> None:
+        self._call('end', values)
+
+    def _call(self, method: str, values: dict[str, Any]) -> None:
+        try:
+            getattr(self._observation, method)(**{
+                key: _safe_serialize(value, capture_content=self._capture_content)
+                for key, value in values.items()
+            })
+        except Exception:
+            logger.debug('langfuse observation update failed', exc_info=True)
+
+
+_SENSITIVE_KEY = re.compile(r'(password|secret|token|authorization|cookie|email|endpoint|base.?url|api.?key|host)', re.I)
+_SAFE_ENUMS = {'ja', 'en', 'auto', 'mic', 'display', 'both', 'strict', 'normal', 'api', 'estimated', 'generation'}
+
+
+def _safe_serialize(value: Any, *, capture_content: bool = False, _depth: int = 0) -> Any:
+    if _depth > 8:
+        return '[truncated]'
+    if value is None or isinstance(value, (int, float, bool)):
         return value
+    if isinstance(value, str):
+        if not capture_content:
+            return value if value in _SAFE_ENUMS else '[redacted]'
+        text = re.sub(r'https?://[^\s<>]+', '[url]', value)
+        text = re.sub(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', '[email]', text)
+        text = re.sub(r'(?i)\b(?:sk-|bearer\s+)[A-Za-z0-9_-]{8,}', '[credential]', text)
+        return text[:8000] + ('...(truncated)' if len(text) > 8000 else '')
     if isinstance(value, bytes):
-        return {"bytes": len(value)}
+        return {'bytes': len(value)}
     if isinstance(value, dict):
-        return {str(key): _safe_serialize(item) for key, item in value.items()}
+        return {str(key)[:64]: '[redacted]' if _SENSITIVE_KEY.search(str(key)) else
+                _safe_serialize(item, capture_content=capture_content, _depth=_depth + 1)
+                for key, item in list(value.items())[:64]}
     if isinstance(value, (list, tuple, set)):
-        return [_safe_serialize(item) for item in list(value)[:64]]
-    return _clip_text(str(value))
-
-
-def _clip_text(text: str, limit: int = 8000) -> str:
-    clean = str(text or "")
-    if len(clean) <= limit:
-        return clean
-    return clean[:limit] + "...(truncated)"
+        return [_safe_serialize(item, capture_content=capture_content, _depth=_depth + 1) for item in list(value)[:64]]
+    return '[redacted]'

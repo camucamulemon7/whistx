@@ -17,6 +17,8 @@ from ..api.ws.transcribe import router as transcribe_router
 from .config import settings
 from .logging import configure_application_logging, emit_container_log
 from .security import origin_is_allowed
+from .public_errors import correlation_id, public_error
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,20 @@ def create_app() -> FastAPI:
     configure_application_logging(settings.app_log_level)
     app = FastAPI(title="whistx", version="2.0.0", lifespan=_app_lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.app_allowed_hosts))
+
+    @app.middleware("http")
+    async def correlate_request(request: Request, call_next):
+        identifier = uuid4().hex
+        token = correlation_id.set(identifier)
+        try:
+            try:
+                response = await call_next(request)
+            except Exception as exc:
+                response = JSONResponse(public_error('internal_error', exc, logger), status_code=500)
+            response.headers['X-Correlation-ID'] = identifier
+            return response
+        finally:
+            correlation_id.reset(token)
 
     @app.middleware("http")
     async def validate_mutation_origin(request: Request, call_next):

@@ -31,6 +31,7 @@ from .core.blocking import blocking_work_pool
 from .db import db_session, get_db
 from .diarizer import PyannoteSpeakerDiarizer, SpeakerTurn
 from .langfuse_observer import make_langfuse_observer
+from .core.public_errors import public_error
 from .models import User
 from .openai_whisper import OpenAIWhisperTranscriber
 from .services.auth_service import (
@@ -179,7 +180,10 @@ async def on_startup() -> None:
         environment=settings.langfuse_environment,
         release=settings.langfuse_release,
         enabled=settings.langfuse_enabled,
+        capture_content=settings.langfuse_capture_content,
     )
+    if settings.langfuse_enabled and settings.langfuse_capture_content:
+        logger.warning("Langfuse content capture is enabled: transcription, prompts, glossary, and model output may be sent to the configured telemetry provider; see docs/privacy.md")
 
     TRANSCRIBER_FACTORY = _build_transcriber_factory()
     AUDIO_PREPROCESSOR = AudioPreprocessor(
@@ -513,7 +517,7 @@ async def summarize(payload: SummarizeRequest) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         logger.exception("Summary failed")
         return JSONResponse(
-            status_code=502, content={"error": "summary_failed", "detail": str(exc)}
+            status_code=502, content=public_error("summary_failed", exc, logger)
         )
 
     return JSONResponse(
@@ -577,7 +581,7 @@ async def proofread(payload: ProofreadRequest) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         logger.exception("Proofread failed")
         return JSONResponse(
-            status_code=502, content={"error": "proofread_failed", "detail": str(exc)}
+            status_code=502, content=public_error("proofread_failed", exc, logger)
         )
 
     corrected_text = apply_shared_glossary_replacements(result.text, glossary_text)
@@ -650,7 +654,7 @@ async def proofread_stream(payload: ProofreadRequest) -> Response:
                 yield _format_sse({"type": "final_text", "text": corrected_text})
         except Exception as exc:  # noqa: BLE001
             logger.exception("Proofread stream failed")
-            yield _format_sse({"type": "error", "detail": str(exc)})
+            yield _format_sse({"type": "error", **public_error("proofread_failed", exc, logger)})
 
     return StreamingResponse(
         event_stream(),
@@ -749,7 +753,7 @@ async def ws_transcribe(ws: WebSocket) -> None:
                         {
                             "type": "error",
                             "message": "session_create_failed",
-                            "detail": str(exc),
+                            **public_error("transcription_failed", exc, logger),
                         },
                     )
                     continue
@@ -1161,7 +1165,7 @@ async def _run_diarization_for_session(ws: WebSocket, session: LiveSession) -> N
                 "type": "error",
                 "message": "diarization_failed",
                 "sessionId": session.session_id,
-                "detail": str(exc),
+                **public_error("diarization_failed", exc, logger),
             },
         )
         patch_map = {}

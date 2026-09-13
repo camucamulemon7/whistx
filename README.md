@@ -471,11 +471,14 @@ type|title|message|dismissible
 ### Observability
 
 - `LANGFUSE_ENABLED`
+- `LANGFUSE_CAPTURE_CONTENT` (default `0`; separate opt-in for transcript/prompt content)
 - `LANGFUSE_PUBLIC_KEY`
 - `LANGFUSE_SECRET_KEY`
 - `LANGFUSE_HOST`
 - `LANGFUSE_ENVIRONMENT`
 - `LANGFUSE_RELEASE`
+
+Langfuse is disabled by default. Enabling it alone sends redacted metadata; content capture requires the separate opt-in above. See [recording, retention, and telemetry policy](docs/privacy.md) for the data scope and operator responsibilities. Provider failures return stable error codes and correlation IDs rather than raw exceptions.
 
 ### Keycloak
 
