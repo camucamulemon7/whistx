@@ -154,7 +154,7 @@ async function evaluate(client, expression) {
     returnByValue: true,
   });
   if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.text || "Browser evaluation failed");
+    throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text || "Browser evaluation failed");
   }
   return result.result.value;
 }
@@ -181,7 +181,7 @@ async function waitForApp(client) {
       `Boolean(
         document.querySelector("#historyDrawerOpen") &&
         document.querySelector("#historyRail") &&
-        document.documentElement.dataset.whistxReady === "true"
+        document.documentElement?.dataset.whistxReady === "true"
       )`,
     );
     if (ready) return;
@@ -194,7 +194,7 @@ async function waitForApp(client) {
       readyState: document.readyState,
       scripts: [...document.scripts].map((script) => script.src || "inline"),
       resources: performance.getEntriesByType("resource").map((entry) => entry.name),
-      appReady: document.documentElement.dataset.whistxReady
+      appReady: document.documentElement?.dataset.whistxReady
     })`,
   );
   const exceptions = client.events
@@ -585,7 +585,7 @@ async function verifyRecordingStartIsSingleFlight(client) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const ready = await evaluate(
       client,
-      `document.documentElement.dataset.whistxReady === "true" && Boolean(window.__recordingTest?.instanceId)`,
+      `document.documentElement?.dataset.whistxReady === "true" && Boolean(window.__recordingTest?.instanceId)`,
     );
     if (ready) break;
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -1513,7 +1513,7 @@ async function verifyEffectiveAudioSourceFallback(client) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const ready = await evaluate(
       client,
-      `document.documentElement.dataset.whistxReady === "true" &&
+      `document.documentElement?.dataset.whistxReady === "true" &&
        window.__recordingTest?.instanceId &&
        window.__recordingTest.instanceId !== ${JSON.stringify(previousInstanceId)}`,
     );
@@ -1618,7 +1618,7 @@ async function verifyInvalidSessionDoesNotBecomeGuest(client) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const ready = await evaluate(
       client,
-      `document.documentElement.dataset.whistxReady === "true" &&
+      `document.documentElement?.dataset.whistxReady === "true" &&
        window.__recordingTest?.instanceId &&
        window.__recordingTest.instanceId !== ${JSON.stringify(previousInstanceId)}`,
     );
