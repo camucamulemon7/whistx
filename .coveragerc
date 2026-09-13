@@ -1,0 +1,7 @@
+[run]
+source = server
+[report]
+show_missing = True
+fail_under = 58
+[xml]
+output = artifacts/coverage.xml

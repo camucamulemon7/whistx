@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -1977,6 +1977,21 @@ try {
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyQwenLiveRevision\n');
   await verifyQwenLiveRevision(client);
   process.stdout.write("Browser UI and recording lifecycle checks passed.\n");
+} catch (error) {
+  const outputDir = path.resolve(process.env.BROWSER_ARTIFACT_DIR || "artifacts/browser");
+  await mkdir(outputDir, { recursive: true });
+  await writeFile(path.join(outputDir, "failure.txt"), String(error.stack || error));
+  if (client) {
+    try {
+      const shot = await client.send("Page.captureScreenshot", { format: "png" });
+      await writeFile(path.join(outputDir, "failure.png"), Buffer.from(shot.data, "base64"));
+      const html = await evaluate(client, "document.documentElement.outerHTML");
+      await writeFile(path.join(outputDir, "failure.html"), html);
+    } catch (captureError) {
+      await writeFile(path.join(outputDir, "capture-error.txt"), String(captureError));
+    }
+  }
+  throw error;
 } finally {
   client?.close();
   if (chromeProcess.exitCode === null) {

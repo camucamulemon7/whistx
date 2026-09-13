@@ -45,3 +45,6 @@ hf-home/
 artifacts/
 
 .claude
+
+.coverage
+.mypy_cache/
