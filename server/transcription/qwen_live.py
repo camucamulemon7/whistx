@@ -12,6 +12,7 @@ from ..core.blocking import blocking_work_pool
 from ..core.config import settings
 from ..core.rate_limit import consume
 from ..qwen_asr import QwenRealtime, batch_request, clean_qwen_text, response_text, language_coverage_lost, script_groups
+from ..core.public_errors import public_error
 from ..services.meeting_source import MeetingError, write_json_atomic
 from ..services.meeting_refinement import _atomic_text
 from ..transcript_store import _render_txt_line, read_jsonl_records
@@ -204,6 +205,7 @@ class QwenLiveMeeting(LiveMeeting):
                 await self._recover_commits()
                 logger.warning('Qwen RT failed: session=%s error=%s', self.session_id, type(exc).__name__)
                 await self.send(dict(type='error', message='transcription_failed', buffered=True,
+                    **public_error('transcription_failed', exc, logger),
                     detail='音声は保存されています。vLLMの音声対応・Realtime設定と接続を確認してください。'))
                 if self.stopping:
                     self.rt_failed = True
@@ -363,6 +365,7 @@ class QwenLiveMeeting(LiveMeeting):
         except Exception as exc:
             logger.warning('Qwen finalization failed: session=%s error=%s', self.session_id, type(exc).__name__)
             await self.send(dict(type='error', message='finalize_failed', buffered=True,
+                **public_error('finalize_failed', exc, logger),
                 detail='認識が未完了です。音声は保存されています。接続を確認して停止処理を再試行してください。'))
         finally:
             for task in [*rt, hq]:

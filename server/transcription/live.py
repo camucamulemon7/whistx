@@ -4,6 +4,7 @@ Audio ACK means fsynced PCM + checkpoint, not completed recognition. Decoder
 state is reconstructible from this journal after a socket or worker restart.
 """
 from __future__ import annotations
+from ..core.public_errors import public_error
 
 import asyncio
 import base64
@@ -343,7 +344,7 @@ class LiveMeeting:
                 await self.send({"type": "speaker_patch", "segments": patches})
         except Exception as exc:
             logger.warning("live diarization failed: session=%s error=%s", self.session_id, type(exc).__name__)
-            await self.send({"type": "error", "message": "diarization_failed", "detail": "話者分離に失敗しました。音声と文字起こしは保存されています。"})
+            await self.send({"type": "error", "message": "diarization_failed", **public_error("diarization_failed", exc, logger)})
         await self.send({"type": "info", "message": "diarization_done"})
 
     async def work(self):
@@ -374,6 +375,7 @@ class LiveMeeting:
                 self.failures += 1
                 logger.warning("live ASR failed: session=%s error=%s", self.session_id, type(exc).__name__)
                 await self.send({"type": "error", "message": "finalize_failed" if self.stopping else "transcription_failed",
+                                 **public_error("finalize_failed" if self.stopping else "transcription_failed", exc, logger),
                                  "buffered": True, "detail": "音声は保存されています。接続を確認して再試行できます。"})
                 if self.stopping or self.disconnected:
                     return

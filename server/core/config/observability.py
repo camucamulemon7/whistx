@@ -8,6 +8,7 @@ from .base import env_first_non_empty, to_bool
 @dataclass(frozen=True)
 class ObservabilityConfig:
     langfuse_enabled: bool
+    langfuse_capture_content: bool
     langfuse_public_key: str
     langfuse_secret_key: str
     langfuse_host: str | None
@@ -17,7 +18,8 @@ class ObservabilityConfig:
 
 def load_observability_config() -> ObservabilityConfig:
     return ObservabilityConfig(
-        langfuse_enabled=to_bool("LANGFUSE_ENABLED", True),
+        langfuse_enabled=to_bool("LANGFUSE_ENABLED", False),
+        langfuse_capture_content=to_bool("LANGFUSE_CAPTURE_CONTENT", False),
         langfuse_public_key=env_first_non_empty("LANGFUSE_PUBLIC_KEY") or "",
         langfuse_secret_key=env_first_non_empty("LANGFUSE_SECRET_KEY") or "",
         langfuse_host=env_first_non_empty("LANGFUSE_HOST"),

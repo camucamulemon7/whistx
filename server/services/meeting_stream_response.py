@@ -8,6 +8,7 @@ import logging
 import threading
 
 from ..core.blocking import blocking_work_pool
+from ..core.public_errors import public_error
 from .meeting_intelligence import answer_events
 from .meeting_source import MeetingError
 
@@ -41,16 +42,15 @@ async def stream_events(factory, *, pool="llm"):
                     break
                 emit(event)
         except Exception as exc:
-            logger.warning("meeting answer failed: %s", type(exc).__name__)
-            emit({"type": "error", "error": exc.code if isinstance(exc, MeetingError) else "meeting_model_unavailable"})
+            emit({"type": "error", **public_error(exc.code if isinstance(exc, MeetingError) else "meeting_model_unavailable", exc, logger)})
         finally:
             emit(None)
 
     async def run():
         try:
             await blocking_work_pool.run(pool, produce)
-        except Exception:
-            await queue.put({"type": "error", "error": "meeting_model_busy"})
+        except Exception as exc:
+            await queue.put({"type": "error", **public_error("meeting_model_busy", exc, logger)})
             await queue.put(None)
 
     task = asyncio.create_task(run())

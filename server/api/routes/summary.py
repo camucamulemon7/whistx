@@ -13,6 +13,7 @@ from ...core.rate_limit import consume
 from ...deps import get_current_user
 from ...models import User
 from ...core.blocking import blocking_work_pool
+from ...core.public_errors import public_error
 from ...schemas import MeetingSourceRequest, MeetingRecapRequest, MeetingQuestionRequest
 from ...services.meeting_source import MeetingError, load_meeting
 from ...services.meeting_intelligence import generate_recap, read_insights, recap_markdown
@@ -53,8 +54,7 @@ async def meeting_recap(payload: MeetingRecapRequest, user: User = Depends(get_c
     except MeetingError as exc:
         return JSONResponse(status_code=exc.status_code, content={"error": exc.code})
     except Exception as exc:
-        logger.warning("meeting recap failed: %s", type(exc).__name__)
-        return JSONResponse(status_code=502, content={"error": "meeting_model_unavailable"})
+        return JSONResponse(status_code=502, content=public_error("meeting_model_unavailable", exc, logger))
 
 
 @router.post("/api/meeting/ask")

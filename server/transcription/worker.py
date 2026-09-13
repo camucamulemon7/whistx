@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..core.public_errors import public_error
+
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -199,7 +201,7 @@ async def run_session_worker(ws: Any, session: LiveSession, deps: WorkerDependen
                         "seq": item.seq,
                         "buffered": True,
                         "bufferedCount": len(session.failed_prepared_chunks),
-                        "detail": str(exc),
+                        **public_error("transcription_failed", exc, deps.logger),
                     },
                 )
                 continue
