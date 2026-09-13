@@ -42,6 +42,6 @@ data/
 hf-home/
 .env
 
-docs/
+artifacts/
 
 .claude
