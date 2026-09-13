@@ -21,14 +21,14 @@ def as_str(value: Any) -> str:
 def as_int(value: Any, default: int) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
 def as_float(value: Any, default: float) -> float:
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -78,7 +78,7 @@ def validate_telemetry_message(payload: dict[str, Any], *, max_chars: int) -> st
         return "telemetry_event_too_large"
     try:
         serialized = json.dumps(payload.get("detail"), ensure_ascii=False, separators=(",", ":"))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return "invalid_telemetry"
     if len(serialized) > max_chars:
         return "telemetry_too_large"

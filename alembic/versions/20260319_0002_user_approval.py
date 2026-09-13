@@ -36,6 +36,7 @@ def upgrade():
 
 
 def downgrade():
-    op.drop_constraint("fk_users_approved_by_user_id", "users", type_="foreignkey")
+    if op.get_bind().dialect.name != "sqlite":
+        op.drop_constraint("fk_users_approved_by_user_id", "users", type_="foreignkey")
     op.drop_column("users", "approved_by_user_id")
     op.drop_column("users", "approved_at")

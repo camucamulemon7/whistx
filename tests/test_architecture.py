@@ -9,6 +9,11 @@ from pathlib import Path
 os.environ.setdefault("APP_SESSION_SECRET", "architecture-test-session-secret-123456789")
 os.environ.setdefault("ASR_API_KEY", "test-key")
 
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+from fastapi.routing import iter_route_contexts
+from starlette.routing import Mount, WebSocketRoute
+
 from server.app import app
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,11 +60,25 @@ def _imports_runtime(tree: ast.AST) -> bool:
 
 
 class ArchitectureTests(unittest.TestCase):
+    def test_included_websocket_routes_dispatch_origin_rejection(self) -> None:
+        from server.core.config import settings
+        client = TestClient(app)
+        for path in [settings.ws_path, settings.ws_path + "/live"]:
+            with self.assertRaises(WebSocketDisconnect) as raised:
+                with client.websocket_connect(path, headers={"Origin": "https://untrusted.example"}):
+                    self.fail("Untrusted origin was accepted")
+            self.assertEqual(raised.exception.code, 4403)
+
     def test_app_routes_are_unique(self) -> None:
         route_keys: list[tuple[str, str]] = []
-        for route in app.routes:
-            for method in getattr(route, "methods", None) or {"WEBSOCKET"}:
-                route_keys.append((method, route.path))
+        for route in iter_route_contexts(app.routes):
+            if isinstance(route.original_route, Mount):
+                continue
+            if isinstance(route.original_route, WebSocketRoute):
+                route_keys.append(("WEBSOCKET", route.original_route.path))
+            else:
+                for method in route.methods or set():
+                    route_keys.append((method, route.path))
         duplicates = [key for key, count in Counter(route_keys).items() if count > 1]
         self.assertEqual(duplicates, [])
 
