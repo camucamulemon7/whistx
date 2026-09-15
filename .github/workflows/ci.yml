@@ -198,6 +198,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: Install Japanese UI fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk
       - name: UI and recording lifecycle (no retries)
         run: npm run test:browser
         env:

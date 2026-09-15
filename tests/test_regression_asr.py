@@ -31,6 +31,27 @@ from server.transcription import text_processing
 
 
 class RegressionTests(unittest.TestCase):
+    def test_auto_language_is_omitted_and_unsupported_verbose_format_falls_back_once(self):
+        calls = []
+        def create(**kwargs):
+            calls.append({**kwargs, 'audio': kwargs['file'].read()})
+            if kwargs['response_format'] == 'verbose_json':
+                raise BadRequestError('Currently do not support verbose_json',
+                    response=httpx.Response(400, request=httpx.Request('POST', 'http://test/v1/audio/transcriptions')),
+                    body={'error': 'unsupported format'})
+            return SimpleNamespace(text='Recognized speech', segments=[])
+        transcriber = openai_whisper.OpenAIWhisperTranscriber(api_key='test', base_url='http://test/v1', model='qwen')
+        transcriber.client.close()
+        transcriber.client = SimpleNamespace(audio=SimpleNamespace(transcriptions=SimpleNamespace(create=create)))
+        transcriber.multi_pass_enabled = False
+        transcriber.retry_max_attempts = 1
+        for language in ['auto', 'en']:
+            result = transcriber.transcribe_chunk(b'fixture', mime_type='audio/wav', language=language, prompt=None, temperature=0)
+            self.assertEqual(result.text, 'Recognized speech')
+        self.assertEqual([c['response_format'] for c in calls], ['verbose_json', 'json', 'json'])
+        self.assertEqual([c['language'] for c in calls], [None, None, 'en'])
+        self.assertEqual([c['audio'] for c in calls], [b'fixture'] * 3)
+
     def setUp(self) -> None:
         rate_limit.clear()
 
