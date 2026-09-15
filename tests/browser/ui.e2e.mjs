@@ -328,6 +328,27 @@ async function verifyDesktopPanelLayout(client) {
     assert.equal(layout.resizer, "none");
     assert.equal(layout.historyAligned, true);
     assert.equal(layout.overflow, false);
+    const collapsed = await evaluate(client, `(() => {
+      const transcript = document.querySelector("#meetingTranscriptPanel");
+      const previousWidth = transcript.getBoundingClientRect().width;
+      document.querySelector("#assistantQuestion").value = "入力中の質問";
+      document.querySelector("#assistantVisibilityToggle").click();
+      return {
+        wider: transcript.getBoundingClientRect().width > previousWidth + 300,
+        hidden: document.querySelector("#meetingAssistantPanel").getClientRects().length === 0,
+        expanded: document.querySelector("#assistantVisibilityToggle").getAttribute("aria-expanded")
+      };
+    })()`);
+    assert.deepEqual(collapsed, { wider: true, hidden: true, expanded: "false" });
+    await evaluate(client, `document.querySelector("#assistantVisibilityToggle").click()`);
+    assert.equal(await evaluate(client, `document.querySelector("#assistantQuestion").value`), "入力中の質問");
+    assert.equal(await evaluate(client, `document.querySelector("#meetingAssistantPanel").getClientRects().length > 0`), true);
+    await evaluate(client, `document.querySelector("#assistantQuestion").value = ""`);
+    if (process.env.DESKTOP_SCREENSHOT && width === 1440) {
+      const shot = await client.send("Page.captureScreenshot", { format: "png" });
+      await writeFile(process.env.DESKTOP_SCREENSHOT, Buffer.from(shot.data, "base64"));
+    }
+
     for (const [tab, panel] of [["summary", "meetingSummaryPanel"], ["proofread", "meetingProofreadPanel"], ["materials", "meetingMaterialsPanel"]]) {
       const state = await evaluate(client, `(() => {
         const tab = document.querySelector('[data-meeting-tab="${tab}"]');
