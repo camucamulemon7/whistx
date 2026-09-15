@@ -324,6 +324,7 @@
               <p id="recordTelemetry" class="setting-hint setting-hint-telemetry" aria-live="polite" hidden></p>
             </section>
 
+            <div class="meeting-navigation">
             <nav class="meeting-tabs" role="tablist" aria-label="会議の表示">
               <button id="meetingTranscriptTab" type="button" role="tab" data-meeting-tab="transcript" aria-controls="meetingTranscriptPanel" aria-selected="true">文字起こし</button>
               <button id="meetingSummaryTab" type="button" role="tab" data-meeting-tab="summary" aria-controls="meetingSummaryPanel" aria-selected="false" tabindex="-1">会議の要約</button>
@@ -331,6 +332,8 @@
               <button id="meetingProofreadTab" type="button" role="tab" data-meeting-tab="proofread" aria-controls="meetingProofreadPanel" aria-selected="false" tabindex="-1">校正</button>
               <button id="meetingAssistantTab" type="button" role="tab" data-meeting-tab="assistant" aria-controls="meetingAssistantPanel" aria-selected="false" tabindex="-1">アシスタント</button>
             </nav>
+            <button id="assistantVisibilityToggle" class="btn-secondary assistant-visibility-toggle" type="button" aria-controls="meetingAssistantPanel" aria-expanded="true">アシスタントを隠す</button>
+            </div>
             <section
               id="workspacePanels"
               class="workspace-panels reveal delay-2"
