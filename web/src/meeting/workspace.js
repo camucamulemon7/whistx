@@ -36,6 +36,13 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   let view = "transcript";
   let completedTurns = [];
 
+  const assistantToggle = document.querySelector("#assistantVisibilityToggle");
+  assistantToggle.addEventListener("click", () => {
+    const collapsed = panels.classList.toggle("is-assistant-collapsed");
+    assistantToggle.setAttribute("aria-expanded", String(!collapsed));
+    assistantToggle.textContent = collapsed ? "アシスタントを表示" : "アシスタントを隠す";
+  });
+
   function setView(next) {
     view = next;
     panels.dataset.meetingView = next;

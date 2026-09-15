@@ -89,6 +89,14 @@ body { background:var(--surface-canvas); }
 .meeting-layout[data-meeting-view="assistant"] > .transcript-panel { display:flex !important; flex-direction:column; }
 .meeting-layout > .assistant-panel { display:flex; flex-direction:column; grid-column:2; grid-row:1; border-left:1px solid var(--meeting-line); background:var(--surface-muted); overflow:hidden; }
 #meetingAssistantTab { display:none; }
+.meeting-navigation { display:flex; align-items:center; flex:none; min-width:0; border-bottom:1px solid var(--meeting-line); }
+.meeting-navigation .meeting-tabs { flex:1; min-width:0; border-bottom:0; }
+.assistant-visibility-toggle { flex:none; margin:0 16px 0 8px; padding:6px 10px; font-size:12px; }
+@media (min-width:1051px) {
+  .meeting-layout.is-assistant-collapsed { grid-template-columns:minmax(0,1fr) !important; }
+  .meeting-layout.is-assistant-collapsed > .assistant-panel { display:none; }
+}
+@media (max-width:1050px) { .assistant-visibility-toggle { display:none; } }
 .meeting-layout .panel-header { padding:13px 22px; min-height:54px; flex:none; gap:8px; flex-wrap:wrap; border-bottom:1px solid var(--meeting-line); background:none; }
 .meeting-layout .panel-title { font-size:12px; font-weight:650; color:var(--meeting-ink); }
 .meeting-layout .panel-actions { gap:5px; flex-wrap:wrap; }
