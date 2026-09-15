@@ -6,7 +6,7 @@ import time
 from contextlib import contextmanager
 from typing import Any
 
-from openai import APIConnectionError, APIStatusError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
+from openai import BadRequestError, APIConnectionError, APIStatusError, APITimeoutError, InternalServerError, OpenAI, RateLimitError
 
 from .asr import ASRChunkResult
 from .core.config import settings
@@ -28,6 +28,7 @@ class OpenAIWhisperTranscriber:
 
         self.client = OpenAI(**kwargs)
         self.model = model
+        self.response_format = "verbose_json"
         self.observer = observer
         self.retry_max_attempts = max(1, int(getattr(settings, "asr_retry_max_attempts", 1)))
         self.retry_base_delay_ms = max(0, int(getattr(settings, "asr_retry_base_delay_ms", 0)))
@@ -43,6 +44,7 @@ class OpenAIWhisperTranscriber:
         temperature: float,
         trace_context: dict[str, str] | None = None,
     ) -> ASRChunkResult:
+        language = None if not language or language.strip().lower() == "auto" else language.strip().lower()
         suffix = _ext_from_mime(mime_type)
         response: Any | None = None
         attempt = 0
@@ -97,9 +99,15 @@ class OpenAIWhisperTranscriber:
                             language=language or None,
                             prompt=prompt or None,
                             temperature=request_temperature,
-                            response_format="verbose_json",
+                            response_format=self.response_format,
                         ), local_attempt
                     except Exception as exc:  # noqa: BLE001
+                        message = str(exc).lower()
+                        if (isinstance(exc, BadRequestError) and self.response_format == "verbose_json"
+                                and "verbose_json" in message
+                                and any(marker in message for marker in ("not support", "unsupported", "not supported"))):
+                            self.response_format = "json"
+                            continue
                         if not _should_retry_openai_error(exc) or local_attempt >= self.retry_max_attempts:
                             raise
 

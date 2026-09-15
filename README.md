@@ -105,6 +105,8 @@ Live capture keeps at most 16 MiB of unacknowledged PCM in browser memory, uses 
 
 Screenshots are actual captured frames, not generated images. The assistant currently grounds answers in transcript text; it does not OCR or interpret image contents. Long meetings use bounded lexical retrieval, so answers are not guaranteed to cover every relevant statement. Citation validation verifies IDs and source ranges, not semantic truth. Inspect the linked utterance/audio for consequential decisions.
 
+For a tested LiteLLM configuration that switches between Qwen3-ASR and Whisper using the same audio API, see [ASR proxy validation](docs/asr-proxy-validation.md).
+
 ### Measure the configured ASR
 
 Use an uncompressed 16 kHz mono, signed 16-bit PCM WAV:
