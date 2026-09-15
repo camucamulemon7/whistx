@@ -70,6 +70,7 @@ body { background:var(--surface-canvas); }
 .settings-panel .select-wrapper select { min-height:32px; padding:5px 30px 5px 9px; font-size:12px; border:1px solid var(--meeting-line); border-radius:4px; background:var(--meeting-paper); }
 .settings-panel .setting-group:has(.toggle-switch) { flex:0 1 125px; }
 .settings-panel .settings-main { display:flex; flex-direction:row; align-items:center; }
+.record-settings-toggle { display:none; }
 .settings-panel .settings-row { flex:1; }
 .settings-panel .settings-basic-header { display:block; order:2; margin:0; padding:0; }
 .settings-panel .settings-inline-detail-btn { padding:6px 8px; min-height:30px; font-size:10px; border-radius:4px; }
@@ -92,7 +93,7 @@ body { background:var(--surface-canvas); }
 .meeting-layout .panel-header { padding:13px 22px; min-height:54px; flex:none; gap:8px; flex-wrap:wrap; border-bottom:1px solid var(--meeting-line); background:none; }
 .meeting-layout .panel-title { font-size:12px; font-weight:650; color:var(--meeting-ink); }
 .meeting-layout .panel-actions { gap:5px; flex-wrap:wrap; }
-.meeting-layout .btn-secondary, .meeting-layout .btn-action { min-height:30px; border-radius:4px; font-size:11px; padding:5px 9px; }
+.meeting-layout .btn-secondary, .meeting-layout .btn-action { min-height:30px; border-radius:4px; font-size:11px; padding:5px 9px; transition:background-color 150ms, color 150ms, border-color 150ms; }
 .meeting-layout .panel-badge { font-size:10px; border:0; background:var(--surface-muted); color:var(--meeting-muted); padding:2px 5px; }
 .live-status-bar { display:flex; flex:none; flex-wrap:wrap; align-items:center; gap:7px; padding:7px 24px; font-size:10px; color:var(--meeting-muted); border-bottom:1px solid var(--meeting-line); }
 .live-status-bar::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--meeting-accent); }
@@ -185,8 +186,8 @@ body { background:var(--surface-canvas); }
   .header-status-group { justify-self:end; margin:0; }
   .header-actions-group { grid-column:1/-1; display:flex; flex-wrap:nowrap; overflow-x:auto; gap:10px; min-width:0; padding:0; }
   .header-actions-group > * { flex:none; }
-  .header-actions-group .header-action-btn { padding:4px; min-height:28px; font-size:10px; white-space:nowrap; }
-  .header-actions-group .theme-toggle-btn { width:28px; height:28px; }
+  .header-actions-group .header-action-btn { padding:8px; min-height:44px; font-size:12px; white-space:nowrap; }
+  .header-actions-group .theme-toggle-btn { width:44px; height:44px; }
   .header .status-item { padding:0; }
   .workspace-main > .settings-panel { padding:10px 12px; }
   .settings-panel .settings-layout { grid-template-columns:92px minmax(0,1fr); gap:12px; }
@@ -195,11 +196,18 @@ body { background:var(--surface-canvas); }
   .settings-panel .settings-row { gap:6px; }
   .settings-panel .setting-group { min-width:90px; }
   .settings-panel .setting-group:has(.toggle-switch) { min-width:80px; }
-  .settings-panel .settings-main { flex-direction:column; align-items:stretch; gap:4px; }
+  .settings-panel .record-settings-toggle { display:block; justify-self:end; min-height:44px; padding:8px 12px; font-size:12px; }
+  .settings-panel .settings-main { display:none; grid-column:1/-1; flex-direction:column; align-items:stretch; gap:8px; }
+  .settings-panel.is-record-settings-open .settings-main { display:flex; }
+  .settings-panel:not(.is-record-settings-open) .settings-advanced-panel { display:none; }
+  .settings-panel .settings-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+  .settings-panel .select-wrapper select, .settings-panel .toggle-control, .settings-panel .settings-inline-detail-btn { min-height:44px; }
+  .settings-panel .setting-label { font-size:12px; }
   .settings-panel .settings-basic-header { align-self:flex-end; }
-  .meeting-tabs { gap:18px; height:43px; padding:0 14px; }
+  .meeting-tabs { gap:18px; height:48px; padding:0 14px; }
   .meeting-tabs button { font-size:11px; }
   .meeting-layout .panel-header { padding:10px 14px; }
+  .meeting-layout .btn-secondary, .meeting-layout .btn-action, .assistant-suggestions button { min-height:44px; }
   .meeting-layout #log { padding:4px 18px 24px; }
   .meeting-layout .transcript-paragraph .log-row .text { font-size:14px; }
   .live-transcript { padding:8px 18px; }

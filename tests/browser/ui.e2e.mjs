@@ -924,7 +924,7 @@ async function verifyTranscriptAutoScroll(client) {
         };
       })()`,
     );
-    assert.ok(result.distanceFromBottom <= 2, `${width}px: new transcript rows should follow the bottom`);
+    assert.ok(result.distanceFromBottom <= 2, `${width}px: new transcript rows should follow the bottom: ${JSON.stringify(result)}`);
     assert.equal(result.hasLatest, true, `${width}px: followed transcript row should be rendered`);
 
     await evaluate(
@@ -1909,6 +1909,31 @@ async function verifyQwenLiveRevision(client) {
   await new Promise(resolve => setTimeout(resolve, 150));
 }
 
+async function verifyCompactRecordingSettings(client) {
+  await client.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  const settings = () => evaluate(client, `(() => {
+    const panel = document.querySelector(".settings-panel");
+    const toggle = document.querySelector("#recordSettingsToggle");
+    return { height: panel.getBoundingClientRect().height, expanded: toggle.getAttribute("aria-expanded"),
+      visible: document.querySelector("#language").getClientRects().length > 0,
+      buttonHeight: toggle.getBoundingClientRect().height,
+      overflow: document.documentElement.scrollWidth > innerWidth };
+  })()`);
+  let current = await settings();
+  assert.equal(current.visible, false, "mobile recording settings start collapsed");
+  assert.ok(current.height < 100, "recording controls must leave space for the transcript");
+  assert.ok(current.buttonHeight >= 44, "settings toggle must be easy to tap");
+  await evaluate(client, `document.querySelector("#recordSettingsToggle").click()`);
+  current = await settings();
+  assert.equal(current.visible, true, "language and source settings remain accessible");
+  assert.equal(current.expanded, "true");
+  assert.equal(current.overflow, false);
+  await evaluate(client, `document.querySelector("#recordSettingsToggle").click()`);
+  assert.equal((await settings()).visible, false);
+  await client.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  assert.equal((await settings()).visible, true, "desktop settings remain visible after collapsing on mobile");
+}
+
 const chrome = await findChrome();
 const profileDir = await mkdtemp(path.join(os.tmpdir(), "whistx-chrome-"));
 const { server, url } = await startStaticServer();
@@ -1940,6 +1965,7 @@ try {
     })()`,
   );
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyDesktopPanelLayout\n');
+  await verifyCompactRecordingSettings(client);
   await verifyDesktopPanelLayout(client);
   for (const width of [390, 640, 768, 1100]) {
     await verifyHistoryDrawerAtWidth(client, width);

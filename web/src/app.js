@@ -4625,6 +4625,15 @@ if (registerBtn) {
   });
 }
 
+document.querySelector("#recordSettingsToggle").addEventListener("click", (event) => {
+  const button = event.currentTarget;
+  const expanded = button.getAttribute("aria-expanded") !== "true";
+  button.setAttribute("aria-expanded", String(expanded));
+  button.textContent = expanded ? "録音設定を閉じる" : "録音設定";
+  button.closest(".settings-panel").classList.toggle("is-record-settings-open", expanded);
+  if (!expanded) applyAdvancedSettingsOpen(false);
+});
+
 if (settingsAdvancedToggleEl) {
   settingsAdvancedToggleEl.addEventListener("click", () => {
     applyAdvancedSettingsOpen(!state.advancedSettingsOpen);
