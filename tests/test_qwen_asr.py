@@ -15,13 +15,23 @@ from unittest.mock import AsyncMock, patch
 os.environ.setdefault('APP_SESSION_SECRET', 'qwen-test-only-long-session-secret-value')
 
 from server.core.config import settings
-from server.qwen_asr import batch_payload, batch_request, clean_qwen_text, realtime_url, response_text
+from server.qwen_asr import QwenRealtime, batch_payload, batch_request, clean_qwen_text, realtime_url, response_text
 from server.transcript_store import read_jsonl_records
 from server.transcription.qwen_live import QwenLiveMeeting
 from server.transcription.revisions import apply_revision
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_realtime_proxy_model_is_encoded_in_url(self):
+        from urllib.parse import parse_qs, urlsplit
+        model = 'organization/Qwen ASR+test&version=1'
+        client = QwenRealtime(base_url='https://proxy.test/v1/', api_key='secret', model=model, timeout=10)
+        url = urlsplit(client.url)
+        self.assertEqual(url.scheme, 'wss')
+        self.assertEqual(url.path, '/v1/realtime')
+        self.assertEqual(parse_qs(url.query), {'model': [model]})
+        self.assertNotIn('secret', client.url)
+
     def test_selected_language_uses_the_transcription_endpoint(self):
         for language in ['ja', 'en']:
             endpoint, options = batch_request(b'wav', mime_type='audio/wav', model='qwen', context='', priority=0, language=language)

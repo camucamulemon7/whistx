@@ -9,7 +9,7 @@ import asyncio
 import base64
 import json
 import re
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 from websockets.asyncio.client import connect
@@ -18,11 +18,12 @@ from .asr import ASRChunkResult
 from .core.config import settings
 
 
-def realtime_url(base_url: str | None) -> str:
+def realtime_url(base_url: str | None, model: str | None = None) -> str:
     value = urlsplit(base_url or '')
     if value.scheme not in {'http', 'https'} or not value.netloc or value.username or value.query or value.fragment:
         raise ValueError('Qwen requires an HTTP(S) ASR_BASE_URL without credentials or query')
-    return urlunsplit(('wss' if value.scheme == 'https' else 'ws', value.netloc, value.path.rstrip('/') + '/realtime', '', ''))
+    return urlunsplit(('wss' if value.scheme == 'https' else 'ws', value.netloc, value.path.rstrip('/') + '/realtime',
+                      urlencode({'model': model}) if model else '', ''))
 
 
 def clean_qwen_text(text: str, *, final: bool = True) -> str:
@@ -102,7 +103,7 @@ class QwenBatchTranscriber:
 
 class QwenRealtime:
     def __init__(self, *, base_url: str, api_key: str, model: str, timeout: float):
-        self.url, self.api_key, self.model, self.timeout = realtime_url(base_url), api_key, model, timeout
+        self.url, self.api_key, self.model, self.timeout = realtime_url(base_url, model), api_key, model, timeout
         self.socket = None
         self.done = False
 
