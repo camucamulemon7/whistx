@@ -40,10 +40,79 @@ ASR_BACKEND=whisper ASR_MODEL=whisper-large-v3-turbo \
 
 FFmpeg must be installed or supplied through `FFMPEG_BIN` and `DIARIZATION_FFMPEG_BIN`. Do not commit `.env`, API keys, or private recording fixtures.
 
-## Native Realtime is a separate integration
+## Qwen native Realtime through LiteLLM (2026-09-16)
 
-The shared adapter above displays progressive transcripts using successive HTTP requests and local agreement. It does not use LiteLLM's native `/realtime` WebSocket.
+Native WebSocket transcription was verified against the actual LiteLLM 1.97.0
+proxy on port 4000 after its Qwen provider was changed from `hosted_vllm` to
+`openai` and a nonempty upstream `api_key` was configured. The original
+`hosted_vllm` route failed with `Unsupported model`; the OpenAI route without an
+upstream key failed with `api_key is required for OpenAI realtime calls`.
 
-[LiteLLM's Realtime documentation](https://docs.litellm.ai/docs/realtime) shows a realtime model deployment (`model_info.mode: realtime`) and a model query parameter on the WebSocket URL. This deployment advertised both ASR models as `hosted_vllm` providers in `audio_transcription` mode. The current Qwen-specific client omits the query model; its proxy handshake returned 403. A diagnostic connection with `?model=Qwen3-ASR-1.7B` passed the handshake but closed before a usable session arrived.
+The working deployment used:
 
-Changing mode alone has therefore not been validated as a solution. The Qwen-specific adapter uses vLLM's model/commit/append/final-commit protocol; the proxy's documented Realtime examples target other providers/protocols. Keep the verified HTTP adapter for this proxy. A separate compatible realtime deployment, routing, and protocol check are needed before enabling `ASR_BACKEND=qwen3_vllm` through it. The direct vLLM endpoint at port 8004 passed separate Qwen tests, but that is not evidence of native Realtime support through port 4000.
+```yaml
+model_list:
+  - model_name: Qwen3-ASR-1.7B
+    litellm_params:
+      model: openai/Qwen3-ASR-1.7B
+      api_base: http://host.docker.internal:8004/v1
+      api_key: unused  # Only when the upstream vLLM does not require authentication.
+    model_info:
+      mode: audio_transcription
+```
+
+The existing `audio_transcription` mode was retained and worked for this
+WebSocket route. LiteLLM's documentation shows `mode: realtime` for dedicated
+Realtime deployments; changing mode alone does not add provider support.
+The upstream key above is separate from whistx's `ASR_API_KEY`, which authenticates
+to LiteLLM. Use the real upstream key when vLLM requires authentication.
+
+whistx now connects to `/v1/realtime?model=Qwen3-ASR-1.7B` and sends the same
+model in vLLM's `session.update` event. The model name is URL-encoded. Use the
+same proxy model name and upstream model name for this integration; separate
+routing aliases are not implemented.
+
+```dotenv
+ASR_BACKEND=qwen3_vllm
+ASR_BASE_URL=http://localhost:4000/v1
+ASR_MODEL=Qwen3-ASR-1.7B
+ASR_DEFAULT_LANGUAGE=auto
+ASR_REALTIME_WINDOW_SECONDS=5
+ASR_HIGH_ACCURACY_ENABLED=1
+```
+
+Choose **自動検出** in the recording language selector to use native Realtime.
+Explicit Japanese/English selections use the HTTP transcription endpoint to
+honor the requested language. High-accuracy recognition also uses HTTP.
+The browser's existing language selection takes precedence over the environment
+default. A containerized whistx needs a host address reachable from its container
+instead of `localhost`.
+
+### Application adapter verification
+
+Replayed the same public 11-second English sample at capture speed through
+`QwenLiveMeeting`, including its normal 5-second Realtime windows and final
+high-accuracy revision:
+
+- First nonempty partial: 5.143 seconds after replay start.
+- Finalization after capture: 1.735 seconds; total: 12.755 seconds.
+- Three Realtime records were replaced by one high-accuracy record.
+- No error events; the final transcript matched the spoken sample without
+  repeated sentences or protocol language headers.
+
+A single long diagnostic WebSocket previously returned repeated phrases and
+language headers on both direct and proxy connections. This was not reproduced
+with the application's normal 5-second windows on this sample. No heuristic
+text deduplication was added: it could remove deliberate repetitions in speech.
+This is a single-sample adapter check, not a Japanese accuracy, browser microphone,
+long-session, or load test.
+
+```bash
+ASR_BACKEND=qwen3_vllm ASR_MODEL=Qwen3-ASR-1.7B \
+  python scripts/bench_streaming_asr.py path/to/16k-mono.wav \
+  --language auto --realtime --output artifacts/qwen-realtime-check.json
+```
+
+Whisper's current Xinference upstream on port 9997 returns 404 for
+`/v1/realtime`. Keep `ASR_BACKEND=whisper` for `whisper-large-v3-turbo`;
+the Qwen native backend must not be selected for that model.
