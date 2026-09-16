@@ -3,6 +3,7 @@ __pycache__
 .git
 .gitignore
 .venv
+.venv-meeting
 .env
 .pytest_cache
 .mypy_cache
@@ -10,6 +11,9 @@ __pycache__
 data/*
 !data/.gitkeep
 hf-home/*
+huggingface/
+artifacts/
+logs/
 node_modules
 .DS_Store
 docs
