@@ -2072,6 +2072,19 @@ try {
   await verifyLiveRecordingAndRefinement(client);
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyQwenLiveRevision\n');
   await verifyQwenLiveRevision(client);
+  await evaluate(client, `(() => {
+    const language = document.querySelector('#language');
+    language.value = '';
+    language.dispatchEvent(new Event('change', { bubbles: true }));
+    delete document.documentElement.dataset.whistxReady;
+  })()`);
+  await client.send("Page.reload", { ignoreCache: true });
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await evaluate(client, `document.documentElement.dataset.whistxReady === 'true'`)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(await evaluate(client, `document.documentElement.dataset.whistxReady`), "true");
+  assert.equal(await evaluate(client, `document.querySelector('#language').value`), "", "Auto language must survive reload");
   process.stdout.write("Browser UI and recording lifecycle checks passed.\n");
 } catch (error) {
   const outputDir = path.resolve(process.env.BROWSER_ARTIFACT_DIR || "artifacts/browser");

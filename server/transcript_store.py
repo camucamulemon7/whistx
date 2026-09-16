@@ -290,7 +290,7 @@ def _render_txt_line(rec: dict) -> str:
     text = str(rec.get("text", "")).strip()
     if not text:
         return ""
-    speaker = str(rec.get("speaker", "")).strip()
+    speaker = str(rec.get("speaker") or "").strip()
     if not speaker:
         return text
     return f"[{speaker}] {text}"

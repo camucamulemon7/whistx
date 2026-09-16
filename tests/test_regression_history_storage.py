@@ -27,7 +27,14 @@ from server.services import (
     history_service,
     runtime_artifact_service,
 )
-from server.transcript_store import read_jsonl_records
+from server.transcript_store import read_jsonl_records, _render_txt_line
+
+
+class TranscriptSpeakerRenderingTests(unittest.TestCase):
+    def test_unassigned_speaker_has_no_label(self):
+        for speaker in (None, "", "  "):
+            self.assertEqual(_render_txt_line({"text": "日本語", "speaker": speaker}), "日本語")
+        self.assertEqual(_render_txt_line({"text": "日本語", "speaker": "話者1"}), "[話者1] 日本語")
 
 
 class DummyDB:

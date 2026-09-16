@@ -60,6 +60,21 @@ const audioLevelIndicatorEl = $("#audioLevelIndicator");
 const audioLevelMatrixEl = $("#audioLevelMatrix");
 
 const languageEl = $("#language");
+try {
+  const savedLanguage = localStorage.getItem("whistx_language");
+  if (savedLanguage !== null && [...languageEl.options].some((option) => option.value === savedLanguage)) {
+    languageEl.value = savedLanguage;
+  }
+} catch {
+  // Storage may be unavailable in restricted browser sessions.
+}
+languageEl?.addEventListener("change", () => {
+  try {
+    localStorage.setItem("whistx_language", languageEl.value);
+  } catch {
+    // Keep the current selection usable even when storage is unavailable.
+  }
+});
 const audioSourceEl = $("#audioSource");
 const audioSourceHintEl = $("#audioSourceHint");
 const audioSourceHintTextEl = $("#audioSourceHintText");
