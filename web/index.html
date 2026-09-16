@@ -324,6 +324,7 @@
               <p id="recordTelemetry" class="setting-hint setting-hint-telemetry" aria-live="polite" hidden></p>
             </section>
 
+            <div class="meeting-navigation">
             <nav class="meeting-tabs" role="tablist" aria-label="会議の表示">
               <button id="meetingTranscriptTab" type="button" role="tab" data-meeting-tab="transcript" aria-controls="meetingTranscriptPanel" aria-selected="true">文字起こし</button>
               <button id="meetingSummaryTab" type="button" role="tab" data-meeting-tab="summary" aria-controls="meetingSummaryPanel" aria-selected="false" tabindex="-1">会議の要約</button>
@@ -331,6 +332,8 @@
               <button id="meetingProofreadTab" type="button" role="tab" data-meeting-tab="proofread" aria-controls="meetingProofreadPanel" aria-selected="false" tabindex="-1">校正</button>
               <button id="meetingAssistantTab" type="button" role="tab" data-meeting-tab="assistant" aria-controls="meetingAssistantPanel" aria-selected="false" tabindex="-1">アシスタント</button>
             </nav>
+            <button id="assistantVisibilityToggle" class="btn-secondary assistant-visibility-toggle" type="button" aria-controls="meetingAssistantPanel" aria-expanded="true">アシスタントを隠す</button>
+            </div>
             <section
               id="workspacePanels"
               class="workspace-panels reveal delay-2"
@@ -351,23 +354,26 @@
                         <polyline points="15 18 9 12 15 6"/>
                       </svg>
                     </button>
-                    <button id="copyBtn" type="button" class="icon-btn" aria-label="コピー" title="コピー">
+                    <button id="copyBtn" type="button" class="btn-secondary" aria-label="全文コピー" title="文字起こしをすべてコピー">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
                       </svg>
+                      <span>全文コピー</span>
                     </button>
-                    <button id="clearBtn" type="button" class="icon-btn" aria-label="クリア" title="クリア">
+                    <button id="clearBtn" type="button" class="btn-secondary" aria-label="クリア" title="クリア">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M3 6h18"/>
                         <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
                         <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
                       </svg>
+                      <span>クリア</span>
                     </button>
                   </div>
                 </header>
 
                 <div class="live-status-bar">
+                  <button id="transcriptLatestBtn" type="button" class="btn-secondary" aria-controls="log" hidden>最新の発話へ</button>
                   <span id="liveConnection" role="status">会議の発話を時刻付きで記録します</span>
             <span id="hqStatus" role="status" hidden></span>
                   <button id="retryLiveStop" type="button" class="btn-secondary" hidden>最終処理を再試行</button>
@@ -722,23 +728,6 @@
         </div>
         <p class="auth-footnote">ゲスト利用が有効な環境では文字起こしを利用できますが、履歴保存はできません。</p>
       </section>
-    </div>
-
-    <div id="adminQueueModal" class="screenshot-modal" hidden>
-      <div class="screenshot-modal-backdrop" data-admin-modal-close></div>
-      <div class="screenshot-modal-dialog glass-panel admin-queue-dialog" role="dialog" aria-modal="true" aria-label="承認待ちユーザー" tabindex="-1">
-        <button id="adminQueueClose" type="button" class="icon-btn screenshot-modal-close" aria-label="閉じる">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"/>
-            <line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
-        <div class="admin-queue-header">
-          <h2 class="auth-title">承認待ちユーザー</h2>
-          <p class="auth-description">新規登録されたアカウントをここで承認します。</p>
-        </div>
-        <div id="adminPendingList" class="admin-pending-list"></div>
-      </div>
     </div>
 
     <div id="screenshotModal" class="screenshot-modal" hidden>

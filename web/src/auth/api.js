@@ -42,11 +42,3 @@ export function updateDisplayNameRequest(displayName) {
     body: JSON.stringify({ display_name: displayName || null }),
   });
 }
-
-export function fetchPendingUsers() {
-  return fetchJson("/api/admin/pending-users");
-}
-
-export function approvePendingUserRequest(userId) {
-  return fetchJson(`/api/admin/pending-users/${userId}/approve`, { method: "POST" });
-}

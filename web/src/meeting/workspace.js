@@ -36,6 +36,28 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   let view = "transcript";
   let completedTurns = [];
 
+  const assistantToggle = document.querySelector("#assistantVisibilityToggle");
+  const assistantPreferenceKey = "whistx_assistant_collapsed";
+  function setAssistantCollapsed(collapsed) {
+    panels.classList.toggle("is-assistant-collapsed", collapsed);
+    assistantToggle.setAttribute("aria-expanded", String(!collapsed));
+    assistantToggle.textContent = collapsed ? "アシスタントを表示" : "アシスタントを隠す";
+  }
+  try {
+    setAssistantCollapsed(localStorage.getItem(assistantPreferenceKey) === "1");
+  } catch {
+    setAssistantCollapsed(false);
+  }
+  assistantToggle.addEventListener("click", () => {
+    const collapsed = !panels.classList.contains("is-assistant-collapsed");
+    setAssistantCollapsed(collapsed);
+    try {
+      localStorage.setItem(assistantPreferenceKey, collapsed ? "1" : "0");
+    } catch {
+      // Keep the control usable when browser storage is unavailable.
+    }
+  });
+
   function setView(next) {
     view = next;
     panels.dataset.meetingView = next;

@@ -176,14 +176,19 @@ async function unloadProtectionState(client) {
 
 async function waitForApp(client) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const ready = await evaluate(
-      client,
-      `Boolean(
-        document.querySelector("#historyDrawerOpen") &&
-        document.querySelector("#historyRail") &&
-        document.documentElement?.dataset.whistxReady === "true"
-      )`,
-    );
+    let ready = false;
+    try {
+      ready = await evaluate(
+        client,
+        `Boolean(
+          document.querySelector("#historyDrawerOpen") &&
+          document.querySelector("#historyRail") &&
+          document.documentElement?.dataset.whistxReady === "true"
+        )`,
+      );
+    } catch (error) {
+      if (!/Inspected target navigated or closed|Execution context was destroyed|Cannot find context/.test(String(error))) throw error;
+    }
     if (ready) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -328,6 +333,27 @@ async function verifyDesktopPanelLayout(client) {
     assert.equal(layout.resizer, "none");
     assert.equal(layout.historyAligned, true);
     assert.equal(layout.overflow, false);
+    const collapsed = await evaluate(client, `(() => {
+      const transcript = document.querySelector("#meetingTranscriptPanel");
+      const previousWidth = transcript.getBoundingClientRect().width;
+      document.querySelector("#assistantQuestion").value = "入力中の質問";
+      document.querySelector("#assistantVisibilityToggle").click();
+      return {
+        wider: transcript.getBoundingClientRect().width > previousWidth + 300,
+        hidden: document.querySelector("#meetingAssistantPanel").getClientRects().length === 0,
+        expanded: document.querySelector("#assistantVisibilityToggle").getAttribute("aria-expanded")
+      };
+    })()`);
+    assert.deepEqual(collapsed, { wider: true, hidden: true, expanded: "false" });
+    await evaluate(client, `document.querySelector("#assistantVisibilityToggle").click()`);
+    assert.equal(await evaluate(client, `document.querySelector("#assistantQuestion").value`), "入力中の質問");
+    assert.equal(await evaluate(client, `document.querySelector("#meetingAssistantPanel").getClientRects().length > 0`), true);
+    await evaluate(client, `document.querySelector("#assistantQuestion").value = ""`);
+    if (process.env.DESKTOP_SCREENSHOT && width === 1440) {
+      const shot = await client.send("Page.captureScreenshot", { format: "png" });
+      await writeFile(process.env.DESKTOP_SCREENSHOT, Buffer.from(shot.data, "base64"));
+    }
+
     for (const [tab, panel] of [["summary", "meetingSummaryPanel"], ["proofread", "meetingProofreadPanel"], ["materials", "meetingMaterialsPanel"]]) {
       const state = await evaluate(client, `(() => {
         const tab = document.querySelector('[data-meeting-tab="${tab}"]');
@@ -342,6 +368,34 @@ async function verifyDesktopPanelLayout(client) {
   assert.equal(await evaluate(client, `document.querySelector("#meetingAssistantPanel").getBoundingClientRect().width > 0`), true);
   assert.equal(await evaluate(client, `getComputedStyle(document.querySelector("#meetingTranscriptPanel")).display`), "none");
   await evaluate(client, `document.querySelector('[data-meeting-tab="transcript"]').click()`);
+}
+
+async function verifyAssistantPreference(client) {
+  await client.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await evaluate(client, `document.querySelector("#assistantVisibilityToggle").click()`);
+  await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
+  await client.send("Page.reload", { ignoreCache: true });
+  await waitForApp(client);
+  await evaluate(client, `(() => {
+    document.body.classList.remove("whistx-auth-locked");
+    document.querySelector("#authGuestView").hidden = true;
+  })()`);
+  assert.equal(await evaluate(client, `document.querySelector("#assistantVisibilityToggle").getAttribute("aria-expanded")`), "false");
+  assert.equal(await evaluate(client, `document.querySelector("#meetingAssistantPanel").getClientRects().length`), 0);
+  await evaluate(client, `document.querySelector("#assistantVisibilityToggle").click()`);
+  assert.equal(await evaluate(client, `document.querySelector("#meetingAssistantPanel").getClientRects().length > 0`), true);
+  const usableWithoutStorage = await evaluate(client, `(() => {
+    const original = Storage.prototype.setItem;
+    try {
+      Storage.prototype.setItem = () => { throw new DOMException("Storage blocked", "SecurityError"); };
+      const button = document.querySelector("#assistantVisibilityToggle");
+      button.click();
+      const closed = button.getAttribute("aria-expanded") === "false";
+      button.click();
+      return closed && button.getAttribute("aria-expanded") === "true";
+    } finally { Storage.prototype.setItem = original; }
+  })()`);
+  assert.equal(usableWithoutStorage, true, "assistant remains usable when preference storage fails");
 }
 
 const recordingMocks = String.raw`
@@ -395,12 +449,20 @@ const recordingMocks = String.raw`
             id: "browser-user",
             email: "browser@example.com",
             displayName: "Browser Test",
-            isAdmin: false
+            isAdmin: true
           },
+          pendingApprovalCount: 3,
           guestTranscriptionAllowed: true,
           bootstrapAdminRequired: false,
           selfSignupEnabled: false
         });
+      }
+      if (url.includes("/api/auth/login")) {
+        return jsonResponse({ ok: true, user: { id: "browser-user", displayName: "Browser Test", isAdmin: true } });
+      }
+      if (url.includes("/api/admin/pending-users")) {
+        window.__unusedPendingUsersRequests = (window.__unusedPendingUsersRequests || 0) + 1;
+        return jsonResponse({ items: [] });
       }
       if (url.includes("/api/history/history-1")) {
         window.__recordingTest.historyDetailRequests += 1;
@@ -581,6 +643,7 @@ const recordingMocks = String.raw`
 
 async function verifyRecordingStartIsSingleFlight(client) {
   await client.send("Page.addScriptToEvaluateOnNewDocument", { source: recordingMocks });
+  await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
   await client.send("Page.reload", { ignoreCache: true });
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const ready = await evaluate(
@@ -595,6 +658,17 @@ async function verifyRecordingStartIsSingleFlight(client) {
     if (unlocked) break;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+  await evaluate(client, `(() => {
+    document.querySelector("#loginEmail").value = "browser@example.com";
+    document.querySelector("#loginPassword").value = "test-password";
+    document.querySelector("#loginSubmitBtn").click();
+  })()`);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await evaluate(client, `window.__recordingTest.authRequests.length >= 2 && document.querySelector("#adminQueueBadge").textContent === "3"`)) break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(await evaluate(client, `document.querySelector("#adminQueueBadge").textContent`), "3", "login refreshes the approval count through auth state");
+  assert.equal(await evaluate(client, `document.querySelector("#transcriptLatestBtn").hidden`), true, "empty transcript has no latest button");
   await verifyEmptySummaryIsNotCopied(client);
   await verifyEmptyDownloadsAreDisabled(client);
   assert.deepEqual(
@@ -958,6 +1032,19 @@ async function verifyTranscriptAutoScroll(client) {
     );
     assert.equal(result.scrollTop, 0, `${width}px: new rows must not steal the position while reading older transcript`);
     assert.equal(result.hasLatest, true, `${width}px: transcript should still update while auto-follow is paused`);
+    assert.equal(await evaluate(client, `document.querySelector("#transcriptLatestBtn").hidden`), false);
+    await evaluate(client, `document.querySelector("#transcriptLatestBtn").click()`);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    const resumed = await evaluate(client, `(() => {
+      const log = document.querySelector("#log");
+      return { bottom: log.scrollHeight - log.clientHeight - log.scrollTop,
+        hidden: document.querySelector("#transcriptLatestBtn").hidden,
+        focused: document.activeElement === log };
+    })()`);
+    assert.ok(resumed.bottom <= 2, "latest button returns to the newest transcript");
+    assert.equal(resumed.hidden, true);
+    assert.equal(resumed.focused, true);
+
   }
 }
 
@@ -1509,6 +1596,7 @@ async function verifyFailedStartPreservesTranscript(client) {
 
 async function verifyEffectiveAudioSourceFallback(client) {
   const previousInstanceId = await evaluate(client, `window.__recordingTest?.instanceId || ""`);
+  await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
   await client.send("Page.reload", { ignoreCache: true });
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const ready = await evaluate(
@@ -1614,6 +1702,7 @@ async function verifyInvalidSessionDoesNotBecomeGuest(client) {
       })();
     `,
   });
+  await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
   await client.send("Page.reload", { ignoreCache: true });
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const ready = await evaluate(
@@ -1685,6 +1774,7 @@ async function verifyMeetingInsights(client) {
       };
     })();
   ` });
+  await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
   await client.send("Page.reload", { ignoreCache: true });
   await waitForApp(client);
   await new Promise(resolve => setTimeout(resolve, 200));
@@ -1771,6 +1861,7 @@ async function verifyLiveRecordingAndRefinement(client) {
       localStorage.setItem("whistx_audio_source", "mic");
     })();
   ` });
+  await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
   await client.send("Page.reload", { ignoreCache: true });
   await waitForApp(client);
   await new Promise(resolve => setTimeout(resolve, 200));
@@ -1855,6 +1946,7 @@ async function verifyQwenLiveRevision(client) {
       localStorage.setItem("whistx_live_transcription", "0");
     })();
   ` });
+  await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
   await client.send("Page.reload", { ignoreCache: true });
   await waitForApp(client);
   await new Promise(resolve => setTimeout(resolve, 200));
@@ -1941,11 +2033,15 @@ try {
   );
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyDesktopPanelLayout\n');
   await verifyDesktopPanelLayout(client);
+  await verifyAssistantPreference(client);
   for (const width of [390, 640, 768, 1100]) {
     await verifyHistoryDrawerAtWidth(client, width);
   }
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyRecordingStartIsSingleFlight\n');
   await verifyRecordingStartIsSingleFlight(client);
+  assert.equal(await evaluate(client, `document.querySelector("#adminQueueBadge").textContent`), "3", "admin badge uses auth response count");
+  assert.equal(await evaluate(client, `window.__unusedPendingUsersRequests || 0`), 0, "workspace must not fetch an unused approval list");
+
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyDestructiveActionsAreLocked\n');
   await verifyDestructiveActionsAreLocked(client);
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyTranscriptMediaResponsive\n');
