@@ -365,6 +365,33 @@ async function verifyDesktopPanelLayout(client) {
   await evaluate(client, `document.querySelector('[data-meeting-tab="transcript"]').click()`);
 }
 
+async function verifyAssistantPreference(client) {
+  await client.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await evaluate(client, `document.querySelector("#assistantVisibilityToggle").click()`);
+  await client.send("Page.reload", { ignoreCache: true });
+  await waitForApp(client);
+  await evaluate(client, `(() => {
+    document.body.classList.remove("whistx-auth-locked");
+    document.querySelector("#authGuestView").hidden = true;
+  })()`);
+  assert.equal(await evaluate(client, `document.querySelector("#assistantVisibilityToggle").getAttribute("aria-expanded")`), "false");
+  assert.equal(await evaluate(client, `document.querySelector("#meetingAssistantPanel").getClientRects().length`), 0);
+  await evaluate(client, `document.querySelector("#assistantVisibilityToggle").click()`);
+  assert.equal(await evaluate(client, `document.querySelector("#meetingAssistantPanel").getClientRects().length > 0`), true);
+  const usableWithoutStorage = await evaluate(client, `(() => {
+    const original = Storage.prototype.setItem;
+    try {
+      Storage.prototype.setItem = () => { throw new DOMException("Storage blocked", "SecurityError"); };
+      const button = document.querySelector("#assistantVisibilityToggle");
+      button.click();
+      const closed = button.getAttribute("aria-expanded") === "false";
+      button.click();
+      return closed && button.getAttribute("aria-expanded") === "true";
+    } finally { Storage.prototype.setItem = original; }
+  })()`);
+  assert.equal(usableWithoutStorage, true, "assistant remains usable when preference storage fails");
+}
+
 const recordingMocks = String.raw`
   (() => {
     window.__recordingTest = {
@@ -1962,6 +1989,7 @@ try {
   );
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyDesktopPanelLayout\n');
   await verifyDesktopPanelLayout(client);
+  await verifyAssistantPreference(client);
   for (const width of [390, 640, 768, 1100]) {
     await verifyHistoryDrawerAtWidth(client, width);
   }
