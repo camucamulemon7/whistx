@@ -1,5 +1,5 @@
 import { fetchCapabilities } from "./capabilities/api.js";
-import { fetchAuthState, loginRequest, bootstrapAdminRequest, registerRequest, logoutRequest, updateDisplayNameRequest, fetchPendingUsers as fetchPendingUsersRequest, approvePendingUserRequest } from "./auth/api.js";
+import { fetchAuthState, loginRequest, bootstrapAdminRequest, registerRequest, logoutRequest, updateDisplayNameRequest } from "./auth/api.js";
 import { canUseWorkspace as canUseWorkspaceForAuth, persistGuestMode, readGuestMode, serializeUserLabel } from "./auth/session.js";
 import { deleteHistoryRequest, fetchHistoryList as fetchHistoryListRequest, fetchHistoryDetail, saveHistoryRequest } from "./history/api.js";
 import { fetchSharedGlossary as fetchSharedGlossaryRequest, saveSharedGlossary as saveSharedGlossaryRequest } from "./api/glossary.js";
@@ -35,7 +35,6 @@ import {
 import {
   VAD_SAMPLE_MS,
   buildVadDecision as calculateVadDecision,
-  minSegmentDuration,
   normalizeAudioSource,
   shouldCutOnSilence,
   shouldSkipChunkByVad as calculateShouldSkipChunkByVad,
@@ -160,9 +159,6 @@ const screenshotModalStageEl = $("#screenshotModalStage");
 const screenshotZoomOutBtnEl = $("#screenshotZoomOutBtn");
 const screenshotZoomResetBtnEl = $("#screenshotZoomResetBtn");
 const screenshotZoomInBtnEl = $("#screenshotZoomInBtn");
-const adminQueueModalEl = $("#adminQueueModal");
-const adminQueueCloseEl = $("#adminQueueClose");
-const adminPendingListEl = $("#adminPendingList");
 const helpModalEl = $("#helpModal");
 const helpModalCloseEl = $("#helpModalClose");
 const helpModalFrameEl = $("#helpModalFrame");
@@ -394,7 +390,6 @@ const state = {
     query: "",
   },
   selfSignupEnabled: false,
-  adminPendingUsers: [],
 };
 
 function canUseWorkspace() {
@@ -765,11 +760,6 @@ function applyAutoGainEnabled(value, options = {}) {
   updateCaptureAutoGainState();
 }
 
-function ensureRuntimeUi() {
-  // CSS is now loaded via <link> in index.html (runtime-ui.css)
-  return;
-}
-
 function buildRuntimeUi() {
   runtimeUi.loginOverlayEl = authGuestViewEl || null;
   runtimeUi.historyDrawerEl = historyRailEl || null;
@@ -805,6 +795,7 @@ function buildRuntimeUi() {
     logEl.dataset.boundScroll = "1";
     logEl.addEventListener("scroll", () => {
       state.logAutoScrollEnabled = isLogNearBottom();
+      updateTranscriptLatestButton();
     });
   }
 
@@ -882,7 +873,7 @@ function setAppLocked(locked) {
 }
 
 function hasOpenBlockingModal() {
-  return [runtimeUi.screenshotModalEl, helpModalEl, adminQueueModalEl].some((element) => element && !element.hidden);
+  return [runtimeUi.screenshotModalEl, helpModalEl].some((element) => element && !element.hidden);
 }
 
 function syncBodyScrollLock() {
@@ -1880,43 +1871,6 @@ function renderHistoryList() {
   updateHistoryEmptyState();
 }
 
-function closeAdminQueueModal() {
-  if (!adminQueueModalEl) return;
-  closeManagedModal(adminQueueModalEl);
-}
-
-function renderAdminPendingUsers() {
-  if (!adminPendingListEl) return;
-  adminPendingListEl.innerHTML = "";
-  if (!state.adminPendingUsers.length) {
-    adminPendingListEl.innerHTML = `
-      <div class="admin-pending-empty">
-        <p>承認待ちユーザーはありません。</p>
-      </div>
-    `;
-    return;
-  }
-  state.adminPendingUsers.forEach((item) => {
-    const article = document.createElement("article");
-    article.className = "admin-pending-item";
-    const createdAt = item.createdAt
-      ? new Date(item.createdAt).toLocaleString("ja-JP")
-      : "";
-    article.innerHTML = `
-      <div class="admin-pending-copy">
-        <div class="admin-pending-name">${escapeHtml(item.displayName || item.email || "pending")}</div>
-        <div class="admin-pending-email">${escapeHtml(item.email || "")}</div>
-        <div class="admin-pending-date">${escapeHtml(createdAt)}</div>
-      </div>
-      <button type="button" class="btn-action admin-pending-approve">承認</button>
-    `;
-    article.querySelector(".admin-pending-approve")?.addEventListener("click", () => {
-      approvePendingUser(item.id);
-    });
-    adminPendingListEl.appendChild(article);
-  });
-}
-
 function renderAuthState() {
   const authenticated = !!state.auth.authenticated;
   const isGuest = !!state.auth.isGuest;
@@ -2013,18 +1967,8 @@ function setAuthProfileEditorOpen(open) {
   }
 }
 
-function resetCurrentSaveState() {
-  state.runtimeSessionToken = "";
-  state.savedHistoryId = null;
-  state.viewingHistoryId = null;
-  if (saveTitleInputEl) {
-    saveTitleInputEl.value = "";
-  }
-  updateDownloadLinks();
-  updateSaveControls();
-}
-
 function updateSegmentCount() {
+  requestAnimationFrame(updateTranscriptLatestButton);
   const count = state.segments.length;
   segmentCountEl.textContent = `${count}件`;
   if (connCountEl) {
@@ -2164,8 +2108,19 @@ function scrollLogToBottom() {
   if (!logEl) return;
   requestAnimationFrame(() => {
     logEl.scrollTop = logEl.scrollHeight;
+    updateTranscriptLatestButton();
   });
 }
+
+function updateTranscriptLatestButton() {
+  document.querySelector("#transcriptLatestBtn").hidden = !state.segments.length || isLogNearBottom();
+}
+
+document.querySelector("#transcriptLatestBtn").addEventListener("click", () => {
+  state.logAutoScrollEnabled = true;
+  logEl.focus({ preventScroll: true });
+  scrollLogToBottom();
+});
 
 document.querySelector("#transcriptDetailsToggle").addEventListener("click", (event) => {
   const expanded = logEl.classList.toggle("show-transcript-details");
@@ -3393,10 +3348,6 @@ function clearChunkTimer() {
     clearTimeout(state.chunkTimer);
     state.chunkTimer = null;
   }
-}
-
-function minSegmentMs() {
-  return minSegmentDuration(state.chunkMs, currentVadSourceMode(), VAD_SEGMENT_MIN_MS);
 }
 
 function chunkHardMaxMs() {
@@ -4684,8 +4635,6 @@ document.addEventListener("keydown", (event) => {
       hideScreenshotModal();
     } else if (modal === helpModalEl) {
       closeHelpModal();
-    } else if (modal === adminQueueModalEl) {
-      closeAdminQueueModal();
     }
     return;
   }
@@ -4706,20 +4655,6 @@ if (helpBtn) {
 if (helpModalCloseEl) {
   helpModalCloseEl.addEventListener("click", () => {
     closeHelpModal();
-  });
-}
-
-if (adminQueueCloseEl) {
-  adminQueueCloseEl.addEventListener("click", () => {
-    closeAdminQueueModal();
-  });
-}
-
-if (adminQueueModalEl) {
-  adminQueueModalEl.addEventListener("click", (event) => {
-    if (event.target === adminQueueModalEl || event.target?.matches?.("[data-admin-modal-close]")) {
-      closeAdminQueueModal();
-    }
   });
 }
 
@@ -5201,9 +5136,6 @@ async function loadAuthState() {
     renderAuthState();
     if (state.auth.authenticated) {
       await loadHistoryList();
-      if (state.auth.user?.isAdmin) {
-        await loadPendingUsers();
-      }
     } else if (state.auth.isGuest) {
       state.history.items = [];
       state.history.selectedId = null;
@@ -5257,10 +5189,7 @@ async function login() {
     persistGuestMode(false);
     setAppLocked(false);
     renderAuthState();
-    await loadHistoryList();
-    if (state.auth.user?.isAdmin) {
-      await loadPendingUsers();
-    }
+    await loadAuthState();
     showToast("ログインしました", "success");
   } catch (error) {
     const payload = error?.payload || {};
@@ -5296,8 +5225,7 @@ async function bootstrapAdmin() {
     persistGuestMode(false);
     setAppLocked(false);
     renderAuthState();
-    await loadHistoryList();
-    await loadPendingUsers();
+    await loadAuthState();
     showToast("管理者アカウントを作成しました", "success");
   } catch (error) {
     const payload = error?.payload || {};
@@ -5408,41 +5336,6 @@ function loginAsGuest() {
   renderHistoryList();
   updateDownloadLinks();
   showToast("ゲストモードで開始しました", "success");
-}
-
-async function loadPendingUsers() {
-  if (!state.auth.authenticated || !state.auth.user?.isAdmin) return;
-  logClientEvent("pending_users.load.start");
-  try {
-    const payload = await fetchPendingUsersRequest();
-    state.adminPendingUsers = Array.isArray(payload.items) ? payload.items : [];
-    state.auth.pendingApprovalCount = state.adminPendingUsers.length;
-    renderAuthState();
-    renderAdminPendingUsers();
-    logClientEvent("pending_users.load.success", { count: state.adminPendingUsers.length });
-  } catch {
-    showToast("承認待ち一覧の取得に失敗しました", "error");
-    logClientEvent("pending_users.load.failed");
-  }
-}
-
-async function openAdminQueueModal() {
-  if (!state.auth.user?.isAdmin) return;
-  const opener = document.activeElement;
-  await loadPendingUsers();
-  if (!adminQueueModalEl) return;
-  openManagedModal(adminQueueModalEl, { opener, initialFocus: adminQueueCloseEl });
-}
-
-async function approvePendingUser(userId) {
-  try {
-    await approvePendingUserRequest(userId);
-  } catch {
-    showToast("ユーザー承認に失敗しました", "error");
-    return;
-  }
-  showToast("ユーザーを承認しました", "success");
-  await loadPendingUsers();
 }
 
 async function loadHistoryList() {

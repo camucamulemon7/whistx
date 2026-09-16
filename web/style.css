@@ -3148,66 +3148,11 @@ html[data-theme="dark"] .download-link.is-downloaded {
   justify-content: center;
 }
 
-.admin-queue-dialog {
-  width: min(860px, 94vw);
-  align-items: stretch;
-}
-
-.admin-queue-header {
-  display: grid;
-  gap: var(--space-2);
-  margin-bottom: 8px;
-}
-
-.admin-pending-list {
-  display: grid;
-  gap: var(--space-3);
-}
-
-.admin-pending-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-5);
-  border-radius: 22px;
-  border: 1px solid var(--border-primary);
-  background: var(--bg-secondary);
-}
-
-.admin-pending-copy {
-  display: grid;
-  gap: var(--space-1);
-}
-
-.admin-pending-name {
-  color: var(--text-primary);
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.admin-pending-email,
-.admin-pending-date {
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.admin-pending-empty {
-  padding: var(--space-5);
-  border-radius: 20px;
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-}
-
 html[data-theme="dark"] .auth-block {
   border-top-color: rgba(255, 255, 255, 0.08);
 }
 
-html[data-theme="dark"] .admin-pending-item,
-html[data-theme="dark"] .admin-pending-empty {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.08);
-}
+
 
 .screenshot-modal {
   position: fixed;
