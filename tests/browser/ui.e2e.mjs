@@ -39,6 +39,11 @@ function contentType(filePath) {
 async function startStaticServer() {
   const server = http.createServer(async (request, response) => {
     const pathname = new URL(request.url || "/", "http://localhost").pathname;
+    if (pathname === '/api/history/test/screenshots/frame.png') {
+      response.writeHead(200, { 'Content-Type': 'image/png' });
+      response.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64'));
+      return;
+    }
     const relativePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
     const filePath = path.resolve(webRoot, relativePath);
     if (!filePath.startsWith(`${webRoot}${path.sep}`) && filePath !== path.join(webRoot, "index.html")) {
@@ -1683,16 +1688,12 @@ async function verifyMeetingInsights(client) {
     (() => {
       const original = window.fetch;
       const source = { id: "000001", seq: 1, text: "履歴の文字起こし", startMs: 0, endMs: 1000 };
-      const recap = { revision: "r1", throughMs: 1000, sources: [source], chapters: [{ id: "chapter-1", title: "公開準備 <script>unsafe</script>", startMs: 0, endMs: 1000, sourceIds: [source.id], summary: [{ text: "公開日は未定", sourceIds: [source.id] }], decisions: [], actions: [], open_questions: [], imageIds: ["frame.png"] }] };
+      const recap = { revision: "r1", throughMs: 1000, sources: [source], chapters: [{ id: "chapter-1", title: "公開準備 <script>unsafe</script>", startMs: 0, endMs: 1000, sourceIds: [source.id], summary: [{ text: "公開日は未定", sourceIds: [source.id] }], discussion: [{text:"検証が完了していないため公開日は未定", sourceIds:[source.id]}], decisions: [], actions: [], open_questions: [], imageIds: ["frame.png"] }] };
       window.fetch = async (input, options = {}) => {
         const url = String(input);
         const json = data => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
         if (url.includes("/api/health")) return json({ asrReady: true, model: "browser-test", wsPath: "/ws/transcribe", meetingInsights: true });
         if (url.includes("/api/meeting/insights")) return json({ revision: "r1", throughMs: 1000, images: [], turns: [], recap: null });
-        if (url.includes('/api/history/test/screenshots/frame.png')) {
-          window.__exportImageFetched = (window.__exportImageFetched || 0) + 1;
-          return new Response(Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=='), c=>c.charCodeAt(0)), {headers:{'Content-Type':'image/png'}});
-        }
         if (url.includes("/api/meeting/recap")) return json({ revision: "r1", throughMs: 1000, images: [{id:'frame.png', timeMs:0,url:'/api/history/test/screenshots/frame.png'}], recap, summary: "公開日は未定" });
         if (url.includes("/api/meeting/ask")) {
           window.__meetingQuestion = JSON.parse(options.body);
@@ -1711,14 +1712,18 @@ async function verifyMeetingInsights(client) {
   assert.equal(await evaluate(client, `document.querySelector('#assistantAccessNotice').hidden`), true, 'logged-in users must not see a login warning before selecting a meeting');
   await evaluate(client, `(() => { window.confirm = () => true; document.querySelector(".history-item-main").click(); })()`);
   await new Promise(resolve => setTimeout(resolve, 200));
-  assert.equal(await evaluate(client, `document.querySelector('#exportRecap').disabled`), false);
-  await evaluate(client, `document.querySelector("#exportRecap").click()`);
+  await evaluate(client, `document.querySelector(".summary-panel").classList.add("is-collapsed")`);
+  await evaluate(client, `document.querySelector("#summaryBtn").click()`);
   await new Promise(resolve => setTimeout(resolve, 150));
   const recap = await evaluate(client, `({ text: document.querySelector("#summaryText").textContent, scripts: document.querySelectorAll("#summaryText script").length, cards: document.querySelectorAll(".chapter-card").length })`);
   assert.equal(recap.cards, 1, "saved meeting should render a chapter card");
-  assert.match(recap.text, /公開日は未定/);
+  assert.match(recap.text, /検証が完了していないため公開日は未定/);
   assert.equal(recap.scripts, 0, "model strings must remain text");
-  assert.ok(await evaluate(client, `window.__exportImageFetched > 0`), 'recap export must fetch embedded images');
+  assert.equal(await evaluate(client, `getComputedStyle(document.querySelector('#summaryPanelTitle')).writingMode`), 'horizontal-tb');
+  assert.ok(await evaluate(client, `document.querySelector('#summaryText').getBoundingClientRect().width > 400`), 'minutes need readable width');
+  assert.equal(await evaluate(client, `document.querySelectorAll('#summaryText .chapter-images img').length`), 1, 'images appear inside minutes');
+  assert.equal(await evaluate(client, `document.querySelector('#exportRecap')`), null, 'minutes must not require HTML download');
+  assert.ok(await evaluate(client, `document.querySelector('#summaryText .chapter-images img').naturalWidth > 0`), 'inline image must load');
   await evaluate(client, `(() => { document.querySelector("#assistantQuestion").value = "公開日は？"; document.querySelector("#assistantAsk").click(); })()`);
   await new Promise(resolve => setTimeout(resolve, 150));
   const answer = await evaluate(client, `({ text: document.querySelector("#assistantTurns").textContent, source: window.__meetingQuestion, citations: document.querySelectorAll("#assistantTurns .meeting-citation").length })`);

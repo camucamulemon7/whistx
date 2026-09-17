@@ -559,7 +559,7 @@ function applySummaryPromptEditorOpen(value) {
   }
   if (summaryPromptToggleBtn) {
     summaryPromptToggleBtn.setAttribute("aria-expanded", state.summaryPromptEditorOpen ? "true" : "false");
-    summaryPromptToggleBtn.textContent = state.summaryPromptEditorOpen ? "要約方針を閉じる" : "要約方針";
+    summaryPromptToggleBtn.textContent = state.summaryPromptEditorOpen ? "議事録の作成方針を閉じる" : "議事録の作成方針";
   }
 }
 
@@ -653,7 +653,7 @@ function applyPanelCollapseState(panel, collapsed, options = {}) {
   const persist = options.persist !== false;
   const key = panel === "proofread" || panel === "summary" ? panel : "transcript";
   state.panelCollapsed[key] = !!collapsed;
-  const collapseAvailable = window.innerWidth > WORKSPACE_STACK_BREAKPOINT;
+  const collapseAvailable = !workspacePanelsEl?.classList.contains("meeting-layout") && window.innerWidth > WORKSPACE_STACK_BREAKPOINT;
   const visuallyCollapsed = collapseAvailable && !!collapsed;
 
   const panelEl = document.querySelector(`.${key}-panel`);
@@ -2041,7 +2041,7 @@ function setSummary(text, meta) {
   } else {
     summaryTextEl.innerHTML = `
       <div class="empty-state small">
-        <p class="empty-description">文字起こしができたら、ここで要点をまとめられます</p>
+        <p class="empty-description">文字起こしから、議論の経緯・決定事項・次のアクションを画像付きの議事録として表示します。</p>
       </div>
     `;
   }

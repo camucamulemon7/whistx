@@ -326,7 +326,7 @@
             <div class="meeting-navigation">
             <nav class="meeting-tabs" role="tablist" aria-label="会議の表示">
               <button id="meetingTranscriptTab" type="button" role="tab" data-meeting-tab="transcript" aria-controls="meetingTranscriptPanel" aria-selected="true">文字起こし</button>
-              <button id="meetingSummaryTab" type="button" role="tab" data-meeting-tab="summary" aria-controls="meetingSummaryPanel" aria-selected="false" tabindex="-1">会議の要約</button>
+              <button id="meetingSummaryTab" type="button" role="tab" data-meeting-tab="summary" aria-controls="meetingSummaryPanel" aria-selected="false" tabindex="-1">議事録</button>
               <button id="meetingMaterialsTab" type="button" role="tab" data-meeting-tab="materials" aria-controls="meetingMaterialsPanel" aria-selected="false" tabindex="-1">共有資料</button>
               <button id="meetingAssistantTab" type="button" role="tab" data-meeting-tab="assistant" aria-controls="meetingAssistantPanel" aria-selected="false" tabindex="-1">アシスタント</button>
             </nav>
@@ -469,7 +469,7 @@
               <section id="meetingSummaryPanel" class="summary-panel glass-panel" aria-labelledby="summaryPanelTitle">
                 <header class="panel-header">
                   <div class="panel-title-group">
-                    <h2 id="summaryPanelTitle" class="panel-title">会議の要約</h2>
+                    <h2 id="summaryPanelTitle" class="panel-title">議事録</h2>
                     <span id="summaryMeta" class="panel-badge">未実行</span>
                   </div>
                   <div class="ai-result-tabs" aria-label="編集結果の切り替え">
@@ -478,17 +478,16 @@
                   </div>
                   <div class="panel-actions">
                     <button id="summaryPromptToggleBtn" type="button" class="btn-secondary" aria-controls="summaryPromptEditor" aria-expanded="false">
-                      要約方針
+                      議事録の作成方針
                     </button>
                     <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="summary" aria-label="要約をたたむ" title="たたむ">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="15 18 9 12 15 6"/>
                       </svg>
                     </button>
-                    <button id="summaryBtn" type="button" class="btn-action" aria-label="要約を生成">
-                      <span id="summaryBtnLabel">要約する</span>
+                    <button id="summaryBtn" type="button" class="btn-action" aria-label="議事録を作成">
+                      <span id="summaryBtnLabel">議事録を作成</span>
                     </button>
-                    <button id="exportRecap" type="button" class="btn-secondary" disabled>画像付きで保存</button>
                     <button id="copySummaryBtn" type="button" class="icon-btn" aria-label="要約をコピー" title="要約をコピー">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
@@ -500,8 +499,8 @@
                 <div id="summaryPromptEditor" class="summary-prompt-editor" hidden>
                   <div class="summary-prompt-editor-header">
                     <div>
-                      <strong>要約方針</strong>
-                      <p class="setting-hint">要約するときだけ使います。空欄の場合は既定の方針でまとめます。</p>
+                      <strong>議事録の作成方針</strong>
+                      <p class="setting-hint">空欄の場合も、議論の経緯・決定事項・次のアクションを詳しく記録します。</p>
                     </div>
                   </div>
                   <textarea
@@ -513,7 +512,7 @@
                 </div>
                 <div id="summaryText" class="summary-content">
                   <div class="empty-state small">
-                    <p class="empty-description">文字起こしができたら、ここで要点をまとめられます</p>
+                    <p class="empty-description">文字起こしから、議論の経緯・決定事項・次のアクションを画像付きの議事録として表示します。</p>
                   </div>
                 </div>
               </section>

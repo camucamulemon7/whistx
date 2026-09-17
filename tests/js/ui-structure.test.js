@@ -48,7 +48,7 @@ test("workspace uses a direct task hierarchy and responsive design tokens", asyn
   assert.match(html, /class="settings-intro-title">録音</);
   assert.match(html, /id="transcriptPanelTitle"[^>]*>文字起こし</);
   assert.match(html, /id="proofreadBtnLabel">校正する</);
-  assert.match(html, /id="summaryBtnLabel">要約する</);
+  assert.match(html, /id="summaryBtnLabel">議事録を作成</);
   assert.match(css, /--surface-canvas:/);
   assert.match(css, /@media \(min-width: 1440px\)/);
   assert.match(css, /@media \(max-width: 640px\)/);

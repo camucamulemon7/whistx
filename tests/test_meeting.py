@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from server.services.meeting_intelligence import answer_events, retrieve_segments, generate_recap, read_insights, validate_chapters
+from server.services.meeting_intelligence import answer_events, retrieve_segments, generate_recap, read_insights, validate_chapters, recap_markdown
 from server.services.meeting_source import MeetingError, MeetingSnapshot, load_meeting
 from server.transcription.live import LiveMeeting
 from server.transcription.local_agreement import agreed_prefix, pcm_wav, speech_bounds
@@ -43,6 +43,16 @@ class MeetingTests(unittest.TestCase):
         for changed in [dict(start_id='1'), dict(end_id='0'), dict(summary=[dict(text='捏造', source_ids=['other'])])]:
             with self.subTest(changed=changed), self.assertRaises(MeetingError):
                 validate_chapters(dict(chapters=[{**self.chapter, **changed}]), self.rows)
+
+    def test_minutes_details_preserve_evidence_and_markdown(self):
+        chapter = {**self.chapter, 'discussion': [dict(text='公開日は未定のため金曜までに確認する。', source_ids=['0', '1'])]}
+        chapters = validate_chapters(dict(chapters=[chapter]), self.rows)
+        self.assertEqual(chapters[0]['discussion'][0]['sourceIds'], ['0', '1'])
+        self.assertIn('議論の経緯・詳細', recap_markdown(dict(chapters=chapters)))
+        self.assertIn('公開日は未定のため金曜までに確認する。', recap_markdown(dict(chapters=chapters)))
+        chapter['discussion'][0]['source_ids'] = ['invented']
+        with self.assertRaises(MeetingError):
+            validate_chapters(dict(chapters=[chapter]), self.rows)
 
     def test_answer_repairs_missing_citations(self):
         responses = iter(['公開日は未定です。', '公開日は未定です。[S1]'])

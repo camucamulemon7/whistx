@@ -1,6 +1,6 @@
 import { fetchJson } from "../api/client.js";
 import { readSseJsonStream } from "../api/sse.js";
-import { escapeHtml, formatTimestamp } from "../ui/format.js";
+import { formatTimestamp } from "../ui/format.js";
 
 function element(tag, className, text = "") {
   const node = document.createElement(tag);
@@ -90,6 +90,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
     next = ["transcript", "summary", "materials", "assistant"].includes(next) ? next : "transcript";
     view = next;
     panels.dataset.meetingView = next;
+    panels.querySelectorAll(":scope > .is-collapsed").forEach(panel => panel.classList.remove("is-collapsed"));
     document.querySelectorAll("[data-meeting-tab]").forEach((button) => {
       const selected = button.dataset.meetingTab === next;
       button.setAttribute("aria-selected", String(selected));
@@ -117,7 +118,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
     askButton.textContent = answerController ? "キャンセル" : "送信";
     askButton.setAttribute("aria-busy", String(Boolean(answerController)));
     summaryButton.setAttribute("aria-busy", String(Boolean(recapController)));
-    summaryLabel.textContent = recapController ? "キャンセル" : "要約する";
+    summaryLabel.textContent = recapController ? "キャンセル" : "議事録を作成";
     updateAccess();
   }
 
@@ -125,7 +126,6 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
     const access = getAccess();
     const message = access === "login" ? "会議アシスタントにはログインが必要です。ゲストでは文字起こしのみ利用できます。"
       : access === "unavailable" ? "会議アシスタントを利用できません。サーバーの機能設定を確認してください。" : "";
-    document.querySelector("#exportRecap").disabled = access !== "ready" || !getSource() || Boolean(recapController);
     const notice = document.querySelector("#assistantAccessNotice");
     notice.hidden = !message;
     notice.textContent = message;
@@ -148,7 +148,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   function renderRecap(recap) {
     if (!recap) return;
     recapRoot.replaceChildren();
-    summaryMeta.textContent = recap.stale ? "更新あり" : recap.provisional ? "ここまでの要約" : "会議の要約";
+    summaryMeta.textContent = recap.stale ? "更新あり" : recap.provisional ? "ここまでの議事録" : "議事録";
     const note = element("p", "meeting-note", `${formatTimestamp(recap.throughMs)} までの発話をもとに作成${recap.stale ? " · 新しい発話があります。再生成で更新できます。" : ""}`);
     recapRoot.append(note);
     const sources = new Map((recap.sources || []).map((row) => [row.id, row]));
@@ -168,7 +168,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
       const first = sources.get(chapter.sourceIds?.[0]);
       if (first) heading.append(sourceButton(first, `${formatTimestamp(chapter.startMs)}–${formatTimestamp(chapter.endMs)}`));
       card.append(heading);
-      for (const [field, title] of [["summary", "要点"], ["decisions", "決定事項"], ["actions", "宿題"], ["open_questions", "未決事項"]]) {
+      for (const [field, title] of [["summary", "概要"], ["discussion", "議論の経緯・詳細"], ["decisions", "決定事項"], ["actions", "次のアクション"], ["open_questions", "未決事項"]]) {
         if (!chapter[field]?.length) continue;
         card.append(element("h4", "chapter-section-title", title));
         const list = element("ul", "chapter-facts");
@@ -191,7 +191,6 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
       if (frames.childElementCount) card.append(frames);
       recapRoot.append(card);
     }
-    document.querySelector("#exportRecap").disabled = !recap.chapters?.length;
   }
 
   function imageCard(image) {
@@ -307,11 +306,11 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
         body: JSON.stringify({ ...source, prompt: document.querySelector("#summaryPrompt")?.value || "" }), signal: controller.signal, timeoutMs: 300_000 });
       if (version !== generation || controller.signal.aborted) return;
       payload = { ...payload, ...result };
-      onRecap(result.summary, "会議の要約");
+      onRecap(result.summary, "議事録");
       renderRecap(result.recap);
       renderMaterials();
     } catch (error) {
-      if (version === generation) summaryMeta.textContent = error.code === "aborted" ? "要約キャンセル" : error.message === "empty_transcript" ? "確定した発話を待っています" : "要約に失敗しました。再試行できます";
+      if (version === generation) summaryMeta.textContent = error.code === "aborted" ? "議事録作成をキャンセル" : error.message === "empty_transcript" ? "確定した発話を待っています" : "議事録の作成に失敗しました。再試行できます";
     } finally {
       if (recapController === controller) { recapController = null; busy(); }
     }
@@ -383,44 +382,6 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
     question.value = button.dataset.meetingQuestion;
     ask();
   }));
-
-  async function exportRecap() {
-    if (!payload?.recap) await generateRecap();
-    if (!payload?.recap) return;
-    const button = document.querySelector("#exportRecap");
-    button.disabled = true;
-    try {
-      const clone = recapRoot.cloneNode(true);
-      clone.querySelector(".chapter-index")?.remove();
-      for (const image of clone.querySelectorAll("img")) {
-        const response = await fetch(safeMediaUrl(image.getAttribute("src")));
-        if (!response.ok) throw new Error("image_download_failed");
-        const blob = await response.blob();
-        image.src = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-      }
-      for (const node of clone.querySelectorAll("button")) {
-        const span = document.createElement("span");
-        span.append(...node.childNodes);
-        node.replaceWith(span);
-      }
-      const sourceText = (payload.recap.sources || []).map((row) => `<p><small>${escapeHtml(formatTimestamp(row.startMs))}</small> ${escapeHtml(row.text)}</p>`).join("");
-      const html = `<!doctype html><html lang="ja"><meta charset="utf-8"><title>会議の要約</title><style>body{font:16px/1.8 system-ui,sans-serif;max-width:900px;margin:40px auto;padding:0 20px;color:#202124}img{max-width:100%;height:auto}article{border-top:1px solid #ddd;padding:20px 0}figure{margin:16px 0}h4{margin-bottom:4px}.meeting-citation,small,figcaption{color:#555;font-size:12px;margin-left:8px}.action-owner{display:block;color:#555}</style><body><h1>会議の要約</h1>${clone.innerHTML}<h2>出典の文字起こし</h2>${sourceText}</body></html>`;
-      const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "meeting-recap.html";
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch {
-      summaryMeta.textContent = "画像付き保存に失敗しました。再試行できます";
-    } finally { button.disabled = false; }
-  }
-  document.querySelector("#exportRecap").addEventListener("click", exportRecap);
 
   function liveEvent(event) {
     if (["final", "transcript_revision", "transcript_snapshot"].includes(event.type)) {
