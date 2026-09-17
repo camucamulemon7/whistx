@@ -306,6 +306,14 @@ python3 -c 'import secrets; print(secrets.token_hex(32))'
 ./podman-run.sh
 ```
 
+モデル設定は `.env` ではなく、初回管理者登録後の「管理者設定」画面で行います。ASR・要約（議事録、アシスタント、翻訳）の接続先、モデル名、APIキーを保存し、コンテナを再起動してください。認証不要のASRには任意のAPIキー文字列を指定します。モデル未設定でも管理画面は起動できます。
+
+設定は `${APP_DATA_DIR}/admin-settings.json` に権限0600で保存され、コンテナの再作成でも残ります。`.env` に残すのはセッション秘密鍵、ポート、DB、保存ディレクトリ等の起動設定です。管理画面の設定が環境変数より優先されます。旧環境変数は互換用として引き続き利用可能です。
+
+Podmanの通常ネットワークでは、モデル接続先の `localhost` / `127.0.0.1` / `::1` を `host.containers.internal` に起動時だけ変換します。`PODMAN_NETWORK=host` とホスト上の直接起動では変換しません。WSLでsystemdのユーザーセッションが使えない場合は `.env` に `PODMAN_CGROUP_MANAGER=cgroupfs` を設定してください。
+
+ソース更新後は `.env` の `CONTAINER_BUILD_POLICY=always` でイメージも更新できます。`missing` は既存イメージを再利用します。
+
 `podman-run.sh` builds with `--format docker` by default so the image `HEALTHCHECK` is preserved. Override with `PODMAN_BUILD_FORMAT=oci` only if you intentionally want OCI output and accept that Podman will ignore the healthcheck.
 
 Podmanのブリッジネットワークでは、HTTP APIの接続先が `localhost:ポート` または `127.0.0.1:ポート` の場合、起動時に `host.containers.internal` へ置き換えます。ホスト実行用の `.env` は変更しません。`PODMAN_NETWORK=host` の場合は置き換えません。
@@ -344,13 +352,12 @@ PRs are the only place where these tags are advanced.
 
 ## Minimal Configuration
 
-At minimum, set these in `.env`:
+Set infrastructure settings in `.env`; configure models in the administrator screen:
 
 ```env
 APP_ENV=development
 APP_DB_URL=postgresql+psycopg://whistx:whistx@localhost:5432/whistx
 TZ=Asia/Tokyo
-ASR_API_KEY=your_api_key
 APP_SESSION_SECRET=replace-with-a-long-random-secret
 ```
 

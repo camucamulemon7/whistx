@@ -33,6 +33,7 @@ def spec(
 
 
 ENV_REGISTRY = (
+    spec("APP_CONTAINER_HOST_GATEWAY", "string", ""),
     spec("APP_ENV", "enum", "development", "development|production"),
     spec("APP_HOST", "string", "0.0.0.0", aliases=("HOST",)),
     spec("APP_PORT", "integer", "8005", "1..65535", aliases=("PORT",)),

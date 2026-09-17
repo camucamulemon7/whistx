@@ -55,3 +55,15 @@ class AdminSettingsTests(unittest.TestCase):
     def test_unlimited_history_never_queries_expired_rows(self):
         with patch.object(history_service, 'settings', SimpleNamespace(history_retention_days=0)):
             self.assertEqual(history_service.cleanup_expired_histories(None), 0)
+
+
+    def test_container_gateway_maps_saved_urls_without_changing_file(self):
+        save_overrides({'ASR_BASE_URL': 'http://localhost:4000/v1', 'SUMMARY_BASE_URL': 'https://[::1]:4001/v1'})
+        with patch.dict(os.environ, {'APP_CONTAINER_HOST_GATEWAY': 'host.containers.internal'}):
+            load_overrides()
+            self.assertEqual(os.environ['ASR_BASE_URL'], 'http://host.containers.internal:4000/v1')
+            self.assertEqual(os.environ['SUMMARY_BASE_URL'], 'https://host.containers.internal:4001/v1')
+        self.assertEqual(read_overrides()['ASR_BASE_URL'], 'http://localhost:4000/v1')
+        with patch.dict(os.environ, {'APP_CONTAINER_HOST_GATEWAY': ''}):
+            load_overrides()
+            self.assertEqual(os.environ['ASR_BASE_URL'], 'http://localhost:4000/v1')

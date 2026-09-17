@@ -8,7 +8,6 @@ source "${SCRIPT_DIR}/scripts/runtime_common.sh"
 
 load_project_env "${SCRIPT_DIR}"
 resolve_app_runtime_env "${SCRIPT_DIR}"
-require_asr_api_key "run.sh"
 
 VENV_DIR="${DEV_VENV_DIR:-${VENV_DIR:-${SCRIPT_DIR}/.venv}}"
 VENV_DIR="$(resolve_path_from_root "${SCRIPT_DIR}" "${VENV_DIR}")"

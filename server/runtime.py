@@ -185,7 +185,7 @@ async def on_startup() -> None:
     if settings.langfuse_enabled and settings.langfuse_capture_content:
         logger.warning("Langfuse content capture is enabled: transcription, prompts, glossary, and model output may be sent to the configured telemetry provider; see docs/privacy.md")
 
-    TRANSCRIBER_FACTORY = _build_transcriber_factory()
+    TRANSCRIBER_FACTORY = _build_transcriber_factory() if settings.openai_api_key else None
     AUDIO_PREPROCESSOR = AudioPreprocessor(
         ffmpeg_bin=settings.ffmpeg_bin,
         sample_rate=settings.asr_preprocess_sample_rate,
