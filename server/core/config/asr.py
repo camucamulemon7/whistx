@@ -12,6 +12,8 @@ class AsrConfig:
     asr_realtime_window_seconds: int
     asr_high_accuracy_enabled: bool
     asr_high_accuracy_window_seconds: int
+    asr_high_accuracy_min_seconds: int
+    asr_high_accuracy_silence_ms: int
     asr_high_accuracy_priority: int
     asr_high_accuracy_max_rt_lag_seconds: float
     asr_high_accuracy_timeout_seconds: float
@@ -73,6 +75,8 @@ def load_asr_config() -> AsrConfig:
         asr_realtime_window_seconds=max(1, min(10, to_int_alias(5, "ASR_REALTIME_WINDOW_SECONDS"))),
         asr_high_accuracy_enabled=to_bool_alias(True, "ASR_HIGH_ACCURACY_ENABLED"),
         asr_high_accuracy_window_seconds=max(30, min(120, to_int_alias(60, "ASR_HIGH_ACCURACY_WINDOW_SECONDS"))),
+        asr_high_accuracy_min_seconds=max(5, min(60, to_int_alias(10, "ASR_HIGH_ACCURACY_MIN_SECONDS"))),
+        asr_high_accuracy_silence_ms=max(300, min(3000, to_int_alias(700, "ASR_HIGH_ACCURACY_SILENCE_MS"))),
         asr_high_accuracy_priority=max(1, to_int_alias(10, "ASR_HIGH_ACCURACY_PRIORITY")),
         asr_high_accuracy_max_rt_lag_seconds=max(0.25, to_float_alias(2.0, "ASR_HIGH_ACCURACY_MAX_RT_LAG_SECONDS")),
         asr_high_accuracy_timeout_seconds=max(1.0, to_float_alias(180.0, "ASR_HIGH_ACCURACY_TIMEOUT_SECONDS")),
