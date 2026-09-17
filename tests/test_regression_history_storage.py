@@ -328,7 +328,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(config.history_retention_days, 14)
 
 
-    def test_history_retention_default_is_seven_days(self) -> None:
+    def test_history_retention_default_is_unlimited(self) -> None:
         with patch.dict(
             os.environ,
             {
@@ -338,7 +338,7 @@ class RegressionTests(unittest.TestCase):
             clear=False,
         ):
             config = load_app_config()
-        self.assertEqual(config.history_retention_days, 7)
+        self.assertEqual(config.history_retention_days, 0)
 
 
     def test_history_save_uses_sharded_storage_and_zip_is_generated_on_demand(self) -> None:

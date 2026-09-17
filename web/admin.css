@@ -377,3 +377,7 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+.server-settings-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.server-settings-form label { display:flex; flex-direction:column; gap:6px; }
+.server-settings-form input,.server-settings-form select { padding:10px; border:1px solid var(--border-primary); border-radius:6px; background:var(--bg-primary); color:var(--text-primary); }

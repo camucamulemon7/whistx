@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from .overrides import load_overrides
 from .app import AppConfig, load_app_config
 from .asr import AsrConfig, load_asr_config
 from .auth import AuthConfig, load_auth_config
@@ -82,4 +83,6 @@ def load_settings() -> Settings:
     )
 
 
+
+load_overrides()
 settings = load_settings()

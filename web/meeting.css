@@ -78,7 +78,7 @@ body { background:var(--surface-canvas); }
 .meeting-tabs { display:flex; flex:none; align-items:center; gap:22px; padding:0 24px; height:47px; border-bottom:1px solid var(--meeting-line); overflow-x:auto; }
 .meeting-tabs button { flex:none; height:100%; padding:0 1px; background:none; border:0; border-bottom:2px solid transparent; border-radius:0; font:inherit; font-size:12px; font-weight:550; color:var(--meeting-muted); cursor:pointer; white-space:nowrap; }
 .meeting-tabs button[aria-selected="true"] { color:var(--meeting-accent); border-bottom-color:var(--meeting-accent); }
-.meeting-layout { display:grid !important; grid-template-columns:minmax(0,1fr) 338px !important; grid-template-rows:minmax(0,1fr) !important; flex:1; min-height:0; gap:0 !important; overflow:hidden; }
+.meeting-layout { display:grid !important; grid-template-columns:minmax(0,1fr) var(--assistant-width,338px) !important; grid-template-rows:minmax(0,1fr) !important; flex:1; min-height:0; gap:0 !important; overflow:hidden; }
 .meeting-layout > .panel-resizer, .meeting-layout .panel-collapse-btn, .meeting-layout .ai-result-tabs { display:none !important; }
 .meeting-layout > .glass-panel { margin:0; padding:0; border:0; border-radius:0; box-shadow:none; min-height:0; min-width:0; background:var(--meeting-paper); }
 .meeting-layout > .transcript-panel, .meeting-layout > .summary-panel, .meeting-layout > .proofread-panel, .meeting-layout > .meeting-materials { display:none !important; grid-column:1; grid-row:1; }
@@ -220,3 +220,10 @@ body { background:var(--surface-canvas); }
   .assistant-suggestions, .assistant-live-context { display:none; }
   .assistant-form textarea { min-height:48px; height:48px; }
 }
+
+/* Keep the divider over the panel edge so it does not consume a grid column. */
+#assistantResize { grid-column:2; grid-row:1; width:9px; margin-left:-5px; z-index:5; cursor:col-resize; touch-action:none; }
+#assistantResize:hover, #assistantResize:focus-visible { background:var(--meeting-accent); opacity:.45; }
+.meeting-layout.is-assistant-collapsed #assistantResize { display:none; }
+.settings-panel .setting-group:has(#diarizationEnabled), #diarizationConfigRow { display:none !important; }
+@media(max-width:1050px) { #assistantResize { display:none; } }

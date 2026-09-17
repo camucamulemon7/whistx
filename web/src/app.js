@@ -389,7 +389,7 @@ const state = {
     keycloakEnabled: false,
     keycloakButtonLabel: "Keycloakでログイン",
     guestTranscriptionAllowed: false,
-    historyRetentionDays: 7,
+    historyRetentionDays: 0,
   },
   history: {
     items: [],
@@ -1760,6 +1760,7 @@ function setSessionSettingsLocked(locked = isRecordingInteractionLocked()) {
   document.body.classList.toggle("session-settings-locked", !!locked);
   updateDiarizationSpeakerUi();
   updateSharedVocabularyMeta();
+  meetingWorkspace?.syncSource();
 }
 
 function formatHistoryMeta(item) {
@@ -1770,7 +1771,8 @@ function formatHistoryMeta(item) {
 }
 
 function formatHistoryDaysRemaining(item) {
-  const retentionDays = Math.max(1, Number(state.auth.historyRetentionDays || 7));
+  const retentionDays = Math.max(0, Number(state.auth.historyRetentionDays ?? 0));
+  if (!retentionDays) return "無期限";
   if (!item?.savedAt) return `${retentionDays}日で削除`;
   const savedAtMs = new Date(item.savedAt).getTime();
   if (!Number.isFinite(savedAtMs)) return `${retentionDays}日で削除`;
@@ -1946,6 +1948,7 @@ function renderAuthState() {
   updateHistoryEmptyState();
   updateSaveControls();
   updateSharedVocabularyMeta();
+  meetingWorkspace?.syncSource();
 }
 
 function syncAuthProfileEditor() {
@@ -4787,6 +4790,7 @@ function applySharedVocabulary(payload, options = {}) {
     sharedVocabularyEl.value = text;
   }
   updateSharedVocabularyMeta();
+  meetingWorkspace?.syncSource();
 }
 
 function updateSharedVocabularyMeta() {
@@ -5072,7 +5076,7 @@ async function loadAuthState() {
       state.auth.guestTranscriptionAllowed = !!payload?.guestTranscriptionAllowed;
       state.auth.profileEditorOpen = false;
       state.auth.profileSaving = false;
-      state.auth.historyRetentionDays = Math.max(1, Number(payload?.historyRetentionDays || 7));
+      state.auth.historyRetentionDays = Math.max(0, Number(payload?.historyRetentionDays ?? 0));
       state.auth.keycloakEnabled = !!payload?.keycloakEnabled;
       state.auth.keycloakButtonLabel = String(payload?.keycloakButtonLabel || "Keycloakでログイン");
       try {
@@ -5101,7 +5105,7 @@ async function loadAuthState() {
     state.auth.profileSaving = false;
     state.selfSignupEnabled = !!payload.selfSignupEnabled;
     state.auth.guestTranscriptionAllowed = !!payload.guestTranscriptionAllowed;
-    state.auth.historyRetentionDays = Math.max(1, Number(payload.historyRetentionDays || 7));
+    state.auth.historyRetentionDays = Math.max(0, Number(payload.historyRetentionDays ?? 0));
     state.auth.bootstrapAdminRequired = !!payload.bootstrapAdminRequired;
     state.auth.pendingApprovalCount = Number(payload.pendingApprovalCount || 0);
     state.auth.keycloakEnabled = !!payload.keycloakEnabled;

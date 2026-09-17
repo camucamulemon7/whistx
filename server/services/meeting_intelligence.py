@@ -207,6 +207,10 @@ def retrieve_segments(snapshot: MeetingSnapshot, question: str, budget: int = MA
     rows = snapshot.segments
     if not rows:
         return []
+    recent_match = re.search(r"(?:直近|過去|最後の?)\s*(\d{1,3})\s*分", question)
+    if recent_match:
+        cutoff = snapshot.through_ms - int(recent_match[1]) * 60_000
+        rows = [row for row in rows if row['endMs'] >= cutoff]
     if len(_source_text(rows)) <= budget:
         return rows
     query = _terms(question)
@@ -275,10 +279,26 @@ def answer_events(snapshot: MeetingSnapshot, model: Any, *, question: str, cance
     else:
         answer = NO_ANSWER
     keys = list(dict.fromkeys(re.findall(r"\[(S\d+)\]", answer)))
-    if not answer or any(key not in aliases for key in keys) or (not keys and NO_ANSWER not in answer):
-        # The UI replaces the draft with this verified final result. Never keep
-        # a dangling link or silently invent a citation for an ungrounded answer.
-        answer, keys = NO_ANSWER, []
+    if not answer or any(key not in aliases for key in keys) or (not keys and answer != NO_ANSWER):
+        # A citation-format failure is not evidence that the meeting has no answer.
+        # Regenerate from the same sources once, then surface a validation error.
+        yield {"type": "status", "message": "回答の出典を再確認しています", "throughMs": snapshot.through_ms}
+        if cancelled.is_set():
+            return
+        retry_messages = [*messages, {"role": "user", "content":
+            "回答を再生成してください。各段落に実在する出典番号 [S1] を必ず付けてください。"
+            "使用できる番号: " + ", ".join(aliases)}]
+        answer = ""
+        for delta in model.stream_meeting(retry_messages):
+            if cancelled.is_set():
+                return
+            answer += delta
+            if len(answer) > 24_000:
+                raise MeetingError("meeting_answer_too_long", 502)
+        answer = answer.strip()
+        keys = list(dict.fromkeys(re.findall(r"\[(S\d+)\]", answer)))
+        if not answer or any(key not in aliases for key in keys) or (not keys and answer != NO_ANSWER):
+            raise MeetingError("invalid_meeting_citation", 502)
     citations = [{"label": key, **aliases[key]} for key in keys]
     turn = {
         "question": question,

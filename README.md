@@ -409,7 +409,7 @@ ASR_MODEL=whisper-1
 - `APP_PROMPT_TEMPLATES`
 - `APP_ENV`
 - `APP_DB_URL`
-- `HISTORY_RETENTION_DAYS` default `7`
+- `HISTORY_RETENTION_DAYS` default `0`（保存済み履歴は無期限。1以上で日数を指定）
 - `RUNTIME_TRANSCRIPT_RETENTION_HOURS`
 - `DEBUG_CHUNKS_RETENTION_HOURS`
 - `UNSAVED_RUNTIME_RETENTION_HOURS`
@@ -638,3 +638,5 @@ MIT. See [LICENSE](./LICENSE).
 ### Meeting workspace access
 
 The meeting assistant requires an authenticated account; guest access covers transcription only. The UI displays this requirement above the question field. During recording, authenticated users can ask about recognized speech without stopping. The question field and Send button remain visible while the transcript and answers scroll independently.
+
+管理者は画面右上の「管理者設定」から、保存期間・登録申請・ゲスト利用・ASRと要約モデルの接続先／モデル名／APIキーを変更できます。設定はデータ領域の `admin-settings.json` に保存され、コンテナ再起動後に環境変数より優先して適用されます。APIキーの入力欄は空欄なら既存値を維持し、保存済みのキーは画面へ返しません。接続先にはコンテナから到達できるURLを指定してください（ホスト上のAPIは `http://host.containers.internal:4000/v1` など）。未保存の作業用音声・文字起こしの一時保持は従来どおり24時間です。

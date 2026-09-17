@@ -58,6 +58,34 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
     }
   });
 
+  const divider = document.querySelector('#assistantResize');
+  const clampWidth = width => Math.max(280, Math.min(width, Math.min(640, panels.clientWidth - 360)));
+  function setWidth(width, persist = true) {
+    width = clampWidth(Number(width) || 338);
+    panels.style.setProperty('--assistant-width', `${width}px`);
+    divider.setAttribute('aria-valuenow', String(Math.round(width)));
+    if (persist) { try { localStorage.setItem('whistx_assistant_width', String(width)); } catch {} }
+  }
+  try { setWidth(localStorage.getItem('whistx_assistant_width'), false); } catch { setWidth(338, false); }
+  divider.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    divider.setPointerCapture(event.pointerId);
+  });
+  divider.addEventListener('pointermove', event => {
+    if (divider.hasPointerCapture(event.pointerId)) setWidth(panels.getBoundingClientRect().right - event.clientX);
+  });
+  divider.addEventListener('pointerup', event => {
+    if (divider.hasPointerCapture(event.pointerId)) divider.releasePointerCapture(event.pointerId);
+  });
+  divider.addEventListener('keydown', event => {
+    if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+    event.preventDefault();
+    const width = Number(divider.getAttribute('aria-valuenow'));
+    setWidth(event.key === 'Home' ? 280 : event.key === 'End' ? 640 : width + (event.key === 'ArrowLeft' ? 20 : -20));
+  });
+  window.addEventListener('resize', () => setWidth(divider.getAttribute('aria-valuenow'), false));
+
   function setView(next) {
     next = ["transcript", "summary", "materials", "assistant"].includes(next) ? next : "transcript";
     view = next;
@@ -97,6 +125,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
     const access = getAccess();
     const message = access === "login" ? "会議アシスタントにはログインが必要です。ゲストでは文字起こしのみ利用できます。"
       : access === "unavailable" ? "会議アシスタントを利用できません。サーバーの機能設定を確認してください。" : "";
+    document.querySelector("#exportRecap").disabled = access !== "ready" || !getSource() || Boolean(recapController);
     const notice = document.querySelector("#assistantAccessNotice");
     notice.hidden = !message;
     notice.textContent = message;
@@ -215,6 +244,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
 
   async function refresh() {
     const source = getSource();
+    updateAccess();
     if (!source) return;
     loadController?.abort();
     const controller = new AbortController();
@@ -258,7 +288,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
     renderTurns();
     renderMaterials();
     busy();
-    document.querySelector("#exportRecap").disabled = true;
+    updateAccess();
     refresh();
   }
 
@@ -333,6 +363,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
           empty_transcript: "最初の発話を認識しています。文字起こしが表示されたら、録音中のまま質問できます。",
           summary_not_configured: "会議アシスタントのモデルが未設定です。管理者に要約モデルの設定を依頼してください。",
           meeting_model_unavailable: "回答用モデルに接続できません。モデルの接続設定を確認してください。",
+          invalid_meeting_citation: "回答の出典を検証できませんでした。もう一度質問してください。",
           meeting_model_busy: "回答用モデルが処理中です。少し待ってから再試行してください。",
           rate_limit_exceeded: "質問が集中しています。少し待ってから再試行してください。",
           meeting_http_401: "会議アシスタントにはログインが必要です。",
@@ -354,6 +385,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   }));
 
   async function exportRecap() {
+    if (!payload?.recap) await generateRecap();
     if (!payload?.recap) return;
     const button = document.querySelector("#exportRecap");
     button.disabled = true;
@@ -396,17 +428,8 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
       if (through) document.querySelector("#assistantLiveContext").textContent = `${formatTimestamp(through)} までの発話を参照できます · 録音中も質問可能`;
     }
     if (event.type === "partial") {
-      const root = document.querySelector("#liveTranscript");
-      let row = [...root.children].find((item) => item.dataset.track === event.track);
-      if (!event.text) { row?.remove(); root.hidden = !root.childElementCount; return; }
-      if (!row) { row = element("div", "live-utterance"); row.dataset.track = event.track; root.append(row); }
-      row.replaceChildren(element("span", "live-speaker", event.speaker || "認識中"));
-      const text = element("span", "live-hypothesis");
-      const stable = event.text.startsWith(event.stableText || "") ? event.stableText || "" : "";
-      text.append(element("span", "live-stable", stable), document.createTextNode(event.text.slice(stable.length)));
-      row.append(text);
-      root.hidden = false;
-      document.querySelector("#liveConnection").textContent = event.backlogMs > 3000 ? `認識待ち ${Math.round(event.backlogMs / 1000)}秒` : "ライブ文字起こし";
+      // Partial hypotheses are replaced frequently; show only committed segments.
+      document.querySelector("#liveTranscript").hidden = true;
     } else if (event.type === "screen") {
       if (!payload) payload = { images: [] };
       const id = event.screenshotPath.split("/").pop();

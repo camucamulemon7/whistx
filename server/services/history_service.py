@@ -639,6 +639,8 @@ def cleanup_expired_runtime_data(db: Session) -> None:
 
 
 def cleanup_expired_histories(db: Session) -> int:
+    if settings.history_retention_days == 0:
+        return 0
     cutoff = utcnow() - timedelta(days=settings.history_retention_days)
     expired_histories = history_repository.list_histories_saved_before(db, cutoff=cutoff)
     if not expired_histories:

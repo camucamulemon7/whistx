@@ -333,6 +333,15 @@ async function verifyDesktopPanelLayout(client) {
     assert.equal(layout.resizer, "none");
     assert.equal(layout.historyAligned, true);
     assert.equal(layout.overflow, false);
+    const resize = await evaluate(client, `(() => {
+      const divider = document.querySelector('#assistantResize');
+      const before = Number(divider.getAttribute('aria-valuenow'));
+      divider.dispatchEvent(new KeyboardEvent('keydown', { key:'ArrowLeft', bubbles:true }));
+      const after = Number(divider.getAttribute('aria-valuenow'));
+      divider.dispatchEvent(new KeyboardEvent('keydown', { key:'ArrowRight', bubbles:true }));
+      return after - before;
+    })()`);
+    assert.equal(resize, 20, 'assistant divider supports keyboard resizing');
     const collapsed = await evaluate(client, `(() => {
       const transcript = document.querySelector("#meetingTranscriptPanel");
       const previousWidth = transcript.getBoundingClientRect().width;
@@ -1674,13 +1683,17 @@ async function verifyMeetingInsights(client) {
     (() => {
       const original = window.fetch;
       const source = { id: "000001", seq: 1, text: "履歴の文字起こし", startMs: 0, endMs: 1000 };
-      const recap = { revision: "r1", throughMs: 1000, sources: [source], chapters: [{ id: "chapter-1", title: "公開準備 <script>unsafe</script>", startMs: 0, endMs: 1000, sourceIds: [source.id], summary: [{ text: "公開日は未定", sourceIds: [source.id] }], decisions: [], actions: [], open_questions: [], imageIds: [] }] };
+      const recap = { revision: "r1", throughMs: 1000, sources: [source], chapters: [{ id: "chapter-1", title: "公開準備 <script>unsafe</script>", startMs: 0, endMs: 1000, sourceIds: [source.id], summary: [{ text: "公開日は未定", sourceIds: [source.id] }], decisions: [], actions: [], open_questions: [], imageIds: ["frame.png"] }] };
       window.fetch = async (input, options = {}) => {
         const url = String(input);
         const json = data => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
         if (url.includes("/api/health")) return json({ asrReady: true, model: "browser-test", wsPath: "/ws/transcribe", meetingInsights: true });
         if (url.includes("/api/meeting/insights")) return json({ revision: "r1", throughMs: 1000, images: [], turns: [], recap: null });
-        if (url.includes("/api/meeting/recap")) return json({ revision: "r1", throughMs: 1000, images: [], recap, summary: "公開日は未定" });
+        if (url.includes('/api/history/test/screenshots/frame.png')) {
+          window.__exportImageFetched = (window.__exportImageFetched || 0) + 1;
+          return new Response(Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=='), c=>c.charCodeAt(0)), {headers:{'Content-Type':'image/png'}});
+        }
+        if (url.includes("/api/meeting/recap")) return json({ revision: "r1", throughMs: 1000, images: [{id:'frame.png', timeMs:0,url:'/api/history/test/screenshots/frame.png'}], recap, summary: "公開日は未定" });
         if (url.includes("/api/meeting/ask")) {
           window.__meetingQuestion = JSON.parse(options.body);
           const events = [{ type: "delta", text: "公開日は未定です。[S1]" }, { type: "done", question: "公開日は？", answer: "公開日は未定です。[S1]", citations: [{ ...source, label: "S1" }] }];
@@ -1695,14 +1708,17 @@ async function verifyMeetingInsights(client) {
   await waitForApp(client);
   await new Promise(resolve => setTimeout(resolve, 200));
   await client.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  assert.equal(await evaluate(client, `document.querySelector('#assistantAccessNotice').hidden`), true, 'logged-in users must not see a login warning before selecting a meeting');
   await evaluate(client, `(() => { window.confirm = () => true; document.querySelector(".history-item-main").click(); })()`);
   await new Promise(resolve => setTimeout(resolve, 200));
-  await evaluate(client, `document.querySelector("#summaryBtn").click()`);
+  assert.equal(await evaluate(client, `document.querySelector('#exportRecap').disabled`), false);
+  await evaluate(client, `document.querySelector("#exportRecap").click()`);
   await new Promise(resolve => setTimeout(resolve, 150));
   const recap = await evaluate(client, `({ text: document.querySelector("#summaryText").textContent, scripts: document.querySelectorAll("#summaryText script").length, cards: document.querySelectorAll(".chapter-card").length })`);
   assert.equal(recap.cards, 1, "saved meeting should render a chapter card");
   assert.match(recap.text, /公開日は未定/);
   assert.equal(recap.scripts, 0, "model strings must remain text");
+  assert.ok(await evaluate(client, `window.__exportImageFetched > 0`), 'recap export must fetch embedded images');
   await evaluate(client, `(() => { document.querySelector("#assistantQuestion").value = "公開日は？"; document.querySelector("#assistantAsk").click(); })()`);
   await new Promise(resolve => setTimeout(resolve, 150));
   const answer = await evaluate(client, `({ text: document.querySelector("#assistantTurns").textContent, source: window.__meetingQuestion, citations: document.querySelectorAll("#assistantTurns .meeting-citation").length })`);
@@ -1786,7 +1802,7 @@ async function verifyLiveRecordingAndRefinement(client) {
   assert.equal(await evaluate(client, `window.__liveStart?.protocolVersion`), 2, "live capture must use the PCM protocol: " + await evaluate(client, `document.querySelector("#toastContainer").textContent + " / " + document.querySelector("#statusText").textContent`));
   await evaluate(client, `window.__liveNode.port.onmessage({ data: { type: "pcm", sampleStart: 0, pcm: new Int16Array(16000).buffer } })`);
   await new Promise(resolve => setTimeout(resolve, 50));
-  assert.match(await evaluate(client, `document.querySelector("#liveTranscript").textContent`), /ライブ録音の/);
+  assert.equal(await evaluate(client, `document.querySelector("#liveTranscript").hidden`), true);
   await evaluate(client, `document.querySelector("#assistantQuestion").value = "ここまでの要点は？"`);
   for (const [width, height] of [[1440, 1000], [1280, 720], [390, 844]]) {
     await client.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 640 });
@@ -1907,7 +1923,7 @@ async function verifyQwenLiveRevision(client) {
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(await evaluate(client, `document.querySelectorAll("#log .log-row").length`), 1);
   assert.match(await evaluate(client, `document.querySelector("#log").textContent`), /APIのreview/);
-  assert.match(await evaluate(client, `document.querySelector("#liveTranscript").textContent`), /次の発言/);
+  assert.equal(await evaluate(client, `document.querySelector("#liveTranscript").hidden`), true);
   assert.equal(await evaluate(client, `document.querySelector("#log .log-row").dataset.quality`), "high_accuracy");
   assert.match(await evaluate(client, `document.querySelector("#hqStatus").textContent`), /高精度認識を反映/);
   assert.equal(await evaluate(client, `document.querySelector('#log .transcript-quality').textContent`), "高精度");

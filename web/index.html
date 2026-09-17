@@ -81,7 +81,7 @@
               <span>詳細設定</span>
             </button>
             <button id="adminQueueBtn" type="button" class="header-action-btn" hidden>
-              承認待ち
+              管理者設定
               <span id="adminQueueBadge" class="header-action-badge">0</span>
             </button>
             <div id="authUserView" class="header-user-chip" hidden>
@@ -522,6 +522,7 @@
                 <div class="meeting-material-controls"><label><input id="meetingCaptureEnabled" type="checkbox" checked> 共有画面を自動保存</label><p class="meeting-note">画面の変化を検出して保存します（最大45秒に1枚）。文字起こしの「共有画面を表示」からも開けます。</p></div>
                 <div id="meetingImages" class="meeting-material-grid"></div>
               </section>
+              <div id="assistantResize" title="ドラッグまたは矢印キーで幅を調整" role="separator" tabindex="0" aria-label="アシスタントの幅" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="640" aria-valuenow="338"></div>
               <aside id="meetingAssistantPanel" class="assistant-panel glass-panel" aria-labelledby="assistantTitle">
                 <header class="panel-header"><h2 id="assistantTitle" class="panel-title">会議アシスタント</h2></header>
                 <p id="assistantAccessNotice" class="assistant-access-notice" role="status" hidden></p>
@@ -553,7 +554,7 @@
       <div class="side-panel-header">
         <div>
           <h2 class="side-panel-title">詳細設定</h2>
-          <p class="side-panel-description">文字起こしと画面共有、認識ヒントを設定します。</p>
+          <p class="side-panel-description">文字起こしと画面共有、専門用語・会議メモ（任意）を設定します。</p>
         </div>
         <button id="sidebarClose" type="button" class="icon-btn" aria-label="サイドパネルを閉じる" title="閉じる">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -641,8 +642,8 @@
       <div class="side-panel-section">
         <div class="side-panel-section-header">
           <div>
-            <h3 class="side-panel-subtitle">認識ヒント</h3>
-            <p class="side-panel-description">今回だけ使う補助情報と、全体で共有する用語を分けて設定します。</p>
+            <h3 class="side-panel-subtitle">専門用語・会議メモ（任意）</h3>
+            <p class="side-panel-description">固有名詞の誤認識がある場合に設定してください。通常は空欄で使えます。</p>
           </div>
         </div>
         <div class="prompt-header">

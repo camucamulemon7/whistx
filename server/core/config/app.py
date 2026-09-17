@@ -116,7 +116,7 @@ def load_app_config() -> AppConfig:
         guest_ws_max_asr_requests=max(1, to_int("GUEST_WS_MAX_ASR_REQUESTS", 120)),
         costly_api_rate_limit_requests=max(1, to_int("COSTLY_API_RATE_LIMIT_REQUESTS", 60)),
         costly_api_rate_limit_window_seconds=max(1, to_int("COSTLY_API_RATE_LIMIT_WINDOW_SECONDS", 60)),
-        history_retention_days=max(1, to_int("HISTORY_RETENTION_DAYS", 7)),
+        history_retention_days=max(0, to_int("HISTORY_RETENTION_DAYS", 0)),
         runtime_transcript_retention_hours=max(1, to_int("RUNTIME_TRANSCRIPT_RETENTION_HOURS", 24)),
         debug_chunks_retention_hours=max(1, to_int("DEBUG_CHUNKS_RETENTION_HOURS", 24)),
         unsaved_runtime_retention_hours=max(1, to_int("UNSAVED_RUNTIME_RETENTION_HOURS", 24)),

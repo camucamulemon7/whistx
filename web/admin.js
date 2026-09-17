@@ -267,3 +267,26 @@ initTheme();
 loadAdminData().catch((error) => {
   statusEl.textContent = error?.message || "読み込みに失敗しました";
 });
+
+const serverForm = document.querySelector('#serverSettingsForm');
+const serverStatus = document.querySelector('#serverSettingsStatus');
+async function loadServerSettings() {
+  try {
+    const result = await fetchJson('/api/admin/settings');
+    for (const [key, value] of Object.entries(result.values)) serverForm.elements.namedItem(key).value = value;
+    for (const [key, configured] of Object.entries(result.configuredSecrets)) serverForm.elements.namedItem(key).placeholder = configured ? '設定済み（変更時のみ入力）' : '未設定';
+  } catch { serverStatus.textContent = '設定を読み込めませんでした'; }
+}
+serverForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = serverForm.querySelector('button');
+  button.disabled = true;
+  try {
+    await fetchJson('/api/admin/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(Object.fromEntries(new FormData(serverForm)))});
+    serverStatus.textContent = '保存しました。コンテナ再起動後に適用されます。';
+    serverForm.elements.ASR_API_KEY.value = '';
+    serverForm.elements.SUMMARY_API_KEY.value = '';
+  } catch { serverStatus.textContent = '保存できませんでした。入力内容を確認してください。'; }
+  finally { button.disabled = false; }
+});
+loadServerSettings();

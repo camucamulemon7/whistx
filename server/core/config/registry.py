@@ -69,7 +69,7 @@ ENV_REGISTRY = (
     spec("GUEST_WS_MAX_ASR_REQUESTS", "integer", "120", ">=1"),
     spec("COSTLY_API_RATE_LIMIT_REQUESTS", "integer", "60", ">=1"),
     spec("COSTLY_API_RATE_LIMIT_WINDOW_SECONDS", "integer", "60", ">=1"),
-    spec("HISTORY_RETENTION_DAYS", "integer", "7", ">=1"),
+    spec("HISTORY_RETENTION_DAYS", "integer", "0", ">=0; 0=unlimited"),
     spec("RUNTIME_TRANSCRIPT_RETENTION_HOURS", "integer", "24", ">=1"),
     spec("DEBUG_CHUNKS_RETENTION_HOURS", "integer", "24", ">=1"),
     spec("UNSAVED_RUNTIME_RETENTION_HOURS", "integer", "24", ">=1"),
