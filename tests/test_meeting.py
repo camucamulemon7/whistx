@@ -54,6 +54,47 @@ class MeetingTests(unittest.TestCase):
         with self.assertRaises(MeetingError):
             validate_chapters(dict(chapters=[chapter]), self.rows)
 
+    def test_recap_repairs_coverage_and_restores_persistent_ids(self):
+        rows = [{**row, 'id': f'display-{i * 16000}-hq'} for i, row in enumerate(self.rows)]
+        calls = []
+        def complete(messages, **kwargs):
+            calls.append(list(messages))
+            chapter = {**self.chapter, 'summary': [dict(text='記録', source_ids=['invented'])]} if len(calls) == 1 else self.chapter
+            return json.dumps(dict(chapters=[chapter]))
+        recap = generate_recap(replace(self.snapshot, segments=rows), SimpleNamespace(model='fixture', complete_meeting=complete))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][-2]['role'], 'assistant')
+        self.assertIn('invalid_meeting_citation', calls[1][-1]['content'])
+        self.assertEqual(recap['chapters'][0]['sourceIds'], [row['id'] for row in rows])
+        self.assertEqual(recap['chapters'][0]['actions'][0]['sourceIds'], [rows[1]['id']])
+
+    def test_recap_splits_failed_pack_without_losing_coverage(self):
+        calls = []
+        def complete(messages, **kwargs):
+            calls.append(messages)
+            if len(calls) <= 2:
+                return json.dumps(dict(chapters=[{**self.chapter, 'summary': [dict(text='記録', source_ids=['invented'])]}]))
+            return json.dumps(dict(chapters=[dict(title='議題', start_id='0', end_id='0', summary=[dict(text='記録', source_ids=['0'])])]))
+        recap = generate_recap(self.snapshot, SimpleNamespace(model='fixture', complete_meeting=complete))
+        self.assertEqual(len(calls), 4)
+        self.assertEqual([id for c in recap['chapters'] for id in c['sourceIds']], ['0', '1'])
+
+    def test_recap_range_is_owned_by_application(self):
+        chapter = {**self.chapter, 'start_id': 'wrong', 'end_id': 'wrong'}
+        model = SimpleNamespace(model='fixture', complete_meeting=lambda *a, **kw: json.dumps(dict(chapters=[chapter])))
+        recap = generate_recap(self.snapshot, model)
+        self.assertEqual(recap['chapters'][0]['sourceIds'], ['0', '1'])
+        self.assertEqual(recap['chapters'][0]['startMs'], 0)
+        self.assertEqual(recap['chapters'][0]['endMs'], 2000)
+
+    def test_recap_failure_keeps_previous_minutes(self):
+        self.snapshot.insight_path.write_text('{"recap":{"previous":true}}')
+        def complete(*args, **kwargs):
+            return json.dumps(dict(chapters=[dict(title='議題', start_id='0', end_id='0', summary=[dict(text='記録', source_ids=['invented'])])]))
+        with self.assertRaises(MeetingError):
+            generate_recap(self.snapshot, SimpleNamespace(model='fixture', complete_meeting=complete))
+        self.assertEqual(json.loads(self.snapshot.insight_path.read_text()), {'recap': {'previous': True}})
+
     def test_answer_repairs_missing_citations(self):
         responses = iter(['公開日は未定です。', '公開日は未定です。[S1]'])
         model = SimpleNamespace(model='fixture', stream_meeting=lambda messages: iter([next(responses)]))

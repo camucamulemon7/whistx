@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LiveCapture } from '../../web/src/meeting/live-capture.js';
-import { safeMediaUrl } from '../../web/src/meeting/workspace.js';
+import { safeMediaUrl, recapErrorMessage } from '../../web/src/meeting/workspace.js';
 
 globalThis.location = { origin: 'http://localhost' };
 globalThis.WebSocket = { OPEN: 1 };
@@ -34,4 +34,10 @@ test('capture resends unacknowledged PCM and finalizes only after durable ACK', 
   assert.equal(sent.at(-1).type, 'stop');
   capture.pump();
   assert.equal(sent.filter(e => e.type === 'stop').length, 1);
+});
+
+ test('recap errors distinguish invalid output, provider failure and timeout', () => {
+  assert.match(recapErrorMessage({message:'invalid_meeting_chapter_range'}), /形式・出典/);
+  assert.match(recapErrorMessage({message:'meeting_model_unavailable'}), /接続/);
+  assert.match(recapErrorMessage({code:'timeout'}), /時間内/);
 });

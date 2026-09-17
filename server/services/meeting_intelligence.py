@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import math
 import re
 from collections import Counter
@@ -10,6 +11,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterator
 
 from .meeting_source import MeetingError, MeetingSnapshot, read_json, write_json_atomic
+
+logger = logging.getLogger(__name__)
 
 MAX_CONTEXT_CHARS = 16_000
 MAX_QUESTION_CHARS = 2_000
@@ -157,6 +160,55 @@ summaryには議題と到達点の概要を、discussionには背景・目的、
 記載すべき内容がない配列は空にします。発話にない内容を補ってはいけません。"""
 
 
+def _recap_pack(rows: list[dict], model: Any, prompt: str, *, depth: int = 0) -> list[dict]:
+    # Persistent segment IDs encode tracks and sample offsets. Use short local
+    # IDs for generation, then restore the exact originals after validation.
+    local_rows = [{**row, "id": str(i)} for i, row in enumerate(rows)]
+    original_ids = {str(i): row["id"] for i, row in enumerate(rows)}
+    messages = [{"role": "system", "content": RECAP_SYSTEM +
+                 "\n今回はアプリが分割した1区間です。この区間全体を1つの章として記録し、chaptersには必ず1件だけ返してください。"
+                 "章内で複数の話題を扱えます。冒頭から末尾まで検討し、内容のある議論を省略しないでください。"
+                 "start_id と end_id はアプリ側で設定するため出力不要です。"}]
+    if prompt.strip():
+        messages.append({"role": "user", "content": "追加の議事録方針（出典とJSON形式の制約は維持）: " + prompt[:4000].replace("{text}", "以下の発話データ").replace("{language}", "日本語")})
+    coverage = f"この区間の全 {len(rows)} 件（id: 0〜{len(rows)-1}）を対象に1章の議事録を作成してください。"
+    messages.append({"role": "user", "content": coverage + "\n発話データ:\n" + _source_text(local_rows)})
+    for attempt in range(2):
+        raw = ""
+        try:
+            raw = model.complete_meeting(messages, json_output=True)
+            value = _parse_json(raw)
+            proposed = value.get("chapters")
+            if not isinstance(proposed, list) or len(proposed) != 1 or not isinstance(proposed[0], dict):
+                raise MeetingError("invalid_meeting_chapters", 502)
+            # The input packet defines the range; the model owns only content
+            # and citations. Do not rely on it to copy timeline boundaries.
+            proposed[0].update(start_id="0", end_id=str(len(rows) - 1))
+            chapters = validate_chapters(value, local_rows)
+            for chapter in chapters:
+                chapter["sourceIds"] = [original_ids[key] for key in chapter["sourceIds"]]
+                for field in ("summary", "discussion", "decisions", "actions", "open_questions"):
+                    for item in chapter[field]:
+                        item["sourceIds"] = [original_ids[key] for key in item["sourceIds"]]
+            return chapters
+        except (MeetingError, ValueError) as exc:
+            if isinstance(exc, ValueError) and str(exc) != "meeting_output_truncated":
+                raise
+            code = exc.code if isinstance(exc, MeetingError) else "meeting_output_truncated"
+            logger.warning("meeting_recap_validation code=%s rows=%d attempt=%d depth=%d", code, len(rows), attempt + 1, depth)
+            if attempt:
+                if len(rows) > 1 and depth < 3:
+                    middle = len(rows) // 2
+                    return (_recap_pack(rows[:middle], model, prompt, depth=depth + 1)
+                            + _recap_pack(rows[middle:], model, prompt, depth=depth + 1))
+                raise MeetingError(code, 502) from exc
+            if raw:
+                messages.append({"role": "assistant", "content": raw})
+            messages.append({"role": "user", "content": f"検証エラー: {code}。" + coverage
+                             + " 各項目の source_ids はその章の範囲内の実在idにしてください。修正した完全なJSONだけを返してください。"})
+    raise AssertionError("unreachable")
+
+
 def generate_recap(snapshot: MeetingSnapshot, model: Any, *, prompt: str = "", max_chars: int = MAX_CONTEXT_CHARS) -> dict:
     if not snapshot.segments:
         raise MeetingError("empty_transcript")
@@ -164,20 +216,10 @@ def generate_recap(snapshot: MeetingSnapshot, model: Any, *, prompt: str = "", m
     packs = _packs(snapshot.segments, min(MAX_CONTEXT_CHARS, max(2000, max_chars)))
     if len(packs) > 32:
         raise MeetingError("meeting_too_large", 413)
-    for rows in packs:
-        messages = [{"role": "system", "content": RECAP_SYSTEM}]
-        if prompt.strip():
-            messages.append({"role": "user", "content": "追加の要約方針（出典とJSON形式の制約は維持）: " + prompt[:4000].replace("{text}", "以下の発話データ").replace("{language}", "日本語")})
-        messages.append({"role": "user", "content": "発話データ:\n" + _source_text(rows)})
-        for attempt in range(2):
-            try:
-                raw = model.complete_meeting(messages, json_output=True)
-                chapters.extend(validate_chapters(_parse_json(raw), rows))
-                break
-            except MeetingError:
-                if attempt:
-                    raise
-                messages.append({"role": "user", "content": "JSON形式・発話id・全発話を連続して覆う章の範囲・各項目のsource_idsを再確認し、正しい完全なJSONを返してください。"})
+    for pack in packs:
+        budget = max(6000, max(len(_source_text([row])) for row in pack))
+        for rows in _packs(pack, budget):
+            chapters.extend(_recap_pack(rows, model, prompt))
     for index, chapter in enumerate(chapters):
         chapter["id"] = f"chapter-{index + 1}"
         # Use actual frames from this time range. A preceding frame can still

@@ -52,6 +52,7 @@ async def meeting_recap(payload: MeetingRecapRequest, user: User = Depends(get_c
                                              prompt=payload.prompt, max_chars=settings.summary_input_max_chars)
         return JSONResponse({**snapshot.public(), "recap": recap, "summary": recap_markdown(recap)})
     except MeetingError as exc:
+        logger.warning("meeting_recap_failed code=%s", exc.code)
         return JSONResponse(status_code=exc.status_code, content={"error": exc.code})
     except Exception as exc:
         return JSONResponse(status_code=502, content=public_error("meeting_model_unavailable", exc, logger))

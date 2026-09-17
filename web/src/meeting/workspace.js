@@ -9,6 +9,17 @@ function element(tag, className, text = "") {
   return node;
 }
 
+export function recapErrorMessage(error) {
+  if (error.code === "aborted") return "議事録作成をキャンセル";
+  if (error.code === "timeout") return "議事録の作成が時間内に完了しませんでした。少し待って再試行してください。";
+  if (error.message === "empty_transcript") return "確定した発話を待っています";
+  if (/^(invalid_meeting_|incomplete_meeting_|empty_meeting_chapter|meeting_output_truncated)/.test(error.message || ""))
+    return "モデルが議事録の形式・出典を正しく返せませんでした。再試行してください。既存の議事録は保持されています。";
+  if (error.message === "meeting_model_unavailable") return "議事録モデルへの接続または応答に問題がありました。管理者設定の接続先を確認してください。";
+  if (error.message === "rate_limit_exceeded") return "作成回数の上限に達しました。少し待って再試行してください。";
+  return "議事録の作成に失敗しました。再試行できます";
+}
+
 export function safeMediaUrl(value) {
   if (typeof value !== "string" || !value.startsWith("/api/")) return "";
   try {
@@ -310,7 +321,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
       renderRecap(result.recap);
       renderMaterials();
     } catch (error) {
-      if (version === generation) summaryMeta.textContent = error.code === "aborted" ? "議事録作成をキャンセル" : error.message === "empty_transcript" ? "確定した発話を待っています" : "議事録の作成に失敗しました。再試行できます";
+      if (version === generation) summaryMeta.textContent = recapErrorMessage(error);
     } finally {
       if (recapController === controller) { recapController = null; busy(); }
     }
