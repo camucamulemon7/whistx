@@ -74,7 +74,7 @@ def load_asr_config() -> AsrConfig:
         asr_backend=backend,
         asr_realtime_window_seconds=max(1, min(10, to_int_alias(5, "ASR_REALTIME_WINDOW_SECONDS"))),
         asr_high_accuracy_enabled=to_bool_alias(True, "ASR_HIGH_ACCURACY_ENABLED"),
-        asr_high_accuracy_window_seconds=max(30, min(120, to_int_alias(60, "ASR_HIGH_ACCURACY_WINDOW_SECONDS"))),
+        asr_high_accuracy_window_seconds=max(30, min(120, to_int_alias(30, "ASR_HIGH_ACCURACY_WINDOW_SECONDS"))),
         asr_high_accuracy_min_seconds=max(5, min(60, to_int_alias(10, "ASR_HIGH_ACCURACY_MIN_SECONDS"))),
         asr_high_accuracy_silence_ms=max(300, min(3000, to_int_alias(700, "ASR_HIGH_ACCURACY_SILENCE_MS"))),
         asr_high_accuracy_priority=max(1, to_int_alias(10, "ASR_HIGH_ACCURACY_PRIORITY")),

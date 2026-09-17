@@ -149,6 +149,7 @@ def load_meeting(*, user_id: int, runtime_session_id: str = "", history_id: str 
             "startMs": start,
             "endMs": end,
             "speaker": str(row.get("speaker") or ""),
+            "quality": str(row.get("quality") or ""),
             "imageId": image_name or None,
             "audioUrl": f"{media_prefix}/audio/{audio}" if audio else None,
         }

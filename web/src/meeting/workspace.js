@@ -1,3 +1,4 @@
+import { createTranslation } from "./translation.js";
 import { fetchJson } from "../api/client.js";
 import { readSseJsonStream } from "../api/sse.js";
 import { formatTimestamp } from "../ui/format.js";
@@ -98,7 +99,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   window.addEventListener('resize', () => setWidth(divider.getAttribute('aria-valuenow'), false));
 
   function setView(next) {
-    next = ["transcript", "summary", "materials", "assistant"].includes(next) ? next : "transcript";
+    next = ["transcript", "summary", "materials", "assistant", "translation"].includes(next) ? next : "transcript";
     view = next;
     panels.dataset.meetingView = next;
     panels.querySelectorAll(":scope > .is-collapsed").forEach(panel => panel.classList.remove("is-collapsed"));
@@ -122,6 +123,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   });
   panels.classList.add("meeting-layout");
   setView(view);
+  const translation = createTranslation({ getSource, getAccess, setView });
 
   function busy() {
     const any = Boolean(recapController || answerController);
@@ -286,6 +288,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
     if (key === sourceKey) return;
     sourceKey = key;
     generation += 1;
+    translation.sync();
     loadController?.abort();
     recapController?.abort();
     answerController?.abort();
@@ -395,6 +398,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   }));
 
   function liveEvent(event) {
+    translation.event(event);
     if (["final", "transcript_revision", "transcript_snapshot"].includes(event.type)) {
       const through = event.tsEnd || event.record?.tsEnd || event.records?.at(-1)?.tsEnd;
       if (through) document.querySelector("#assistantLiveContext").textContent = `${formatTimestamp(through)} までの発話を参照できます · 録音中も質問可能`;

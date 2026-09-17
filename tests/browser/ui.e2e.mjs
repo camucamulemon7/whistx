@@ -1695,6 +1695,11 @@ async function verifyMeetingInsights(client) {
         if (url.includes("/api/health")) return json({ asrReady: true, model: "browser-test", wsPath: "/ws/transcribe", meetingInsights: true });
         if (url.includes("/api/meeting/insights")) return json({ revision: "r1", throughMs: 1000, images: [], turns: [], recap: null });
         if (url.includes("/api/meeting/recap")) return json({ revision: "r1", throughMs: 1000, images: [{id:'frame.png', timeMs:0,url:'/api/history/test/screenshots/frame.png'}], recap, summary: "公開日は未定" });
+        if (url.includes("/api/meeting/translate")) {
+          window.__translationRequest = JSON.parse(options.body);
+          const events = [{type:'sources',sources:[source],finalized:true}, {type:'translation',id:source.id,sourceText:source.text,text:'Release date is undecided. <script>unsafe</script>'}, {type:'done'}];
+          return new Response(events.map(e => 'data: '+JSON.stringify(e)+'\n\n').join(''), {headers:{'Content-Type':'text/event-stream'}});
+        }
         if (url.includes("/api/meeting/ask")) {
           window.__meetingQuestion = JSON.parse(options.body);
           const events = [{ type: "delta", text: "公開日は未定です。[S1]" }, { type: "done", question: "公開日は？", answer: "公開日は未定です。[S1]", citations: [{ ...source, label: "S1" }] }];
@@ -1730,6 +1735,27 @@ async function verifyMeetingInsights(client) {
   assert.match(answer.text, /公開日は未定です/);
   assert.equal(answer.source.historyId, "history-1", "assistant must use the selected meeting");
   assert.equal(answer.citations, 1);
+  assert.equal(await evaluate(client, `document.querySelector('#sidebarToggle')`), null, 'detail settings entry is removed');
+  assert.equal(await evaluate(client, `document.querySelector('#meetingCaptureEnabled').getClientRects().length > 0`), true, 'screenshot checkbox is on the main screen');
+  assert.equal(await evaluate(client, `document.querySelector('#meetingTranslationTab').hidden`), true);
+  await evaluate(client, `document.querySelector('#translationEnabled').click()`);
+  await new Promise(resolve => setTimeout(resolve, 650));
+  assert.equal(await evaluate(client, `document.querySelector('#workspacePanels').dataset.meetingView`), 'translation');
+  assert.equal(await evaluate(client, `window.__translationRequest.historyId`), 'history-1');
+  assert.match(await evaluate(client, `document.querySelector('#translationRows').textContent`), /Release date is undecided/);
+  assert.equal(await evaluate(client, `document.querySelectorAll('#translationRows script').length`), 0);
+  const columns = await evaluate(client, `(() => { const row=document.querySelector('.translation-row'); const left=row.children[0].getBoundingClientRect(),right=row.children[1].getBoundingClientRect();return {sideBySide:right.x>left.x+left.width, width:left.width}; })()`);
+  assert.ok(columns.sideBySide && columns.width > 200, 'original and translation must be readable side by side');
+  await evaluate(client, `(() => {const language=document.querySelector('#translationLanguage');language.value='ja';language.dispatchEvent(new Event('change'));})()`);
+  await new Promise(resolve => setTimeout(resolve, 650));
+  assert.equal(await evaluate(client, `window.__translationRequest.language`), 'ja');
+  if (process.env.TRANSLATION_SCREENSHOT) {
+    const shot = await client.send('Page.captureScreenshot', {format:'png'});
+    await writeFile(process.env.TRANSLATION_SCREENSHOT, Buffer.from(shot.data, 'base64'));
+  }
+  await evaluate(client, `document.querySelector('#translationEnabled').click()`);
+  assert.equal(await evaluate(client, `document.querySelector('#meetingTranslationTab').hidden`), true);
+  await evaluate(client, `document.querySelector('#meetingSummaryTab').click()`);
   if (process.env.MEETING_SCREENSHOT) {
     const shot = await client.send("Page.captureScreenshot", { format: "png" });
     await writeFile(process.env.MEETING_SCREENSHOT, Buffer.from(shot.data, "base64"));

@@ -227,3 +227,17 @@ body { background:var(--surface-canvas); }
 .meeting-layout.is-assistant-collapsed #assistantResize { display:none; }
 .settings-panel .setting-group:has(#diarizationEnabled), #diarizationConfigRow { display:none !important; }
 @media(max-width:1050px) { #assistantResize { display:none; } }
+
+.meeting-options { display:flex; align-items:center; gap:24px; padding:8px 24px; border-bottom:1px solid var(--meeting-line); font-size:12px; }
+.meeting-options label { display:flex; align-items:center; gap:6px; cursor:pointer; }
+.meeting-options span { color:var(--meeting-muted); font-size:11px; }
+.meeting-tabs button[hidden] { display:none; }
+.meeting-layout > .translation-panel { display:none; grid-column:1; grid-row:1; min-width:0; }
+.meeting-layout[data-meeting-view="translation"] > .translation-panel { display:flex; flex-direction:column; }
+.translation-panel > .meeting-note { padding:0 24px; }
+.translation-columns, .translation-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:24px; padding:12px 24px; }
+.translation-columns { border-bottom:1px solid var(--meeting-line); font-size:12px; font-weight:600; }
+.translation-rows { min-height:0; overflow:auto; flex:1; }
+.translation-row { border-bottom:1px solid var(--meeting-line); font-size:14px; line-height:1.9; }
+.translation-row p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.translation-row small, .translation-pending { color:var(--meeting-muted); }

@@ -342,6 +342,7 @@ async def health() -> JSONResponse:
             "asrReady": TRANSCRIBER_FACTORY is not None,
             "asrBackend": settings.asr_backend,
             "capturePacketMs": 250 if settings.asr_backend == "qwen3_vllm" else 1000,
+            "highAccuracyWindowSeconds": settings.asr_high_accuracy_window_seconds if settings.asr_backend == "qwen3_vllm" and settings.asr_high_accuracy_enabled else None,
             "summaryModel": settings.summary_model if SUMMARIZER else None,
             "proofreadModel": settings.proofread_model if PROOFREADER else None,
             "diarizationEnabled": DIARIZER is not None,

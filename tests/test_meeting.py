@@ -287,8 +287,10 @@ class MeetingApiTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(router)
         with TestClient(app) as client:
-            for path in ('insights', 'recap', 'ask', 'refine'):
+            for path in ('insights', 'recap', 'ask', 'refine', 'translate'):
                 payload = dict(runtimeSessionId='test')
+                if path == 'translate':
+                    payload['language'] = 'en'
                 if path == 'ask':
                     payload['question'] = '公開日は？'
                 self.assertEqual(client.post('/api/meeting/'+path, json=payload).status_code, 401)
