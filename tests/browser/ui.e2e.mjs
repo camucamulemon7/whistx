@@ -333,6 +333,15 @@ async function verifyDesktopPanelLayout(client) {
     assert.equal(layout.resizer, "none");
     assert.equal(layout.historyAligned, true);
     assert.equal(layout.overflow, false);
+    const resize = await evaluate(client, `(() => {
+      const divider = document.querySelector('#assistantResize');
+      const before = Number(divider.getAttribute('aria-valuenow'));
+      divider.dispatchEvent(new KeyboardEvent('keydown', { key:'ArrowLeft', bubbles:true }));
+      const after = Number(divider.getAttribute('aria-valuenow'));
+      divider.dispatchEvent(new KeyboardEvent('keydown', { key:'ArrowRight', bubbles:true }));
+      return after - before;
+    })()`);
+    assert.equal(resize, 20, 'assistant divider supports keyboard resizing');
     const collapsed = await evaluate(client, `(() => {
       const transcript = document.querySelector("#meetingTranscriptPanel");
       const previousWidth = transcript.getBoundingClientRect().width;
@@ -354,7 +363,7 @@ async function verifyDesktopPanelLayout(client) {
       await writeFile(process.env.DESKTOP_SCREENSHOT, Buffer.from(shot.data, "base64"));
     }
 
-    for (const [tab, panel] of [["summary", "meetingSummaryPanel"], ["proofread", "meetingProofreadPanel"], ["materials", "meetingMaterialsPanel"]]) {
+    for (const [tab, panel] of [["summary", "meetingSummaryPanel"], ["materials", "meetingMaterialsPanel"]]) {
       const state = await evaluate(client, `(() => {
         const tab = document.querySelector('[data-meeting-tab="${tab}"]');
         tab.click();
@@ -1049,99 +1058,15 @@ async function verifyTranscriptAutoScroll(client) {
 }
 
 async function verifyModalKeyboardManagement(client) {
-  await evaluate(
-    client,
-    `(() => {
-      const help = document.querySelector("#helpBtn");
-      help.focus();
-      help.click();
-    })()`,
-  );
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  let state = await evaluate(
-    client,
-    `({
-      helpHidden: document.querySelector("#helpModal").hidden,
-      activeId: document.activeElement?.id || "",
-      bodyLocked: document.body.classList.contains("is-modal-open")
-    })`,
-  );
-  assert.equal(state.helpHidden, false, "help modal should open");
-  assert.equal(state.activeId, "helpModalClose", "help modal should receive initial focus");
-  assert.equal(state.bodyLocked, true, "open modal should lock background scrolling");
-
-  await evaluate(client, `document.querySelector(".log-screenshot-link").click()`);
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (await evaluate(client, `document.activeElement?.id === "screenshotModalClose"`)) break;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  state = await evaluate(
-    client,
-    `({
-      helpHidden: document.querySelector("#helpModal").hidden,
-      screenshotHidden: document.querySelector("#screenshotModal").hidden,
-      activeId: document.activeElement?.id || ""
-    })`,
-  );
-  assert.equal(state.helpHidden, false, "opening a second modal should keep the underlying modal");
-  assert.equal(state.screenshotHidden, false, "screenshot modal should open above help");
-  assert.equal(state.activeId, "screenshotModalClose", "topmost modal should receive focus");
-
+  assert.equal(await evaluate(client, `document.querySelector('#helpBtn')`), null);
+  assert.equal(await evaluate(client, `document.querySelector('#meetingProofreadTab')`), null);
+  await evaluate(client, `document.querySelector('.log-screenshot-link').click()`);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(await evaluate(client, `document.activeElement?.id`), "screenshotModalClose");
+  assert.equal(await evaluate(client, `document.body.classList.contains('is-modal-open')`), true);
   await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
-  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
-  state = await evaluate(
-    client,
-    `({
-      helpHidden: document.querySelector("#helpModal").hidden,
-      screenshotHidden: document.querySelector("#screenshotModal").hidden,
-      activeId: document.activeElement?.id || "",
-      bodyLocked: document.body.classList.contains("is-modal-open")
-    })`,
-  );
-  assert.equal(state.screenshotHidden, true, "Escape should close only the topmost modal");
-  assert.equal(state.helpHidden, false, "underlying modal should remain open after one Escape");
-  assert.equal(state.activeId, "helpModalClose", "focus should return to the underlying modal");
-  assert.equal(state.bodyLocked, true, "background should remain locked while another modal is open");
-
-  await evaluate(
-    client,
-    `document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {
-      key: "Tab",
-      shiftKey: true,
-      bubbles: true
-    }))`,
-  );
-  assert.equal(
-    await evaluate(client, `document.activeElement?.id || document.activeElement?.tagName || ""`),
-    "helpModalFrame",
-    "Shift+Tab from the first control should wrap to the last modal control",
-  );
-  await evaluate(
-    client,
-    `document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {
-      key: "Tab",
-      bubbles: true
-    }))`,
-  );
-  assert.equal(
-    await evaluate(client, `document.activeElement?.id || ""`),
-    "helpModalClose",
-    "Tab from the last control should wrap to the first modal control",
-  );
-
-  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
-  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
-  state = await evaluate(
-    client,
-    `({
-      helpHidden: document.querySelector("#helpModal").hidden,
-      activeId: document.activeElement?.id || "",
-      bodyLocked: document.body.classList.contains("is-modal-open")
-    })`,
-  );
-  assert.equal(state.helpHidden, true, "second Escape should close the remaining modal");
-  assert.equal(state.activeId, "helpBtn", "closing should restore focus to the opener");
-  assert.equal(state.bodyLocked, false, "closing the final modal should unlock background scrolling");
+  assert.equal(await evaluate(client, `document.querySelector('#screenshotModal').hidden`), true);
+  assert.equal(await evaluate(client, `document.body.classList.contains('is-modal-open')`), false);
 }
 
 async function verifySocketLossStopsRecording(client) {
@@ -1758,13 +1683,17 @@ async function verifyMeetingInsights(client) {
     (() => {
       const original = window.fetch;
       const source = { id: "000001", seq: 1, text: "履歴の文字起こし", startMs: 0, endMs: 1000 };
-      const recap = { revision: "r1", throughMs: 1000, sources: [source], chapters: [{ id: "chapter-1", title: "公開準備 <script>unsafe</script>", startMs: 0, endMs: 1000, sourceIds: [source.id], summary: [{ text: "公開日は未定", sourceIds: [source.id] }], decisions: [], actions: [], open_questions: [], imageIds: [] }] };
+      const recap = { revision: "r1", throughMs: 1000, sources: [source], chapters: [{ id: "chapter-1", title: "公開準備 <script>unsafe</script>", startMs: 0, endMs: 1000, sourceIds: [source.id], summary: [{ text: "公開日は未定", sourceIds: [source.id] }], decisions: [], actions: [], open_questions: [], imageIds: ["frame.png"] }] };
       window.fetch = async (input, options = {}) => {
         const url = String(input);
         const json = data => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
         if (url.includes("/api/health")) return json({ asrReady: true, model: "browser-test", wsPath: "/ws/transcribe", meetingInsights: true });
         if (url.includes("/api/meeting/insights")) return json({ revision: "r1", throughMs: 1000, images: [], turns: [], recap: null });
-        if (url.includes("/api/meeting/recap")) return json({ revision: "r1", throughMs: 1000, images: [], recap, summary: "公開日は未定" });
+        if (url.includes('/api/history/test/screenshots/frame.png')) {
+          window.__exportImageFetched = (window.__exportImageFetched || 0) + 1;
+          return new Response(Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=='), c=>c.charCodeAt(0)), {headers:{'Content-Type':'image/png'}});
+        }
+        if (url.includes("/api/meeting/recap")) return json({ revision: "r1", throughMs: 1000, images: [{id:'frame.png', timeMs:0,url:'/api/history/test/screenshots/frame.png'}], recap, summary: "公開日は未定" });
         if (url.includes("/api/meeting/ask")) {
           window.__meetingQuestion = JSON.parse(options.body);
           const events = [{ type: "delta", text: "公開日は未定です。[S1]" }, { type: "done", question: "公開日は？", answer: "公開日は未定です。[S1]", citations: [{ ...source, label: "S1" }] }];
@@ -1779,14 +1708,17 @@ async function verifyMeetingInsights(client) {
   await waitForApp(client);
   await new Promise(resolve => setTimeout(resolve, 200));
   await client.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  assert.equal(await evaluate(client, `document.querySelector('#assistantAccessNotice').hidden`), true, 'logged-in users must not see a login warning before selecting a meeting');
   await evaluate(client, `(() => { window.confirm = () => true; document.querySelector(".history-item-main").click(); })()`);
   await new Promise(resolve => setTimeout(resolve, 200));
-  await evaluate(client, `document.querySelector("#summaryBtn").click()`);
+  assert.equal(await evaluate(client, `document.querySelector('#exportRecap').disabled`), false);
+  await evaluate(client, `document.querySelector("#exportRecap").click()`);
   await new Promise(resolve => setTimeout(resolve, 150));
   const recap = await evaluate(client, `({ text: document.querySelector("#summaryText").textContent, scripts: document.querySelectorAll("#summaryText script").length, cards: document.querySelectorAll(".chapter-card").length })`);
   assert.equal(recap.cards, 1, "saved meeting should render a chapter card");
   assert.match(recap.text, /公開日は未定/);
   assert.equal(recap.scripts, 0, "model strings must remain text");
+  assert.ok(await evaluate(client, `window.__exportImageFetched > 0`), 'recap export must fetch embedded images');
   await evaluate(client, `(() => { document.querySelector("#assistantQuestion").value = "公開日は？"; document.querySelector("#assistantAsk").click(); })()`);
   await new Promise(resolve => setTimeout(resolve, 150));
   const answer = await evaluate(client, `({ text: document.querySelector("#assistantTurns").textContent, source: window.__meetingQuestion, citations: document.querySelectorAll("#assistantTurns .meeting-citation").length })`);
@@ -1870,7 +1802,7 @@ async function verifyLiveRecordingAndRefinement(client) {
   assert.equal(await evaluate(client, `window.__liveStart?.protocolVersion`), 2, "live capture must use the PCM protocol: " + await evaluate(client, `document.querySelector("#toastContainer").textContent + " / " + document.querySelector("#statusText").textContent`));
   await evaluate(client, `window.__liveNode.port.onmessage({ data: { type: "pcm", sampleStart: 0, pcm: new Int16Array(16000).buffer } })`);
   await new Promise(resolve => setTimeout(resolve, 50));
-  assert.match(await evaluate(client, `document.querySelector("#liveTranscript").textContent`), /ライブ録音の/);
+  assert.equal(await evaluate(client, `document.querySelector("#liveTranscript").hidden`), true);
   await evaluate(client, `document.querySelector("#assistantQuestion").value = "ここまでの要点は？"`);
   for (const [width, height] of [[1440, 1000], [1280, 720], [390, 844]]) {
     await client.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 640 });
@@ -1954,6 +1886,8 @@ async function verifyQwenLiveRevision(client) {
   await new Promise(resolve => setTimeout(resolve, 200));
   assert.equal(await evaluate(client, `window.__liveStart?.language`), "ja", "Qwen must preserve the selected language");
   assert.equal(await evaluate(client, `window.__qwenPacketSamples`), 4000);
+  assert.equal(await evaluate(client, `document.querySelector('#audioLevelIndicator').hidden`), false);
+  assert.ok(await evaluate(client, `document.querySelector('#audioLevelMatrix').getBoundingClientRect().height >= 26`), "Input meter must be visible at full height");
   await evaluate(client, `(() => {
     const row = (i, text) => ({ type: "final", track: "mic", segmentId: "rt-"+i, seq: i, text,
       startSample: i*80000, endSample: (i+1)*80000, tsStart: i*5000, tsEnd: (i+1)*5000, quality: "realtime" });
@@ -1963,6 +1897,7 @@ async function verifyQwenLiveRevision(client) {
   })()`);
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(await evaluate(client, `document.querySelectorAll("#log .log-row").length`), 2);
+  assert.equal(await evaluate(client, `document.querySelector('#log .transcript-quality').textContent`), "リアルタイム");
   assert.equal(await evaluate(client, `document.querySelectorAll("#log .transcript-paragraph").length`), 1, "adjacent chunks should read as one paragraph");
   assert.equal(await evaluate(client, `getComputedStyle(document.querySelector("#log .log-row")).display`), "inline", "chunk boundaries must not create separate rows");
   assert.match(await evaluate(client, `document.querySelector("#log .transcript-paragraph").textContent`), /速報一.*速報二/);
@@ -1988,9 +1923,10 @@ async function verifyQwenLiveRevision(client) {
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(await evaluate(client, `document.querySelectorAll("#log .log-row").length`), 1);
   assert.match(await evaluate(client, `document.querySelector("#log").textContent`), /APIのreview/);
-  assert.match(await evaluate(client, `document.querySelector("#liveTranscript").textContent`), /次の発言/);
+  assert.equal(await evaluate(client, `document.querySelector("#liveTranscript").hidden`), true);
   assert.equal(await evaluate(client, `document.querySelector("#log .log-row").dataset.quality`), "high_accuracy");
   assert.match(await evaluate(client, `document.querySelector("#hqStatus").textContent`), /高精度認識を反映/);
+  assert.equal(await evaluate(client, `document.querySelector('#log .transcript-quality').textContent`), "高精度");
   await evaluate(client, `window.__qwenSocket.emit({ type: "info", message: "ready", asrBackend: "qwen3_vllm", records: [
     { type: "final", track: "mic", segmentId: "hq-snapshot", seq: 0, text: "再接続で復元", tsStart: 0, tsEnd: 10000, startSample: 0, endSample: 160000, quality: "high_accuracy" }
   ], tracks: { mic: { seq: -1, samples: 0 } } })`);
@@ -2072,6 +2008,19 @@ try {
   await verifyLiveRecordingAndRefinement(client);
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyQwenLiveRevision\n');
   await verifyQwenLiveRevision(client);
+  await evaluate(client, `(() => {
+    const language = document.querySelector('#language');
+    language.value = '';
+    language.dispatchEvent(new Event('change', { bubbles: true }));
+    delete document.documentElement.dataset.whistxReady;
+  })()`);
+  await client.send("Page.reload", { ignoreCache: true });
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await evaluate(client, `document.documentElement.dataset.whistxReady === 'true'`)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(await evaluate(client, `document.documentElement.dataset.whistxReady`), "true");
+  assert.equal(await evaluate(client, `document.querySelector('#language').value`), "", "Auto language must survive reload");
   process.stdout.write("Browser UI and recording lifecycle checks passed.\n");
 } catch (error) {
   const outputDir = path.resolve(process.env.BROWSER_ARTIFACT_DIR || "artifacts/browser");

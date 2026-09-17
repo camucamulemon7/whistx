@@ -31,7 +31,7 @@
         <div>
           <p class="admin-eyebrow">whistx 管理</p>
           <h1>管理画面</h1>
-          <p class="admin-description">承認待ちユーザーと登録済みユーザーを、狭い画面でも確認しやすい形で管理します。</p>
+          <p class="admin-description">運用設定、モデル接続、ユーザーの承認と権限を管理します。</p>
         </div>
         <div class="admin-header-actions">
           <a href="/" class="admin-link-btn">アプリへ戻る</a>
@@ -41,6 +41,24 @@
 
       <p id="adminStatus" class="admin-status" aria-live="polite">読み込み中...</p>
 
+      <section class="admin-card" style="padding:24px;margin-bottom:20px">
+        <h2>運用・モデル設定</h2>
+        <p>保存した設定はコンテナ再起動後に適用されます。保存期間0日は無期限です。APIキーは空欄なら変更しません。接続先にはコンテナから到達できるURLを指定してください。</p>
+        <form id="serverSettingsForm" class="server-settings-form">
+          <label>保存期間（日）<input name="HISTORY_RETENTION_DAYS" type="number" min="0" max="36500" required /></label>
+          <label>新規登録申請<select name="ENABLE_SELF_SIGNUP"><option value="0">無効</option><option value="1">有効</option></select></label>
+          <label>ゲスト文字起こし<select name="ALLOW_GUEST_TRANSCRIPTION"><option value="0">無効</option><option value="1">有効</option></select></label>
+          <label>ASR方式<select name="ASR_BACKEND"><option value="qwen3_vllm">Qwen Realtime</option><option value="whisper">Whisper</option></select></label>
+          <label>ASR 接続先<input name="ASR_BASE_URL" type="url" required /></label>
+          <label>ASR モデル<input name="ASR_MODEL" required /></label>
+          <label>ASR APIキー<input name="ASR_API_KEY" type="password" autocomplete="new-password" /></label>
+          <label>要約 接続先<input name="SUMMARY_BASE_URL" type="url" required /></label>
+          <label>要約 モデル<input name="SUMMARY_MODEL" required /></label>
+          <label>要約 APIキー<input name="SUMMARY_API_KEY" type="password" autocomplete="new-password" /></label>
+          <button type="submit" class="admin-primary-btn">設定を保存</button>
+          <p id="serverSettingsStatus" role="status"></p>
+        </form>
+      </section>
       <main class="admin-layout">
         <section class="admin-card admin-pending-card">
           <details id="pendingPanel" class="admin-pending-shell" open>

@@ -170,6 +170,9 @@ class QwenLiveMeeting(LiveMeeting):
                         await asyncio.gather(receiver, return_exceptions=True)
             pcm = await blocking_work_pool.run('artifact', self._read_audio, track, start, sent)
             text = clean_qwen_text(text)
+            silence_samples = settings.asr_high_accuracy_silence_ms * SAMPLE_RATE // 1000
+            quiet_tail = len(pcm) >= silence_samples * 2 and await blocking_work_pool.run(
+                'media', speech_bounds, pcm[-silence_samples * 2:]) is None
             if await blocking_work_pool.run('media', speech_bounds, pcm) is None:
                 text = ''
             async with self.state_lock:
@@ -180,6 +183,8 @@ class QwenLiveMeeting(LiveMeeting):
                     await blocking_work_pool.run('artifact', self.store.append_record, record)
                     self.records.append(record)
                     self.next_seq += 1
+                if quiet_tail:
+                    state['hqPauseEnd'] = sent
                 state.update(windowStart=sent, lastDecode=sent)
                 await blocking_work_pool.run('artifact', write_json_atomic, self.state_path, copy.deepcopy(self.data))
                 if record:
@@ -216,8 +221,14 @@ class QwenLiveMeeting(LiveMeeting):
         size = self.data['hqWindowSamples']
         for track, state in self.data['tracks'].items():
             start = state['hqCommitted']
-            end = min(start + size, state['windowStart'])
-            if end > start and (end - start >= size or self.rt_done):
+            boundary = (start // size + 1) * size
+            end = min(boundary, state['windowStart'])
+            # Only revise complete RT windows: a pause must never split a record.
+            pause = min(state.get('hqPauseEnd', 0), end)
+            if pause - start >= settings.asr_high_accuracy_min_seconds * SAMPLE_RATE:
+                end = pause
+                return track, start, end
+            if end > start and (end == boundary or self.rt_done):
                 return track, start, end
         return None
 

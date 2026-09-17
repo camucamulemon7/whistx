@@ -12,7 +12,7 @@ Langfuse is disabled by default (`LANGFUSE_ENABLED=0`). Enabling it alone sends 
 
 ## Storage and deletion
 
-Default application retention is seven days for saved history and 24 hours for runtime/unsaved transcripts and debug chunks. Configure `HISTORY_RETENTION_DAYS`, `RUNTIME_TRANSCRIPT_RETENTION_HOURS`, `UNSAVED_RUNTIME_RETENTION_HOURS`, and `DEBUG_CHUNKS_RETENTION_HOURS` to the approved policy. Access is restricted to the meeting owner. Deleting a history entry requests deletion of its associated media and transcript.
+Default application retention is unlimited (HISTORY_RETENTION_DAYS=0) for saved history and 24 hours for runtime/unsaved transcripts and debug chunks. Configure `HISTORY_RETENTION_DAYS`, `RUNTIME_TRANSCRIPT_RETENTION_HOURS`, `UNSAVED_RUNTIME_RETENTION_HOURS`, and `DEBUG_CHUNKS_RETENTION_HOURS` to the approved policy. Access is restricted to the meeting owner. Deleting a history entry requests deletion of its associated media and transcript.
 
 Application deletion cannot remove independently retained provider data or backups. Operators must define backup expiry, maintain deletion records, and replay deletions after a restore before opening the restored service to users. Keep backups encrypted and accessible only to operators. Do not copy production recordings into issues or test fixtures.
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from server.services.meeting_intelligence import NO_ANSWER, answer_events, generate_recap, read_insights, validate_chapters
+from server.services.meeting_intelligence import answer_events, retrieve_segments, generate_recap, read_insights, validate_chapters
 from server.services.meeting_source import MeetingError, MeetingSnapshot, load_meeting
 from server.transcription.live import LiveMeeting
 from server.transcription.local_agreement import agreed_prefix, pcm_wav, speech_bounds
@@ -44,13 +44,24 @@ class MeetingTests(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(MeetingError):
                 validate_chapters(dict(chapters=[{**self.chapter, **changed}]), self.rows)
 
-    def test_answer_invalid_citation_replaced_and_valid_answer_saved(self):
-        for answer, expected in [('公開は明日です。[S99]', NO_ANSWER), ('公開日は未定です。[S1]', '公開日は未定です。[S1]')]:
-            model = SimpleNamespace(model='fixture', stream_meeting=lambda messages: iter([answer]))
-            events = list(answer_events(self.snapshot, model, question='公開日は？', cancelled=threading.Event()))
-            self.assertEqual(events[-1]['answer'], expected)
-        self.assertEqual(len(read_insights(self.snapshot)['turns']), 2)
-        self.assertEqual(read_insights(self.snapshot)['turns'][-1]['citations'][0]['id'], '0')
+    def test_answer_repairs_missing_citations(self):
+        responses = iter(['公開日は未定です。', '公開日は未定です。[S1]'])
+        model = SimpleNamespace(model='fixture', stream_meeting=lambda messages: iter([next(responses)]))
+        events = list(answer_events(self.snapshot, model, question='公開日は？', cancelled=threading.Event()))
+        self.assertEqual(events[-1]['answer'], '公開日は未定です。[S1]')
+        self.assertEqual(events[-1]['citations'][0]['id'], '0')
+
+    def test_invalid_citation_is_not_reported_as_missing_evidence(self):
+        model = SimpleNamespace(model='fixture', stream_meeting=lambda messages: iter(['公開は明日。[S99]']))
+        with self.assertRaises(MeetingError) as raised:
+            list(answer_events(self.snapshot, model, question='公開日は？', cancelled=threading.Event()))
+        self.assertEqual(raised.exception.code, 'invalid_meeting_citation')
+        self.assertEqual(read_insights(self.snapshot)['turns'], [])
+
+    def test_recent_question_filters_even_short_context(self):
+        snapshot = replace(self.snapshot, through_ms=600000,
+                           segments=[self.rows[0], dict(self.rows[1], startMs=550000, endMs=551000)])
+        self.assertEqual([row['id'] for row in retrieve_segments(snapshot, '直近5分の内容')], ['1'])
 
     def test_cancelled_answer_is_not_saved(self):
         stop = threading.Event()

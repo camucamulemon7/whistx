@@ -308,6 +308,10 @@ python3 -c 'import secrets; print(secrets.token_hex(32))'
 
 `podman-run.sh` builds with `--format docker` by default so the image `HEALTHCHECK` is preserved. Override with `PODMAN_BUILD_FORMAT=oci` only if you intentionally want OCI output and accept that Podman will ignore the healthcheck.
 
+Podmanのブリッジネットワークでは、HTTP APIの接続先が `localhost:ポート` または `127.0.0.1:ポート` の場合、起動時に `host.containers.internal` へ置き換えます。ホスト実行用の `.env` は変更しません。`PODMAN_NETWORK=host` の場合は置き換えません。
+
+WSLなどでsystemdのcgroup作成に失敗する場合は、`.env` に `PODMAN_CGROUP_MANAGER=cgroupfs` を設定してください。コード更新後は `CONTAINER_BUILD_POLICY=always` を指定して再ビルドしてください。Docker版と同じポートを使用する場合は、録音を終了してDocker版を停止してから起動します。
+
 Container build behavior:
 
 - `CONTAINER_BUILD_POLICY=missing` (default): build only when the image does not exist
@@ -405,7 +409,7 @@ ASR_MODEL=whisper-1
 - `APP_PROMPT_TEMPLATES`
 - `APP_ENV`
 - `APP_DB_URL`
-- `HISTORY_RETENTION_DAYS` default `7`
+- `HISTORY_RETENTION_DAYS` default `0`（保存済み履歴は無期限。1以上で日数を指定）
 - `RUNTIME_TRANSCRIPT_RETENTION_HOURS`
 - `DEBUG_CHUNKS_RETENTION_HOURS`
 - `UNSAVED_RUNTIME_RETENTION_HOURS`
@@ -634,3 +638,5 @@ MIT. See [LICENSE](./LICENSE).
 ### Meeting workspace access
 
 The meeting assistant requires an authenticated account; guest access covers transcription only. The UI displays this requirement above the question field. During recording, authenticated users can ask about recognized speech without stopping. The question field and Send button remain visible while the transcript and answers scroll independently.
+
+管理者は画面右上の「管理者設定」から、保存期間・登録申請・ゲスト利用・ASRと要約モデルの接続先／モデル名／APIキーを変更できます。設定はデータ領域の `admin-settings.json` に保存され、コンテナ再起動後に環境変数より優先して適用されます。APIキーの入力欄は空欄なら既存値を維持し、保存済みのキーは画面へ返しません。接続先にはコンテナから到達できるURLを指定してください（ホスト上のAPIは `http://host.containers.internal:4000/v1` など）。未保存の作業用音声・文字起こしの一時保持は従来どおり24時間です。

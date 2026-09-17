@@ -60,6 +60,21 @@ const audioLevelIndicatorEl = $("#audioLevelIndicator");
 const audioLevelMatrixEl = $("#audioLevelMatrix");
 
 const languageEl = $("#language");
+try {
+  const savedLanguage = localStorage.getItem("whistx_language");
+  if (savedLanguage !== null && [...languageEl.options].some((option) => option.value === savedLanguage)) {
+    languageEl.value = savedLanguage;
+  }
+} catch {
+  // Storage may be unavailable in restricted browser sessions.
+}
+languageEl?.addEventListener("change", () => {
+  try {
+    localStorage.setItem("whistx_language", languageEl.value);
+  } catch {
+    // Keep the current selection usable even when storage is unavailable.
+  }
+});
 const audioSourceEl = $("#audioSource");
 const audioSourceHintEl = $("#audioSourceHint");
 const audioSourceHintTextEl = $("#audioSourceHintText");
@@ -111,7 +126,6 @@ const clearBtn = $("#clearBtn");
 const saveBtn = $("#saveBtn");
 const saveTitleInputEl = $("#saveTitleInput");
 const saveStateBadgeEl = $("#saveStateBadge");
-const helpBtn = $("#helpBtn");
 const loginBtn = $("#loginBtn");
 const logoutBtn = $("#logoutBtn");
 const authProfileEditBtn = $("#authProfileEditBtn");
@@ -159,9 +173,6 @@ const screenshotModalStageEl = $("#screenshotModalStage");
 const screenshotZoomOutBtnEl = $("#screenshotZoomOutBtn");
 const screenshotZoomResetBtnEl = $("#screenshotZoomResetBtn");
 const screenshotZoomInBtnEl = $("#screenshotZoomInBtn");
-const helpModalEl = $("#helpModal");
-const helpModalCloseEl = $("#helpModalClose");
-const helpModalFrameEl = $("#helpModalFrame");
 
 const dlTxt = $("#dlTxt");
 const dlJsonl = $("#dlJsonl");
@@ -378,7 +389,7 @@ const state = {
     keycloakEnabled: false,
     keycloakButtonLabel: "Keycloakでログイン",
     guestTranscriptionAllowed: false,
-    historyRetentionDays: 7,
+    historyRetentionDays: 0,
   },
   history: {
     items: [],
@@ -873,7 +884,7 @@ function setAppLocked(locked) {
 }
 
 function hasOpenBlockingModal() {
-  return [runtimeUi.screenshotModalEl, helpModalEl].some((element) => element && !element.hidden);
+  return [runtimeUi.screenshotModalEl].some((element) => element && !element.hidden);
 }
 
 function syncBodyScrollLock() {
@@ -1214,19 +1225,6 @@ function hideScreenshotModal() {
   state.screenshotBaseHeight = 0;
   stopScreenshotDrag();
   updateScreenshotZoomUi();
-}
-
-function openHelpModal() {
-  if (!helpModalEl || !helpModalFrameEl) return;
-  if (!helpModalFrameEl.src) {
-    helpModalFrameEl.src = "/help.html";
-  }
-  openManagedModal(helpModalEl, { initialFocus: helpModalCloseEl });
-}
-
-function closeHelpModal() {
-  if (!helpModalEl) return;
-  closeManagedModal(helpModalEl);
 }
 
 function logWsEvent(event, detail = {}) {
@@ -1762,6 +1760,7 @@ function setSessionSettingsLocked(locked = isRecordingInteractionLocked()) {
   document.body.classList.toggle("session-settings-locked", !!locked);
   updateDiarizationSpeakerUi();
   updateSharedVocabularyMeta();
+  meetingWorkspace?.syncSource();
 }
 
 function formatHistoryMeta(item) {
@@ -1772,7 +1771,8 @@ function formatHistoryMeta(item) {
 }
 
 function formatHistoryDaysRemaining(item) {
-  const retentionDays = Math.max(1, Number(state.auth.historyRetentionDays || 7));
+  const retentionDays = Math.max(0, Number(state.auth.historyRetentionDays ?? 0));
+  if (!retentionDays) return "無期限";
   if (!item?.savedAt) return `${retentionDays}日で削除`;
   const savedAtMs = new Date(item.savedAt).getTime();
   if (!Number.isFinite(savedAtMs)) return `${retentionDays}日で削除`;
@@ -1948,6 +1948,7 @@ function renderAuthState() {
   updateHistoryEmptyState();
   updateSaveControls();
   updateSharedVocabularyMeta();
+  meetingWorkspace?.syncSource();
 }
 
 function syncAuthProfileEditor() {
@@ -2166,6 +2167,15 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", raw
   const row = document.createElement("div");
   row.className = "log-row new";
   row.dataset.segmentId = segmentId || String(seq);
+  row.dataset.quality = metadata.quality || "";
+  if (metadata.quality) {
+    const quality = document.createElement("span");
+    quality.className = "transcript-quality";
+    quality.dataset.quality = metadata.quality;
+    quality.textContent = metadata.quality === "high_accuracy"
+      ? (metadata.retainedRealtimeSegmentIds?.length ? "高精度・一部速報を保持" : "高精度") : "リアルタイム";
+    row.append(quality);
+  }
   row.tabIndex = -1;
 
   const range = document.createElement("span");
@@ -3104,6 +3114,8 @@ function ensureAudioLevelMatrix() {
 function renderAudioLevel(level) {
   const normalized = Math.max(0, Math.min(1, Number(level) || 0));
   state.audioLevel = normalized;
+  const inputLabel = audioLevelIndicatorEl?.querySelector(".audio-level-label");
+  if (inputLabel) inputLabel.textContent = normalized > 0.03 ? "入力あり" : "入力待ち";
   const columns = ensureAudioLevelMatrix();
   if (!columns.length) return;
 
@@ -3610,6 +3622,7 @@ async function startLiveRecording(health, selectedAudioSource) {
       } else if (data.type === "hq_status") {
         const status = document.querySelector("#hqStatus");
         status.hidden = false;
+        status.dataset.state = data.state;
         status.textContent = data.state === "running" ? `高精度認識中 ${formatMs(data.tsStart)}–${formatMs(data.tsEnd)}`
           : data.state === "completed" ? `高精度認識を反映 ${formatMs(data.tsStart)}–${formatMs(data.tsEnd)}` : data.message;
       } else if (data.type === "final") {
@@ -4633,8 +4646,7 @@ document.addEventListener("keydown", (event) => {
     event.stopPropagation();
     if (modal === runtimeUi.screenshotModalEl) {
       hideScreenshotModal();
-    } else if (modal === helpModalEl) {
-      closeHelpModal();
+
     }
     return;
   }
@@ -4646,38 +4658,12 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-if (helpBtn) {
-  helpBtn.addEventListener("click", () => {
-    openHelpModal();
-  });
-}
-
-if (helpModalCloseEl) {
-  helpModalCloseEl.addEventListener("click", () => {
-    closeHelpModal();
-  });
-}
-
-if (helpModalEl) {
-  helpModalEl.addEventListener("click", (event) => {
-    if (event.target === helpModalEl || event.target?.matches?.("[data-help-modal-close]")) {
-      closeHelpModal();
-    }
-  });
-}
-
 if (summaryPromptToggleBtn) {
   summaryPromptToggleBtn.addEventListener("click", () => {
     applySummaryPromptEditorOpen(!state.summaryPromptEditorOpen);
   });
 }
 
-window.addEventListener("message", (event) => {
-  if (event.origin !== window.location.origin) return;
-  if (event.data?.type === "whistx:help-close") {
-    closeHelpModal();
-  }
-});
 
 window.addEventListener("resize", () => {
   updateWorkspaceGridTemplate();
@@ -4804,6 +4790,7 @@ function applySharedVocabulary(payload, options = {}) {
     sharedVocabularyEl.value = text;
   }
   updateSharedVocabularyMeta();
+  meetingWorkspace?.syncSource();
 }
 
 function updateSharedVocabularyMeta() {
@@ -5089,7 +5076,7 @@ async function loadAuthState() {
       state.auth.guestTranscriptionAllowed = !!payload?.guestTranscriptionAllowed;
       state.auth.profileEditorOpen = false;
       state.auth.profileSaving = false;
-      state.auth.historyRetentionDays = Math.max(1, Number(payload?.historyRetentionDays || 7));
+      state.auth.historyRetentionDays = Math.max(0, Number(payload?.historyRetentionDays ?? 0));
       state.auth.keycloakEnabled = !!payload?.keycloakEnabled;
       state.auth.keycloakButtonLabel = String(payload?.keycloakButtonLabel || "Keycloakでログイン");
       try {
@@ -5118,7 +5105,7 @@ async function loadAuthState() {
     state.auth.profileSaving = false;
     state.selfSignupEnabled = !!payload.selfSignupEnabled;
     state.auth.guestTranscriptionAllowed = !!payload.guestTranscriptionAllowed;
-    state.auth.historyRetentionDays = Math.max(1, Number(payload.historyRetentionDays || 7));
+    state.auth.historyRetentionDays = Math.max(0, Number(payload.historyRetentionDays ?? 0));
     state.auth.bootstrapAdminRequired = !!payload.bootstrapAdminRequired;
     state.auth.pendingApprovalCount = Number(payload.pendingApprovalCount || 0);
     state.auth.keycloakEnabled = !!payload.keycloakEnabled;

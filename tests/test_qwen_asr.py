@@ -328,3 +328,22 @@ class MixedCoverageTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(read_jsonl_records(live.store.jsonl_path), [row])
             finally:
                 live.close()
+
+
+class HighAccuracySchedulingTests(unittest.TestCase):
+    def meeting(self, committed, ready, pause=0, stopped=False):
+        meeting = object.__new__(QwenLiveMeeting)
+        meeting.data = {'hqWindowSamples': 60 * 16000, 'tracks': {'mic': {
+            'hqCommitted': committed * 16000, 'windowStart': ready * 16000, 'hqPauseEnd': pause * 16000}}}
+        meeting.rt_done = stopped
+        return meeting
+
+    def test_pause_triggers_before_full_window(self):
+        self.assertEqual(self.meeting(0, 20, 20)._next_hq(), ('mic', 0, 320000))
+        self.assertIsNone(self.meeting(0, 5, 5)._next_hq())
+        self.assertIsNone(self.meeting(20, 25, 20)._next_hq())
+
+    def test_after_pause_full_window_stays_aligned_with_rt(self):
+        self.assertEqual(self.meeting(20, 65)._next_hq(), ('mic', 320000, 960000))
+        self.assertIsNone(self.meeting(20, 55)._next_hq())
+        self.assertEqual(self.meeting(20, 25, stopped=True)._next_hq(), ('mic', 320000, 400000))
