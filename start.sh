@@ -39,6 +39,7 @@ esac
 
 echo "[start.sh] DB migrationを実行します" >&2
 docker run --rm \
+  --add-host host.containers.internal:host-gateway \
   --user "${CONTAINER_USER}" \
   "${COMMON_CONTAINER_ENV[@]}" \
   -v "${APP_DATA_DIR}:/app/data" \
@@ -46,6 +47,7 @@ docker run --rm \
   alembic upgrade head
 
 docker run --rm \
+  --add-host host.containers.internal:host-gateway \
   --name "${CONTAINER_NAME}" \
   --user "${CONTAINER_USER}" \
   -p "${APP_PORT}:${APP_PORT}" \

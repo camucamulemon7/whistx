@@ -50,3 +50,7 @@ class MeetingRecapRequest(MeetingSourceRequest):
 
 class MeetingQuestionRequest(MeetingSourceRequest):
     question: str = Field(min_length=1, max_length=2000)
+
+
+class MeetingTranslationRequest(MeetingSourceRequest):
+    language: str = Field(min_length=2, max_length=8)

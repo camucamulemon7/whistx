@@ -16,10 +16,11 @@ resolve_container_runtime_env() {
 
 build_common_container_env() {
   COMMON_CONTAINER_ENV=(
+    -e "APP_CONTAINER_HOST_GATEWAY=${APP_CONTAINER_HOST_GATEWAY-host.containers.internal}"
     -e "ASR_BACKEND=${ASR_BACKEND:-whisper}"
     -e "ASR_REALTIME_WINDOW_SECONDS=${ASR_REALTIME_WINDOW_SECONDS:-5}"
     -e "ASR_HIGH_ACCURACY_ENABLED=${ASR_HIGH_ACCURACY_ENABLED:-1}"
-    -e "ASR_HIGH_ACCURACY_WINDOW_SECONDS=${ASR_HIGH_ACCURACY_WINDOW_SECONDS:-60}"
+    -e "ASR_HIGH_ACCURACY_WINDOW_SECONDS=${ASR_HIGH_ACCURACY_WINDOW_SECONDS:-30}"
     -e "ASR_HIGH_ACCURACY_MIN_SECONDS=${ASR_HIGH_ACCURACY_MIN_SECONDS:-10}"
     -e "ASR_HIGH_ACCURACY_SILENCE_MS=${ASR_HIGH_ACCURACY_SILENCE_MS:-700}"
     -e "ASR_HIGH_ACCURACY_PRIORITY=${ASR_HIGH_ACCURACY_PRIORITY:-10}"
@@ -150,6 +151,5 @@ build_common_container_env() {
 ensure_container_prerequisites() {
   local caller="$1"
   require_session_secret "${caller}" "${APP_SESSION_SECRET:-}"
-  require_asr_api_key "${caller}"
   mkdir -p "${APP_DATA_DIR}/transcripts" "${APP_DATA_DIR}/history"
 }

@@ -39,6 +39,11 @@ function contentType(filePath) {
 async function startStaticServer() {
   const server = http.createServer(async (request, response) => {
     const pathname = new URL(request.url || "/", "http://localhost").pathname;
+    if (pathname === '/api/history/test/screenshots/frame.png') {
+      response.writeHead(200, { 'Content-Type': 'image/png' });
+      response.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64'));
+      return;
+    }
     const relativePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
     const filePath = path.resolve(webRoot, relativePath);
     if (!filePath.startsWith(`${webRoot}${path.sep}`) && filePath !== path.join(webRoot, "index.html")) {
@@ -1683,17 +1688,18 @@ async function verifyMeetingInsights(client) {
     (() => {
       const original = window.fetch;
       const source = { id: "000001", seq: 1, text: "履歴の文字起こし", startMs: 0, endMs: 1000 };
-      const recap = { revision: "r1", throughMs: 1000, sources: [source], chapters: [{ id: "chapter-1", title: "公開準備 <script>unsafe</script>", startMs: 0, endMs: 1000, sourceIds: [source.id], summary: [{ text: "公開日は未定", sourceIds: [source.id] }], decisions: [], actions: [], open_questions: [], imageIds: ["frame.png"] }] };
+      const recap = { revision: "r1", throughMs: 1000, sources: [source], chapters: [{ id: "chapter-1", title: "公開準備 <script>unsafe</script>", startMs: 0, endMs: 1000, sourceIds: [source.id], summary: [{ text: "公開日は未定", sourceIds: [source.id] }], discussion: [{text:"検証が完了していないため公開日は未定", sourceIds:[source.id]}], decisions: [], actions: [], open_questions: [], imageIds: ["frame.png"] }] };
       window.fetch = async (input, options = {}) => {
         const url = String(input);
         const json = data => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
         if (url.includes("/api/health")) return json({ asrReady: true, model: "browser-test", wsPath: "/ws/transcribe", meetingInsights: true });
         if (url.includes("/api/meeting/insights")) return json({ revision: "r1", throughMs: 1000, images: [], turns: [], recap: null });
-        if (url.includes('/api/history/test/screenshots/frame.png')) {
-          window.__exportImageFetched = (window.__exportImageFetched || 0) + 1;
-          return new Response(Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=='), c=>c.charCodeAt(0)), {headers:{'Content-Type':'image/png'}});
-        }
         if (url.includes("/api/meeting/recap")) return json({ revision: "r1", throughMs: 1000, images: [{id:'frame.png', timeMs:0,url:'/api/history/test/screenshots/frame.png'}], recap, summary: "公開日は未定" });
+        if (url.includes("/api/meeting/translate")) {
+          window.__translationRequest = JSON.parse(options.body);
+          const events = [{type:'sources',sources:[source],finalized:true}, {type:'translation',id:source.id,sourceText:source.text,text:'Release date is undecided. <script>unsafe</script>'}, {type:'done'}];
+          return new Response(events.map(e => 'data: '+JSON.stringify(e)+'\n\n').join(''), {headers:{'Content-Type':'text/event-stream'}});
+        }
         if (url.includes("/api/meeting/ask")) {
           window.__meetingQuestion = JSON.parse(options.body);
           const events = [{ type: "delta", text: "公開日は未定です。[S1]" }, { type: "done", question: "公開日は？", answer: "公開日は未定です。[S1]", citations: [{ ...source, label: "S1" }] }];
@@ -1711,20 +1717,45 @@ async function verifyMeetingInsights(client) {
   assert.equal(await evaluate(client, `document.querySelector('#assistantAccessNotice').hidden`), true, 'logged-in users must not see a login warning before selecting a meeting');
   await evaluate(client, `(() => { window.confirm = () => true; document.querySelector(".history-item-main").click(); })()`);
   await new Promise(resolve => setTimeout(resolve, 200));
-  assert.equal(await evaluate(client, `document.querySelector('#exportRecap').disabled`), false);
-  await evaluate(client, `document.querySelector("#exportRecap").click()`);
+  await evaluate(client, `document.querySelector(".summary-panel").classList.add("is-collapsed")`);
+  await evaluate(client, `document.querySelector("#summaryBtn").click()`);
   await new Promise(resolve => setTimeout(resolve, 150));
   const recap = await evaluate(client, `({ text: document.querySelector("#summaryText").textContent, scripts: document.querySelectorAll("#summaryText script").length, cards: document.querySelectorAll(".chapter-card").length })`);
   assert.equal(recap.cards, 1, "saved meeting should render a chapter card");
-  assert.match(recap.text, /公開日は未定/);
+  assert.match(recap.text, /検証が完了していないため公開日は未定/);
   assert.equal(recap.scripts, 0, "model strings must remain text");
-  assert.ok(await evaluate(client, `window.__exportImageFetched > 0`), 'recap export must fetch embedded images');
+  assert.equal(await evaluate(client, `getComputedStyle(document.querySelector('#summaryPanelTitle')).writingMode`), 'horizontal-tb');
+  assert.ok(await evaluate(client, `document.querySelector('#summaryText').getBoundingClientRect().width > 400`), 'minutes need readable width');
+  assert.equal(await evaluate(client, `document.querySelectorAll('#summaryText .chapter-images img').length`), 1, 'images appear inside minutes');
+  assert.equal(await evaluate(client, `document.querySelector('#exportRecap')`), null, 'minutes must not require HTML download');
+  assert.ok(await evaluate(client, `document.querySelector('#summaryText .chapter-images img').naturalWidth > 0`), 'inline image must load');
   await evaluate(client, `(() => { document.querySelector("#assistantQuestion").value = "公開日は？"; document.querySelector("#assistantAsk").click(); })()`);
   await new Promise(resolve => setTimeout(resolve, 150));
   const answer = await evaluate(client, `({ text: document.querySelector("#assistantTurns").textContent, source: window.__meetingQuestion, citations: document.querySelectorAll("#assistantTurns .meeting-citation").length })`);
   assert.match(answer.text, /公開日は未定です/);
   assert.equal(answer.source.historyId, "history-1", "assistant must use the selected meeting");
   assert.equal(answer.citations, 1);
+  assert.equal(await evaluate(client, `document.querySelector('#sidebarToggle')`), null, 'detail settings entry is removed');
+  assert.equal(await evaluate(client, `document.querySelector('#meetingCaptureEnabled').getClientRects().length > 0`), true, 'screenshot checkbox is on the main screen');
+  assert.equal(await evaluate(client, `document.querySelector('#meetingTranslationTab').hidden`), true);
+  await evaluate(client, `document.querySelector('#translationEnabled').click()`);
+  await new Promise(resolve => setTimeout(resolve, 650));
+  assert.equal(await evaluate(client, `document.querySelector('#workspacePanels').dataset.meetingView`), 'translation');
+  assert.equal(await evaluate(client, `window.__translationRequest.historyId`), 'history-1');
+  assert.match(await evaluate(client, `document.querySelector('#translationRows').textContent`), /Release date is undecided/);
+  assert.equal(await evaluate(client, `document.querySelectorAll('#translationRows script').length`), 0);
+  const columns = await evaluate(client, `(() => { const row=document.querySelector('.translation-row'); const left=row.children[0].getBoundingClientRect(),right=row.children[1].getBoundingClientRect();return {sideBySide:right.x>left.x+left.width, width:left.width}; })()`);
+  assert.ok(columns.sideBySide && columns.width > 200, 'original and translation must be readable side by side');
+  await evaluate(client, `(() => {const language=document.querySelector('#translationLanguage');language.value='ja';language.dispatchEvent(new Event('change'));})()`);
+  await new Promise(resolve => setTimeout(resolve, 650));
+  assert.equal(await evaluate(client, `window.__translationRequest.language`), 'ja');
+  if (process.env.TRANSLATION_SCREENSHOT) {
+    const shot = await client.send('Page.captureScreenshot', {format:'png'});
+    await writeFile(process.env.TRANSLATION_SCREENSHOT, Buffer.from(shot.data, 'base64'));
+  }
+  await evaluate(client, `document.querySelector('#translationEnabled').click()`);
+  assert.equal(await evaluate(client, `document.querySelector('#meetingTranslationTab').hidden`), true);
+  await evaluate(client, `document.querySelector('#meetingSummaryTab').click()`);
   if (process.env.MEETING_SCREENSHOT) {
     const shot = await client.send("Page.captureScreenshot", { format: "png" });
     await writeFile(process.env.MEETING_SCREENSHOT, Buffer.from(shot.data, "base64"));

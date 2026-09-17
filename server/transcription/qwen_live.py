@@ -245,7 +245,15 @@ class QwenLiveMeeting(LiveMeeting):
             context=(self.data['vocabulary'] + ' ' + self.data['prompt']).strip(), priority=settings.asr_high_accuracy_priority, language=self.data['language'])
         response = await client.post(str(settings.openai_base_url).rstrip('/') + endpoint, **options)
         response.raise_for_status()
-        return response_text(response.json())
+        return response_text(response.json(), allow_empty=True)
+
+    async def _retain_hq(self, track, start, end, *, reason, message):
+        self.data['tracks'][track]['hqCommitted'] = end
+        self.data.setdefault('hqRetainedIntervals', []).append(
+            dict(track=track, startSample=start, endSample=end, reason=reason))
+        await self.checkpoint()
+        await self.send(dict(type='hq_status', state='retained', track=track,
+                             tsStart=start//16, tsEnd=end//16, message=message))
 
     async def _hq_interval(self, client, track, start, end):
         targets = [r for r in self.records if r.get('type') == 'final' and r.get('track') == track
@@ -257,6 +265,10 @@ class QwenLiveMeeting(LiveMeeting):
         await self.send(dict(type='hq_status', state='running', track=track, tsStart=start//16, tsEnd=end//16))
         pcm = await blocking_work_pool.run('artifact', self._read_audio, track, start, end)
         text = await self._batch_text(client, pcm)
+        if not text.strip():
+            await self._retain_hq(track, start, end, reason='empty_result',
+                message='高精度認識が空の区間は速報を保持し、次の区間へ進みました。')
+            return
         original = ' '.join(r['text'] for r in targets)
         retained = []
         fallback = []
@@ -283,7 +295,7 @@ class QwenLiveMeeting(LiveMeeting):
                     group_pcm = pcm[(left-start)*2:(right-start)*2]
                     candidate = await self._batch_text(client, group_pcm)
                     source = ' '.join(r['text'] for r in group)
-                    if language_coverage_lost(source, candidate):
+                    if not candidate.strip() or language_coverage_lost(source, candidate):
                         candidate = source
                         retained.extend(r['segmentId'] for r in group)
                     pieces.append(candidate)
@@ -292,11 +304,8 @@ class QwenLiveMeeting(LiveMeeting):
             text = '\n'.join(pieces)
         if len(retained) == len(targets):
             # A result that demonstrably drops a language cannot supersede RT.
-            self.data['tracks'][track]['hqCommitted'] = end
-            self.data.setdefault('hqRetainedIntervals', []).append(dict(track=track, startSample=start, endSample=end))
-            await self.checkpoint()
-            await self.send(dict(type='hq_status', state='retained', track=track, tsStart=start//16, tsEnd=end//16,
-                message='言語の脱落を検出した区間は、速報を維持しました。'))
+            await self._retain_hq(track, start, end, reason='language_coverage',
+                message='言語の脱落を検出した区間は、速報を維持しました。')
             return
         record = self._record(track, start, end, text, quality='high_accuracy', seq=min(r['seq'] for r in targets))
         record.update(originalText=original, realtimeSegments=targets)

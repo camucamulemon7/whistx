@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from server.services.meeting_intelligence import answer_events, retrieve_segments, generate_recap, read_insights, validate_chapters
+from server.services.meeting_intelligence import answer_events, retrieve_segments, generate_recap, read_insights, validate_chapters, recap_markdown
 from server.services.meeting_source import MeetingError, MeetingSnapshot, load_meeting
 from server.transcription.live import LiveMeeting
 from server.transcription.local_agreement import agreed_prefix, pcm_wav, speech_bounds
@@ -43,6 +43,57 @@ class MeetingTests(unittest.TestCase):
         for changed in [dict(start_id='1'), dict(end_id='0'), dict(summary=[dict(text='捏造', source_ids=['other'])])]:
             with self.subTest(changed=changed), self.assertRaises(MeetingError):
                 validate_chapters(dict(chapters=[{**self.chapter, **changed}]), self.rows)
+
+    def test_minutes_details_preserve_evidence_and_markdown(self):
+        chapter = {**self.chapter, 'discussion': [dict(text='公開日は未定のため金曜までに確認する。', source_ids=['0', '1'])]}
+        chapters = validate_chapters(dict(chapters=[chapter]), self.rows)
+        self.assertEqual(chapters[0]['discussion'][0]['sourceIds'], ['0', '1'])
+        self.assertIn('議論の経緯・詳細', recap_markdown(dict(chapters=chapters)))
+        self.assertIn('公開日は未定のため金曜までに確認する。', recap_markdown(dict(chapters=chapters)))
+        chapter['discussion'][0]['source_ids'] = ['invented']
+        with self.assertRaises(MeetingError):
+            validate_chapters(dict(chapters=[chapter]), self.rows)
+
+    def test_recap_repairs_coverage_and_restores_persistent_ids(self):
+        rows = [{**row, 'id': f'display-{i * 16000}-hq'} for i, row in enumerate(self.rows)]
+        calls = []
+        def complete(messages, **kwargs):
+            calls.append(list(messages))
+            chapter = {**self.chapter, 'summary': [dict(text='記録', source_ids=['invented'])]} if len(calls) == 1 else self.chapter
+            return json.dumps(dict(chapters=[chapter]))
+        recap = generate_recap(replace(self.snapshot, segments=rows), SimpleNamespace(model='fixture', complete_meeting=complete))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][-2]['role'], 'assistant')
+        self.assertIn('invalid_meeting_citation', calls[1][-1]['content'])
+        self.assertEqual(recap['chapters'][0]['sourceIds'], [row['id'] for row in rows])
+        self.assertEqual(recap['chapters'][0]['actions'][0]['sourceIds'], [rows[1]['id']])
+
+    def test_recap_splits_failed_pack_without_losing_coverage(self):
+        calls = []
+        def complete(messages, **kwargs):
+            calls.append(messages)
+            if len(calls) <= 2:
+                return json.dumps(dict(chapters=[{**self.chapter, 'summary': [dict(text='記録', source_ids=['invented'])]}]))
+            return json.dumps(dict(chapters=[dict(title='議題', start_id='0', end_id='0', summary=[dict(text='記録', source_ids=['0'])])]))
+        recap = generate_recap(self.snapshot, SimpleNamespace(model='fixture', complete_meeting=complete))
+        self.assertEqual(len(calls), 4)
+        self.assertEqual([id for c in recap['chapters'] for id in c['sourceIds']], ['0', '1'])
+
+    def test_recap_range_is_owned_by_application(self):
+        chapter = {**self.chapter, 'start_id': 'wrong', 'end_id': 'wrong'}
+        model = SimpleNamespace(model='fixture', complete_meeting=lambda *a, **kw: json.dumps(dict(chapters=[chapter])))
+        recap = generate_recap(self.snapshot, model)
+        self.assertEqual(recap['chapters'][0]['sourceIds'], ['0', '1'])
+        self.assertEqual(recap['chapters'][0]['startMs'], 0)
+        self.assertEqual(recap['chapters'][0]['endMs'], 2000)
+
+    def test_recap_failure_keeps_previous_minutes(self):
+        self.snapshot.insight_path.write_text('{"recap":{"previous":true}}')
+        def complete(*args, **kwargs):
+            return json.dumps(dict(chapters=[dict(title='議題', start_id='0', end_id='0', summary=[dict(text='記録', source_ids=['invented'])])]))
+        with self.assertRaises(MeetingError):
+            generate_recap(self.snapshot, SimpleNamespace(model='fixture', complete_meeting=complete))
+        self.assertEqual(json.loads(self.snapshot.insight_path.read_text()), {'recap': {'previous': True}})
 
     def test_answer_repairs_missing_citations(self):
         responses = iter(['公開日は未定です。', '公開日は未定です。[S1]'])
@@ -236,8 +287,10 @@ class MeetingApiTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(router)
         with TestClient(app) as client:
-            for path in ('insights', 'recap', 'ask', 'refine'):
+            for path in ('insights', 'recap', 'ask', 'refine', 'translate'):
                 payload = dict(runtimeSessionId='test')
+                if path == 'translate':
+                    payload['language'] = 'en'
                 if path == 'ask':
                     payload['question'] = '公開日は？'
                 self.assertEqual(client.post('/api/meeting/'+path, json=payload).status_code, 401)

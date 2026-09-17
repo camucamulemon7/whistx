@@ -18,6 +18,9 @@ if [[ "${PODMAN_NETWORK:-slirp4netns:allow_host_loopback=true}" != "host" ]]; th
     printf -v "${endpoint_key}" '%s' "${endpoint_value}"
   done
 fi
+if [[ "${PODMAN_NETWORK:-}" == "host" ]]; then
+  APP_CONTAINER_HOST_GATEWAY=""
+fi
 build_common_container_env
 
 PODMAN_USERNS="${PODMAN_USERNS:-keep-id}"

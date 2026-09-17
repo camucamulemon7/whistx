@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 FIELDS = {
     'HISTORY_RETENTION_DAYS', 'ENABLE_SELF_SIGNUP', 'ALLOW_GUEST_TRANSCRIPTION',
@@ -52,6 +52,14 @@ def validate(values: dict) -> dict:
 
 def load_overrides() -> None:
     os.environ.update(validate(read_overrides()))
+    gateway = os.getenv('APP_CONTAINER_HOST_GATEWAY', '').strip()
+    if gateway:
+        for key in ('ASR_BASE_URL', 'SUMMARY_BASE_URL', 'PROOFREAD_BASE_URL'):
+            value = os.environ.get(key, '')
+            parsed = urlsplit(value)
+            if parsed.hostname in {'localhost', '127.0.0.1', '::1'} and not parsed.username and not parsed.password:
+                host = gateway + (f':{parsed.port}' if parsed.port else '')
+                os.environ[key] = urlunsplit(parsed._replace(netloc=host))
 
 
 def save_overrides(values: dict) -> None:

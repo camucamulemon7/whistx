@@ -97,8 +97,8 @@ class ConfigRegistryTests(unittest.TestCase):
         values = example_values('.env.example', commented=False)
         reference = example_values()
         self.assertFalse(set(values) - set(reference))
-        self.assertIn('ASR_BASE_URL', values)
-        self.assertIn('SUMMARY_MODEL', values)
+        self.assertNotIn('ASR_BASE_URL', values)
+        self.assertNotIn('SUMMARY_MODEL', values)
         self.assertEqual(values['APP_SESSION_SECRET'], '')
 
     def test_container_forwards_every_canonical_variable(self) -> None:

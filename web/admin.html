@@ -43,7 +43,7 @@
 
       <section class="admin-card" style="padding:24px;margin-bottom:20px">
         <h2>運用・モデル設定</h2>
-        <p>保存した設定はコンテナ再起動後に適用されます。保存期間0日は無期限です。APIキーは空欄なら変更しません。接続先にはコンテナから到達できるURLを指定してください。</p>
+        <p>保存した設定はコンテナ再起動後に適用されます。保存期間0日は無期限です。APIキーは空欄なら変更しません。Podmanの通常ネットワークではlocalhostをホストの接続先へ自動変換します。認証不要のASRでもAPIキーに任意の文字列を設定してください。</p>
         <form id="serverSettingsForm" class="server-settings-form">
           <label>保存期間（日）<input name="HISTORY_RETENTION_DAYS" type="number" min="0" max="36500" required /></label>
           <label>新規登録申請<select name="ENABLE_SELF_SIGNUP"><option value="0">無効</option><option value="1">有効</option></select></label>

@@ -52,10 +52,6 @@ const bannersContainerEl = $("#bannersContainer");
 const brandTitleEl = $("#brandTitle");
 const brandTaglineEl = $("#brandTagline");
 const themeToggleBtn = $("#themeToggle");
-const sidebarToggleBtn = $("#sidebarToggle");
-const sidebarCloseBtn = $("#sidebarClose");
-const sidebarBackdropEl = $("#sidebarBackdrop");
-const sidePanelEl = $("#sidePanel");
 const audioLevelIndicatorEl = $("#audioLevelIndicator");
 const audioLevelMatrixEl = $("#audioLevelMatrix");
 
@@ -305,7 +301,6 @@ const state = {
   activeAiPanel: "proofread",
   advancedSettingsOpen: false,
   latestStatus: "idle",
-  sidebarOpen: false,
   historyCollapsed: false,
   activeResizer: null,
   panelLeftRatio: 1.8,
@@ -467,22 +462,6 @@ function applyProofreadMode(value) {
   }
 }
 
-function applySidebarOpen(value) {
-  state.sidebarOpen = !!value;
-  if (sidePanelEl) {
-    sidePanelEl.classList.toggle("is-open", state.sidebarOpen);
-    sidePanelEl.setAttribute("aria-hidden", state.sidebarOpen ? "false" : "true");
-  }
-  if (sidebarBackdropEl) {
-    sidebarBackdropEl.hidden = !state.sidebarOpen;
-    sidebarBackdropEl.classList.toggle("is-open", state.sidebarOpen);
-  }
-  if (sidebarToggleBtn) {
-    sidebarToggleBtn.setAttribute("aria-label", state.sidebarOpen ? "詳細設定を閉じる" : "詳細設定を開く");
-    sidebarToggleBtn.title = state.sidebarOpen ? "詳細設定を閉じる" : "詳細設定";
-  }
-}
-
 function applyHistoryDrawerOpen(open) {
   if (!historyRailEl) return;
   const isMobile = window.innerWidth <= 1100;
@@ -559,7 +538,7 @@ function applySummaryPromptEditorOpen(value) {
   }
   if (summaryPromptToggleBtn) {
     summaryPromptToggleBtn.setAttribute("aria-expanded", state.summaryPromptEditorOpen ? "true" : "false");
-    summaryPromptToggleBtn.textContent = state.summaryPromptEditorOpen ? "要約方針を閉じる" : "要約方針";
+    summaryPromptToggleBtn.textContent = state.summaryPromptEditorOpen ? "議事録の作成方針を閉じる" : "議事録の作成方針";
   }
 }
 
@@ -653,7 +632,7 @@ function applyPanelCollapseState(panel, collapsed, options = {}) {
   const persist = options.persist !== false;
   const key = panel === "proofread" || panel === "summary" ? panel : "transcript";
   state.panelCollapsed[key] = !!collapsed;
-  const collapseAvailable = window.innerWidth > WORKSPACE_STACK_BREAKPOINT;
+  const collapseAvailable = !workspacePanelsEl?.classList.contains("meeting-layout") && window.innerWidth > WORKSPACE_STACK_BREAKPOINT;
   const visuallyCollapsed = collapseAvailable && !!collapsed;
 
   const panelEl = document.querySelector(`.${key}-panel`);
@@ -2041,7 +2020,7 @@ function setSummary(text, meta) {
   } else {
     summaryTextEl.innerHTML = `
       <div class="empty-state small">
-        <p class="empty-description">文字起こしができたら、ここで要点をまとめられます</p>
+        <p class="empty-description">文字起こしから、議論の経緯・決定事項・次のアクションを画像付きの議事録として表示します。</p>
       </div>
     `;
   }
@@ -4458,31 +4437,6 @@ if (proofreadModeEl) {
   });
 }
 
-if (sidebarToggleBtn) {
-  sidebarToggleBtn.addEventListener("click", () => {
-    applySidebarOpen(!state.sidebarOpen);
-  });
-}
-
-if (sidebarCloseBtn) {
-  sidebarCloseBtn.addEventListener("click", () => {
-    applySidebarOpen(false);
-  });
-}
-
-if (sidebarBackdropEl) {
-  sidebarBackdropEl.addEventListener("click", () => {
-    applySidebarOpen(false);
-  });
-}
-
-if (loginBtn) {
-  loginBtn.addEventListener("click", () => {
-    applySidebarOpen(true);
-    loginEmailEl?.focus();
-  });
-}
-
 if (logoutBtn) {
   logoutBtn.addEventListener("click", () => {
     logout();
@@ -4649,9 +4603,6 @@ document.addEventListener("keydown", (event) => {
 
     }
     return;
-  }
-  if (event.key === "Escape" && state.sidebarOpen) {
-    applySidebarOpen(false);
   }
   if (event.key === "Escape") {
     applyHistoryDrawerOpen(false);
@@ -4970,6 +4921,9 @@ async function loadCapabilities() {
     state.wsPath = normalizeWsPath(health.wsPath || state.wsPath);
     state.meetingInsights = !!health.meetingInsights;
     state.asrBackend = health.asrBackend || "whisper";
+    document.querySelector('#hqIntervalHint').textContent = health.highAccuracyWindowSeconds
+      ? `高精度認識は通常${health.highAccuracyWindowSeconds}秒分ごと（発話の区切りでは早めに実行）`
+      : '翻訳は高精度認識の確定後、または録音終了後に実行';
     if (state.asrBackend === "qwen3_vllm") {
       document.querySelector("#liveTranscriptionEnabled").checked = true;
     }
@@ -5540,7 +5494,6 @@ if (summaryBtnLabelEl) {
 applyAdvancedSettingsOpen(false);
 applySummaryPromptEditorOpen(false);
 applyActiveAiPanel(state.activeAiPanel);
-applySidebarOpen(false);
 applyHistoryDrawerOpen(false);
 setStatus("idle");
 document.documentElement.dataset.whistxReady = "true";

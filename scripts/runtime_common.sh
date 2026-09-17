@@ -35,14 +35,6 @@ resolve_app_runtime_env() {
   APP_TRANSCRIPTS_DIR="$(resolve_path_from_root "${script_dir}" "${APP_TRANSCRIPTS_DIR}")"
 }
 
-require_asr_api_key() {
-  local caller="$1"
-  if [[ -z "${ASR_API_KEY:-${OPENAI_API_KEY:-}}" ]]; then
-    echo "[${caller}] ASR_API_KEY（または OPENAI_API_KEY）を設定してください" >&2
-    exit 1
-  fi
-}
-
 require_session_secret() {
   local caller="$1"
   local session_secret="$2"

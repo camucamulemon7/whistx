@@ -347,3 +347,49 @@ class HighAccuracySchedulingTests(unittest.TestCase):
         self.assertEqual(self.meeting(20, 65)._next_hq(), ('mic', 320000, 960000))
         self.assertIsNone(self.meeting(20, 55)._next_hq())
         self.assertEqual(self.meeting(20, 25, stopped=True)._next_hq(), ('mic', 320000, 400000))
+
+
+class EmptyHighAccuracyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_interval_preserves_rt_and_allows_following_revision(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = Path(directory)
+            class Config:
+                transcripts_dir = root/'transcripts'
+                debug_chunks_dir = root/'audio'
+                asr_backend = 'qwen3_vllm'
+                asr_model = 'Qwen3-ASR-1.7B'
+                def __getattr__(self, key):
+                    return getattr(settings, key)
+            for module in ['server.transcription.live', 'server.transcription.qwen_live']:
+                stack.enter_context(patch(module+'.settings', Config()))
+            ws = SimpleNamespace(state=SimpleNamespace(is_guest=False), send_json=AsyncMock())
+            live = QwenLiveMeeting(ws, dict(tracks=['mic']))
+            try:
+                live._write_audio('mic', 0, b'\xff\x0f' * 240000)
+                live.data['tracks']['mic'].update(received=240000, windowStart=240000)
+                rows = [live._record('mic', i*80000, (i+1)*80000, '速報を保持', quality='realtime', seq=i) for i in range(3)]
+                for row in rows:
+                    live.store.append_record(row)
+                live.records = rows
+                with patch.object(live, '_batch_text', AsyncMock(side_effect=['', '次の区間の高精度認識'])) as decoder:
+                    await live._hq_interval(None, 'mic', 0, 80000)
+                    self.assertEqual(live.records, rows)
+                    self.assertEqual(live.data['tracks']['mic']['hqCommitted'], 80000)
+                    await live._hq_interval(None, 'mic', 80000, 240000)
+                    self.assertEqual(decoder.await_count, 2)
+                self.assertEqual(live.data['tracks']['mic']['hqCommitted'], 240000)
+                self.assertEqual(live.records[0]['quality'], 'realtime')
+                self.assertEqual(live.records[1]['quality'], 'high_accuracy')
+                self.assertEqual(live.data['hqRetainedIntervals'][0]['reason'], 'empty_result')
+                await live._recover_commits()
+                self.assertEqual(live.data['tracks']['mic']['hqCommitted'], 240000)
+            finally:
+                live.close()
+
+    def test_only_completed_empty_outputs_can_be_retained(self):
+        payload = {'choices': [{'finish_reason': 'stop', 'message': {'content': 'language Japanese<asr_text>'}}]}
+        self.assertEqual(response_text(payload, allow_empty=True), '')
+        with self.assertRaises(ValueError):
+            response_text(payload)
+        with self.assertRaises(ValueError):
+            response_text({'choices': [{'finish_reason': 'length', 'message': {'content': ''}}]}, allow_empty=True)

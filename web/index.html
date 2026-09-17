@@ -71,15 +71,6 @@
               </svg>
               <span>履歴</span>
             </button>
-            <button id="sidebarToggle" type="button" class="header-action-btn header-settings-btn" aria-label="詳細設定を開く" title="詳細設定">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <line x1="4" y1="6" x2="20" y2="6"/>
-                <line x1="10" y1="12" x2="20" y2="12"/>
-                <line x1="6" y1="18" x2="20" y2="18"/>
-                <circle cx="7" cy="12" r="2"/>
-              </svg>
-              <span>詳細設定</span>
-            </button>
             <button id="adminQueueBtn" type="button" class="header-action-btn" hidden>
               管理者設定
               <span id="adminQueueBadge" class="header-action-badge">0</span>
@@ -323,10 +314,16 @@
               <p id="recordTelemetry" class="setting-hint setting-hint-telemetry" aria-live="polite" hidden></p>
             </section>
 
+            <div class="meeting-options">
+              <label><input id="translationEnabled" type="checkbox"> 翻訳</label>
+              <label><input id="meetingCaptureEnabled" type="checkbox" checked> スクリーンショットを保存（画面共有時）</label>
+              <span id="hqIntervalHint">高精度認識の確定後に翻訳します</span>
+            </div>
             <div class="meeting-navigation">
             <nav class="meeting-tabs" role="tablist" aria-label="会議の表示">
               <button id="meetingTranscriptTab" type="button" role="tab" data-meeting-tab="transcript" aria-controls="meetingTranscriptPanel" aria-selected="true">文字起こし</button>
-              <button id="meetingSummaryTab" type="button" role="tab" data-meeting-tab="summary" aria-controls="meetingSummaryPanel" aria-selected="false" tabindex="-1">会議の要約</button>
+              <button id="meetingSummaryTab" type="button" role="tab" data-meeting-tab="summary" aria-controls="meetingSummaryPanel" aria-selected="false" tabindex="-1">議事録</button>
+              <button id="meetingTranslationTab" type="button" role="tab" data-meeting-tab="translation" aria-controls="meetingTranslationPanel" aria-selected="false" tabindex="-1" hidden>翻訳</button>
               <button id="meetingMaterialsTab" type="button" role="tab" data-meeting-tab="materials" aria-controls="meetingMaterialsPanel" aria-selected="false" tabindex="-1">共有資料</button>
               <button id="meetingAssistantTab" type="button" role="tab" data-meeting-tab="assistant" aria-controls="meetingAssistantPanel" aria-selected="false" tabindex="-1">アシスタント</button>
             </nav>
@@ -469,7 +466,7 @@
               <section id="meetingSummaryPanel" class="summary-panel glass-panel" aria-labelledby="summaryPanelTitle">
                 <header class="panel-header">
                   <div class="panel-title-group">
-                    <h2 id="summaryPanelTitle" class="panel-title">会議の要約</h2>
+                    <h2 id="summaryPanelTitle" class="panel-title">議事録</h2>
                     <span id="summaryMeta" class="panel-badge">未実行</span>
                   </div>
                   <div class="ai-result-tabs" aria-label="編集結果の切り替え">
@@ -478,17 +475,16 @@
                   </div>
                   <div class="panel-actions">
                     <button id="summaryPromptToggleBtn" type="button" class="btn-secondary" aria-controls="summaryPromptEditor" aria-expanded="false">
-                      要約方針
+                      議事録の作成方針
                     </button>
                     <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="summary" aria-label="要約をたたむ" title="たたむ">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="15 18 9 12 15 6"/>
                       </svg>
                     </button>
-                    <button id="summaryBtn" type="button" class="btn-action" aria-label="要約を生成">
-                      <span id="summaryBtnLabel">要約する</span>
+                    <button id="summaryBtn" type="button" class="btn-action" aria-label="議事録を作成">
+                      <span id="summaryBtnLabel">議事録を作成</span>
                     </button>
-                    <button id="exportRecap" type="button" class="btn-secondary" disabled>画像付きで保存</button>
                     <button id="copySummaryBtn" type="button" class="icon-btn" aria-label="要約をコピー" title="要約をコピー">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
@@ -500,8 +496,8 @@
                 <div id="summaryPromptEditor" class="summary-prompt-editor" hidden>
                   <div class="summary-prompt-editor-header">
                     <div>
-                      <strong>要約方針</strong>
-                      <p class="setting-hint">要約するときだけ使います。空欄の場合は既定の方針でまとめます。</p>
+                      <strong>議事録の作成方針</strong>
+                      <p class="setting-hint">空欄の場合も、議論の経緯・決定事項・次のアクションを詳しく記録します。</p>
                     </div>
                   </div>
                   <textarea
@@ -513,13 +509,23 @@
                 </div>
                 <div id="summaryText" class="summary-content">
                   <div class="empty-state small">
-                    <p class="empty-description">文字起こしができたら、ここで要点をまとめられます</p>
+                    <p class="empty-description">文字起こしから、議論の経緯・決定事項・次のアクションを画像付きの議事録として表示します。</p>
                   </div>
                 </div>
               </section>
+              <section id="meetingTranslationPanel" class="translation-panel glass-panel" aria-labelledby="translationTitle">
+                <header class="panel-header"><h2 id="translationTitle" class="panel-title">翻訳</h2>
+                  <label for="translationLanguage">翻訳先</label><select id="translationLanguage">
+                    <option value="en">英語</option><option value="ja">日本語</option><option value="zh">中国語（簡体字）</option><option value="ko">韓国語</option><option value="es">スペイン語</option><option value="fr">フランス語</option><option value="de">ドイツ語</option>
+                  </select><button id="translationRetry" type="button" class="btn-secondary" hidden>再試行</button>
+                </header>
+                <p id="translationStatus" class="meeting-note" role="status">高精度認識が確定すると翻訳します。</p>
+                <div class="translation-columns"><span>文字起こし（原文）</span><span>翻訳</span></div>
+                <div id="translationRows" class="translation-rows"></div>
+              </section>
               <section id="meetingMaterialsPanel" class="meeting-materials glass-panel" aria-labelledby="meetingMaterialsTitle">
                 <header class="panel-header"><h2 id="meetingMaterialsTitle" class="panel-title">共有資料</h2><span id="meetingImageCount" class="panel-badge">0 枚</span></header>
-                <div class="meeting-material-controls"><label><input id="meetingCaptureEnabled" type="checkbox" checked> 共有画面を自動保存</label><p class="meeting-note">画面の変化を検出して保存します（最大45秒に1枚）。文字起こしの「共有画面を表示」からも開けます。</p></div>
+                <div class="meeting-material-controls"><p class="meeting-note">画面の変化を検出して保存します（最大45秒に1枚）。文字起こしの「共有画面を表示」からも開けます。</p></div>
                 <div id="meetingImages" class="meeting-material-grid"></div>
               </section>
               <div id="assistantResize" title="ドラッグまたは矢印キーで幅を調整" role="separator" tabindex="0" aria-label="アシスタントの幅" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="640" aria-valuenow="338"></div>
@@ -549,21 +555,7 @@
     </div>
 
     <div id="historyDrawerBackdrop" class="history-drawer-backdrop" hidden></div>
-    <div id="sidebarBackdrop" class="sidebar-backdrop" hidden></div>
-    <aside id="sidePanel" class="side-panel" aria-label="詳細設定" aria-hidden="true">
-      <div class="side-panel-header">
-        <div>
-          <h2 class="side-panel-title">詳細設定</h2>
-          <p class="side-panel-description">文字起こしと画面共有、専門用語・会議メモ（任意）を設定します。</p>
-        </div>
-        <button id="sidebarClose" type="button" class="icon-btn" aria-label="サイドパネルを閉じる" title="閉じる">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"/>
-            <line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
-      </div>
-
+    <div hidden id="legacyPreferences">
       <div class="side-panel-section">
         <div class="side-panel-section-header">
           <div>
@@ -681,7 +673,7 @@
         ></textarea>
         <p id="sharedVocabularyMeta" class="setting-hint">全体用語辞典は未設定です</p>
       </div>
-    </aside>
+    </div>
 
     <div id="authGuestView" class="auth-overlay" hidden>
       <div class="auth-overlay-backdrop"></div>

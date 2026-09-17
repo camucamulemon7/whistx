@@ -33,6 +33,7 @@ def spec(
 
 
 ENV_REGISTRY = (
+    spec("APP_CONTAINER_HOST_GATEWAY", "string", ""),
     spec("APP_ENV", "enum", "development", "development|production"),
     spec("APP_HOST", "string", "0.0.0.0", aliases=("HOST",)),
     spec("APP_PORT", "integer", "8005", "1..65535", aliases=("PORT",)),
@@ -78,7 +79,7 @@ ENV_REGISTRY = (
     spec("ASR_BACKEND", "string", "whisper", "whisper|qwen3_vllm"),
     spec("ASR_REALTIME_WINDOW_SECONDS", "integer", "5", "1..10"),
     spec("ASR_HIGH_ACCURACY_ENABLED", "boolean", "1"),
-    spec("ASR_HIGH_ACCURACY_WINDOW_SECONDS", "integer", "60", "30..120"),
+    spec("ASR_HIGH_ACCURACY_WINDOW_SECONDS", "integer", "30", "30..120"),
     spec("ASR_HIGH_ACCURACY_MIN_SECONDS", "integer", "10", "5..60"),
     spec("ASR_HIGH_ACCURACY_SILENCE_MS", "integer", "700", "300..3000"),
     spec("ASR_HIGH_ACCURACY_PRIORITY", "integer", "10", ">=1"),

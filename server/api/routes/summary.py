@@ -14,7 +14,7 @@ from ...deps import get_current_user
 from ...models import User
 from ...core.blocking import blocking_work_pool
 from ...core.public_errors import public_error
-from ...schemas import MeetingSourceRequest, MeetingRecapRequest, MeetingQuestionRequest
+from ...schemas import MeetingSourceRequest, MeetingRecapRequest, MeetingQuestionRequest, MeetingTranslationRequest
 from ...services.meeting_source import MeetingError, load_meeting
 from ...services.meeting_intelligence import generate_recap, read_insights, recap_markdown
 from ...services.meeting_stream_response import stream_answer, stream_events
@@ -52,6 +52,7 @@ async def meeting_recap(payload: MeetingRecapRequest, user: User = Depends(get_c
                                              prompt=payload.prompt, max_chars=settings.summary_input_max_chars)
         return JSONResponse({**snapshot.public(), "recap": recap, "summary": recap_markdown(recap)})
     except MeetingError as exc:
+        logger.warning("meeting_recap_failed code=%s", exc.code)
         return JSONResponse(status_code=exc.status_code, content={"error": exc.code})
     except Exception as exc:
         return JSONResponse(status_code=502, content=public_error("meeting_model_unavailable", exc, logger))
@@ -134,3 +135,20 @@ async def proofread_stream(
     emit_container_log(__name__, "debug", "proofread stream requested: chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
     logger.debug("proofread stream requested: chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
     return await runtime.proofread_stream(payload)
+
+
+@router.post("/api/meeting/translate")
+async def meeting_translate(payload: MeetingTranslationRequest, user: User = Depends(get_current_user)) -> Response:
+    from ...services.meeting_translation import LANGUAGES, translation_events
+    if payload.language not in LANGUAGES:
+        return JSONResponse(status_code=400, content={"error": "invalid_translation_language"})
+    if runtime.SUMMARIZER is None:
+        return JSONResponse(status_code=503, content={"error": "summary_not_configured"})
+    if not await asyncio.to_thread(_allow_costly_request, "meeting_translation", user):
+        return JSONResponse(status_code=429, content={"error": "rate_limit_exceeded"})
+    try:
+        snapshot = await _meeting_source(payload, user)
+    except MeetingError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"error": exc.code})
+    return StreamingResponse(stream_events(lambda cancelled: translation_events(snapshot, runtime.SUMMARIZER, payload.language, cancelled=cancelled)),
+                             media_type="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
