@@ -354,7 +354,7 @@ async function verifyDesktopPanelLayout(client) {
       await writeFile(process.env.DESKTOP_SCREENSHOT, Buffer.from(shot.data, "base64"));
     }
 
-    for (const [tab, panel] of [["summary", "meetingSummaryPanel"], ["proofread", "meetingProofreadPanel"], ["materials", "meetingMaterialsPanel"]]) {
+    for (const [tab, panel] of [["summary", "meetingSummaryPanel"], ["materials", "meetingMaterialsPanel"]]) {
       const state = await evaluate(client, `(() => {
         const tab = document.querySelector('[data-meeting-tab="${tab}"]');
         tab.click();
@@ -1049,99 +1049,15 @@ async function verifyTranscriptAutoScroll(client) {
 }
 
 async function verifyModalKeyboardManagement(client) {
-  await evaluate(
-    client,
-    `(() => {
-      const help = document.querySelector("#helpBtn");
-      help.focus();
-      help.click();
-    })()`,
-  );
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  let state = await evaluate(
-    client,
-    `({
-      helpHidden: document.querySelector("#helpModal").hidden,
-      activeId: document.activeElement?.id || "",
-      bodyLocked: document.body.classList.contains("is-modal-open")
-    })`,
-  );
-  assert.equal(state.helpHidden, false, "help modal should open");
-  assert.equal(state.activeId, "helpModalClose", "help modal should receive initial focus");
-  assert.equal(state.bodyLocked, true, "open modal should lock background scrolling");
-
-  await evaluate(client, `document.querySelector(".log-screenshot-link").click()`);
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (await evaluate(client, `document.activeElement?.id === "screenshotModalClose"`)) break;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  state = await evaluate(
-    client,
-    `({
-      helpHidden: document.querySelector("#helpModal").hidden,
-      screenshotHidden: document.querySelector("#screenshotModal").hidden,
-      activeId: document.activeElement?.id || ""
-    })`,
-  );
-  assert.equal(state.helpHidden, false, "opening a second modal should keep the underlying modal");
-  assert.equal(state.screenshotHidden, false, "screenshot modal should open above help");
-  assert.equal(state.activeId, "screenshotModalClose", "topmost modal should receive focus");
-
+  assert.equal(await evaluate(client, `document.querySelector('#helpBtn')`), null);
+  assert.equal(await evaluate(client, `document.querySelector('#meetingProofreadTab')`), null);
+  await evaluate(client, `document.querySelector('.log-screenshot-link').click()`);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(await evaluate(client, `document.activeElement?.id`), "screenshotModalClose");
+  assert.equal(await evaluate(client, `document.body.classList.contains('is-modal-open')`), true);
   await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
-  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
-  state = await evaluate(
-    client,
-    `({
-      helpHidden: document.querySelector("#helpModal").hidden,
-      screenshotHidden: document.querySelector("#screenshotModal").hidden,
-      activeId: document.activeElement?.id || "",
-      bodyLocked: document.body.classList.contains("is-modal-open")
-    })`,
-  );
-  assert.equal(state.screenshotHidden, true, "Escape should close only the topmost modal");
-  assert.equal(state.helpHidden, false, "underlying modal should remain open after one Escape");
-  assert.equal(state.activeId, "helpModalClose", "focus should return to the underlying modal");
-  assert.equal(state.bodyLocked, true, "background should remain locked while another modal is open");
-
-  await evaluate(
-    client,
-    `document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {
-      key: "Tab",
-      shiftKey: true,
-      bubbles: true
-    }))`,
-  );
-  assert.equal(
-    await evaluate(client, `document.activeElement?.id || document.activeElement?.tagName || ""`),
-    "helpModalFrame",
-    "Shift+Tab from the first control should wrap to the last modal control",
-  );
-  await evaluate(
-    client,
-    `document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {
-      key: "Tab",
-      bubbles: true
-    }))`,
-  );
-  assert.equal(
-    await evaluate(client, `document.activeElement?.id || ""`),
-    "helpModalClose",
-    "Tab from the last control should wrap to the first modal control",
-  );
-
-  await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
-  await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
-  state = await evaluate(
-    client,
-    `({
-      helpHidden: document.querySelector("#helpModal").hidden,
-      activeId: document.activeElement?.id || "",
-      bodyLocked: document.body.classList.contains("is-modal-open")
-    })`,
-  );
-  assert.equal(state.helpHidden, true, "second Escape should close the remaining modal");
-  assert.equal(state.activeId, "helpBtn", "closing should restore focus to the opener");
-  assert.equal(state.bodyLocked, false, "closing the final modal should unlock background scrolling");
+  assert.equal(await evaluate(client, `document.querySelector('#screenshotModal').hidden`), true);
+  assert.equal(await evaluate(client, `document.body.classList.contains('is-modal-open')`), false);
 }
 
 async function verifySocketLossStopsRecording(client) {
@@ -1954,6 +1870,8 @@ async function verifyQwenLiveRevision(client) {
   await new Promise(resolve => setTimeout(resolve, 200));
   assert.equal(await evaluate(client, `window.__liveStart?.language`), "ja", "Qwen must preserve the selected language");
   assert.equal(await evaluate(client, `window.__qwenPacketSamples`), 4000);
+  assert.equal(await evaluate(client, `document.querySelector('#audioLevelIndicator').hidden`), false);
+  assert.ok(await evaluate(client, `document.querySelector('#audioLevelMatrix').getBoundingClientRect().height >= 26`), "Input meter must be visible at full height");
   await evaluate(client, `(() => {
     const row = (i, text) => ({ type: "final", track: "mic", segmentId: "rt-"+i, seq: i, text,
       startSample: i*80000, endSample: (i+1)*80000, tsStart: i*5000, tsEnd: (i+1)*5000, quality: "realtime" });
@@ -1963,6 +1881,7 @@ async function verifyQwenLiveRevision(client) {
   })()`);
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(await evaluate(client, `document.querySelectorAll("#log .log-row").length`), 2);
+  assert.equal(await evaluate(client, `document.querySelector('#log .transcript-quality').textContent`), "リアルタイム");
   assert.equal(await evaluate(client, `document.querySelectorAll("#log .transcript-paragraph").length`), 1, "adjacent chunks should read as one paragraph");
   assert.equal(await evaluate(client, `getComputedStyle(document.querySelector("#log .log-row")).display`), "inline", "chunk boundaries must not create separate rows");
   assert.match(await evaluate(client, `document.querySelector("#log .transcript-paragraph").textContent`), /速報一.*速報二/);
@@ -1991,6 +1910,7 @@ async function verifyQwenLiveRevision(client) {
   assert.match(await evaluate(client, `document.querySelector("#liveTranscript").textContent`), /次の発言/);
   assert.equal(await evaluate(client, `document.querySelector("#log .log-row").dataset.quality`), "high_accuracy");
   assert.match(await evaluate(client, `document.querySelector("#hqStatus").textContent`), /高精度認識を反映/);
+  assert.equal(await evaluate(client, `document.querySelector('#log .transcript-quality').textContent`), "高精度");
   await evaluate(client, `window.__qwenSocket.emit({ type: "info", message: "ready", asrBackend: "qwen3_vllm", records: [
     { type: "final", track: "mic", segmentId: "hq-snapshot", seq: 0, text: "再接続で復元", tsStart: 0, tsEnd: 10000, startSample: 0, endSample: 160000, quality: "high_accuracy" }
   ], tracks: { mic: { seq: -1, samples: 0 } } })`);

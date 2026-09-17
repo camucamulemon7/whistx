@@ -71,7 +71,6 @@
               </svg>
               <span>履歴</span>
             </button>
-            <button id="helpBtn" type="button" class="header-action-btn header-link-btn" aria-label="説明を開く">説明</button>
             <button id="sidebarToggle" type="button" class="header-action-btn header-settings-btn" aria-label="詳細設定を開く" title="詳細設定">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <line x1="4" y1="6" x2="20" y2="6"/>
@@ -329,7 +328,6 @@
               <button id="meetingTranscriptTab" type="button" role="tab" data-meeting-tab="transcript" aria-controls="meetingTranscriptPanel" aria-selected="true">文字起こし</button>
               <button id="meetingSummaryTab" type="button" role="tab" data-meeting-tab="summary" aria-controls="meetingSummaryPanel" aria-selected="false" tabindex="-1">会議の要約</button>
               <button id="meetingMaterialsTab" type="button" role="tab" data-meeting-tab="materials" aria-controls="meetingMaterialsPanel" aria-selected="false" tabindex="-1">共有資料</button>
-              <button id="meetingProofreadTab" type="button" role="tab" data-meeting-tab="proofread" aria-controls="meetingProofreadPanel" aria-selected="false" tabindex="-1">校正</button>
               <button id="meetingAssistantTab" type="button" role="tab" data-meeting-tab="assistant" aria-controls="meetingAssistantPanel" aria-selected="false" tabindex="-1">アシスタント</button>
             </nav>
             <button id="assistantVisibilityToggle" class="btn-secondary assistant-visibility-toggle" type="button" aria-controls="meetingAssistantPanel" aria-expanded="true">アシスタントを隠す</button>
@@ -425,7 +423,7 @@
 
               <div class="panel-resizer" data-resizer="left" aria-hidden="true"></div>
 
-              <section id="meetingProofreadPanel" class="proofread-panel glass-panel" aria-labelledby="proofreadPanelTitle">
+              <section id="meetingProofreadPanel" hidden class="proofread-panel glass-panel" aria-labelledby="proofreadPanelTitle">
                 <header class="panel-header">
                   <div class="panel-title-group">
                     <h2 id="proofreadPanelTitle" class="panel-title">校正</h2>
@@ -555,7 +553,7 @@
       <div class="side-panel-header">
         <div>
           <h2 class="side-panel-title">詳細設定</h2>
-          <p class="side-panel-description">録音調整、画面共有、認識ヒントをまとめています。</p>
+          <p class="side-panel-description">文字起こしと画面共有、認識ヒントを設定します。</p>
         </div>
         <button id="sidebarClose" type="button" class="icon-btn" aria-label="サイドパネルを閉じる" title="閉じる">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -568,10 +566,12 @@
       <div class="side-panel-section">
         <div class="side-panel-section-header">
           <div>
-            <h3 class="side-panel-subtitle">録音詳細</h3>
-            <p class="side-panel-description">録音区切りや応答速度の調整です。</p>
+            <h3 class="side-panel-subtitle">文字起こし</h3>
+            <p class="side-panel-description">録音中に認識結果を表示します。</p>
           </div>
         </div>
+        <!-- Legacy controls retain stored preferences without adding tuning to the UI. -->
+        <div hidden>
         <div class="chunk-header">
           <span class="chunk-label">チャンク秒数</span>
           <span id="chunkHint" class="chunk-hint">精度重視</span>
@@ -595,6 +595,7 @@
           </div>
         </div>
         <p class="chunk-description">通常モードの区切り時間です。ライブモードでは連続した音声から順次表示します。</p>
+        </div>
         <label class="meeting-live-toggle" for="liveTranscriptionEnabled"><input id="liveTranscriptionEnabled" type="checkbox" checked /> ライブ文字起こし</label>
         <p class="chunk-description">認識途中の文字を表示します。音声は復旧と再確認のため保存されます。</p>
       </div>
@@ -615,6 +616,7 @@
           </label>
         </div>
         <p class="chunk-description">画面共有時のみ、確定セグメントごとにサムネイルを保存します</p>
+        <div hidden>
         <div class="setting-group setting-group-toggle side-panel-toggle">
           <span class="setting-label">差分スキップ</span>
           <label for="screenshotDiffSkipEnabled" class="toggle-control">
@@ -633,6 +635,7 @@
           </label>
         </div>
         <p class="chunk-description">文字起こしごとの元音声・加工後音声プレーヤーを表示します</p>
+        </div>
       </div>
 
       <div class="side-panel-section">
@@ -752,17 +755,5 @@
       </div>
     </div>
 
-    <div id="helpModal" class="screenshot-modal help-modal" hidden>
-      <div class="screenshot-modal-backdrop" data-help-modal-close></div>
-      <div class="screenshot-modal-dialog glass-panel help-modal-dialog" role="dialog" aria-modal="true" aria-label="使い方" tabindex="-1">
-        <button id="helpModalClose" type="button" class="icon-btn screenshot-modal-close" aria-label="閉じる">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"/>
-            <line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
-        <iframe id="helpModalFrame" class="help-modal-frame" title="使い方" loading="lazy"></iframe>
-      </div>
-    </div>
   </body>
 </html>

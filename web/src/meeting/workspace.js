@@ -59,6 +59,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   });
 
   function setView(next) {
+    next = ["transcript", "summary", "materials", "assistant"].includes(next) ? next : "transcript";
     view = next;
     panels.dataset.meetingView = next;
     document.querySelectorAll("[data-meeting-tab]").forEach((button) => {

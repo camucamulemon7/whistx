@@ -308,6 +308,10 @@ python3 -c 'import secrets; print(secrets.token_hex(32))'
 
 `podman-run.sh` builds with `--format docker` by default so the image `HEALTHCHECK` is preserved. Override with `PODMAN_BUILD_FORMAT=oci` only if you intentionally want OCI output and accept that Podman will ignore the healthcheck.
 
+Podmanのブリッジネットワークでは、HTTP APIの接続先が `localhost:ポート` または `127.0.0.1:ポート` の場合、起動時に `host.containers.internal` へ置き換えます。ホスト実行用の `.env` は変更しません。`PODMAN_NETWORK=host` の場合は置き換えません。
+
+WSLなどでsystemdのcgroup作成に失敗する場合は、`.env` に `PODMAN_CGROUP_MANAGER=cgroupfs` を設定してください。コード更新後は `CONTAINER_BUILD_POLICY=always` を指定して再ビルドしてください。Docker版と同じポートを使用する場合は、録音を終了してDocker版を停止してから起動します。
+
 Container build behavior:
 
 - `CONTAINER_BUILD_POLICY=missing` (default): build only when the image does not exist

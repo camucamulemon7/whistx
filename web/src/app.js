@@ -126,7 +126,6 @@ const clearBtn = $("#clearBtn");
 const saveBtn = $("#saveBtn");
 const saveTitleInputEl = $("#saveTitleInput");
 const saveStateBadgeEl = $("#saveStateBadge");
-const helpBtn = $("#helpBtn");
 const loginBtn = $("#loginBtn");
 const logoutBtn = $("#logoutBtn");
 const authProfileEditBtn = $("#authProfileEditBtn");
@@ -174,9 +173,6 @@ const screenshotModalStageEl = $("#screenshotModalStage");
 const screenshotZoomOutBtnEl = $("#screenshotZoomOutBtn");
 const screenshotZoomResetBtnEl = $("#screenshotZoomResetBtn");
 const screenshotZoomInBtnEl = $("#screenshotZoomInBtn");
-const helpModalEl = $("#helpModal");
-const helpModalCloseEl = $("#helpModalClose");
-const helpModalFrameEl = $("#helpModalFrame");
 
 const dlTxt = $("#dlTxt");
 const dlJsonl = $("#dlJsonl");
@@ -888,7 +884,7 @@ function setAppLocked(locked) {
 }
 
 function hasOpenBlockingModal() {
-  return [runtimeUi.screenshotModalEl, helpModalEl].some((element) => element && !element.hidden);
+  return [runtimeUi.screenshotModalEl].some((element) => element && !element.hidden);
 }
 
 function syncBodyScrollLock() {
@@ -1229,19 +1225,6 @@ function hideScreenshotModal() {
   state.screenshotBaseHeight = 0;
   stopScreenshotDrag();
   updateScreenshotZoomUi();
-}
-
-function openHelpModal() {
-  if (!helpModalEl || !helpModalFrameEl) return;
-  if (!helpModalFrameEl.src) {
-    helpModalFrameEl.src = "/help.html";
-  }
-  openManagedModal(helpModalEl, { initialFocus: helpModalCloseEl });
-}
-
-function closeHelpModal() {
-  if (!helpModalEl) return;
-  closeManagedModal(helpModalEl);
 }
 
 function logWsEvent(event, detail = {}) {
@@ -2181,6 +2164,15 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", raw
   const row = document.createElement("div");
   row.className = "log-row new";
   row.dataset.segmentId = segmentId || String(seq);
+  row.dataset.quality = metadata.quality || "";
+  if (metadata.quality) {
+    const quality = document.createElement("span");
+    quality.className = "transcript-quality";
+    quality.dataset.quality = metadata.quality;
+    quality.textContent = metadata.quality === "high_accuracy"
+      ? (metadata.retainedRealtimeSegmentIds?.length ? "高精度・一部速報を保持" : "高精度") : "リアルタイム";
+    row.append(quality);
+  }
   row.tabIndex = -1;
 
   const range = document.createElement("span");
@@ -3119,6 +3111,8 @@ function ensureAudioLevelMatrix() {
 function renderAudioLevel(level) {
   const normalized = Math.max(0, Math.min(1, Number(level) || 0));
   state.audioLevel = normalized;
+  const inputLabel = audioLevelIndicatorEl?.querySelector(".audio-level-label");
+  if (inputLabel) inputLabel.textContent = normalized > 0.03 ? "入力あり" : "入力待ち";
   const columns = ensureAudioLevelMatrix();
   if (!columns.length) return;
 
@@ -3625,6 +3619,7 @@ async function startLiveRecording(health, selectedAudioSource) {
       } else if (data.type === "hq_status") {
         const status = document.querySelector("#hqStatus");
         status.hidden = false;
+        status.dataset.state = data.state;
         status.textContent = data.state === "running" ? `高精度認識中 ${formatMs(data.tsStart)}–${formatMs(data.tsEnd)}`
           : data.state === "completed" ? `高精度認識を反映 ${formatMs(data.tsStart)}–${formatMs(data.tsEnd)}` : data.message;
       } else if (data.type === "final") {
@@ -4648,8 +4643,7 @@ document.addEventListener("keydown", (event) => {
     event.stopPropagation();
     if (modal === runtimeUi.screenshotModalEl) {
       hideScreenshotModal();
-    } else if (modal === helpModalEl) {
-      closeHelpModal();
+
     }
     return;
   }
@@ -4661,38 +4655,12 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-if (helpBtn) {
-  helpBtn.addEventListener("click", () => {
-    openHelpModal();
-  });
-}
-
-if (helpModalCloseEl) {
-  helpModalCloseEl.addEventListener("click", () => {
-    closeHelpModal();
-  });
-}
-
-if (helpModalEl) {
-  helpModalEl.addEventListener("click", (event) => {
-    if (event.target === helpModalEl || event.target?.matches?.("[data-help-modal-close]")) {
-      closeHelpModal();
-    }
-  });
-}
-
 if (summaryPromptToggleBtn) {
   summaryPromptToggleBtn.addEventListener("click", () => {
     applySummaryPromptEditorOpen(!state.summaryPromptEditorOpen);
   });
 }
 
-window.addEventListener("message", (event) => {
-  if (event.origin !== window.location.origin) return;
-  if (event.data?.type === "whistx:help-close") {
-    closeHelpModal();
-  }
-});
 
 window.addEventListener("resize", () => {
   updateWorkspaceGridTemplate();
