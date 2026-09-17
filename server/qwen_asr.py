@@ -64,10 +64,10 @@ def batch_request(audio: bytes, *, mime_type: str, model: str, context: str, pri
     return '/chat/completions', {'json': batch_payload(audio, mime_type=mime_type, model=model, context=context, priority=priority)}
 
 
-def response_text(payload: dict) -> str:
+def response_text(payload: dict, *, allow_empty: bool = False) -> str:
     if isinstance(payload.get('text'), str):
         text = clean_qwen_text(payload['text'])
-        if not text:
+        if not text and not allow_empty:
             raise ValueError('qwen_empty_response')
         return text
     choices = payload.get('choices') or []
@@ -77,7 +77,7 @@ def response_text(payload: dict) -> str:
     if not isinstance(text, str):
         raise ValueError('qwen_invalid_response')
     text = clean_qwen_text(text)
-    if not text:
+    if not text and not allow_empty:
         raise ValueError('qwen_empty_response')
     return text
 
