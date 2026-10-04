@@ -110,9 +110,13 @@ class CdpClient {
         return;
       }
       if (!this.pending.has(message.id)) return;
-      const { resolve, reject, method } = this.pending.get(message.id);
+      const { resolve, reject, method, callsite } = this.pending.get(message.id);
       this.pending.delete(message.id);
-      if (message.error) reject(new Error(`${message.error.message} (${method})`));
+      if (message.error) {
+        const error = new Error(`${message.error.message} (${method})`);
+        error.stack += `\nCommand started at:\n${callsite.stack}`;
+        reject(error);
+      }
       else resolve(message.result);
     });
   }
@@ -127,6 +131,7 @@ class CdpClient {
       }, 30_000);
       this.pending.set(id, {
         method,
+        callsite: new Error(`CDP ${method}`),
         resolve: value => { clearTimeout(timeout); resolve(value); },
         reject: error => { clearTimeout(timeout); reject(error); },
       });
@@ -667,6 +672,7 @@ async function verifyRecordingStartIsSingleFlight(client) {
   await client.send("Page.addScriptToEvaluateOnNewDocument", { source: recordingMocks });
   await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
   await client.send("Page.reload", { ignoreCache: true });
+  await waitForApp(client);
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const ready = await evaluate(
       client,
@@ -1613,6 +1619,7 @@ async function verifyEffectiveAudioSourceFallback(client) {
   const previousInstanceId = await evaluate(client, `window.__recordingTest?.instanceId || ""`);
   await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
   await client.send("Page.reload", { ignoreCache: true });
+  await waitForApp(client);
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const ready = await evaluate(
       client,
@@ -1719,6 +1726,7 @@ async function verifyInvalidSessionDoesNotBecomeGuest(client) {
   });
   await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
   await client.send("Page.reload", { ignoreCache: true });
+  await waitForApp(client);
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const ready = await evaluate(
       client,
@@ -2186,7 +2194,7 @@ try {
   assert.equal(await evaluate(client, `document.querySelector('#adminQueueBadge').hidden || document.querySelector('#adminQueueBadge').closest('[hidden]') !== null`), true);
   client.close();
   const adminUrl = new URL('/admin.html', url).href;
-  client = await connectPage(browserWebSocketUrl, adminUrl);
+  client = await connectPage(browserWebSocketUrl, 'about:blank');
   await client.send('Page.addScriptToEvaluateOnNewDocument', { source: String.raw`
     window.__adminTest = { failNext: false, offsets: [] };
     window.fetch = async (input) => {
@@ -2210,7 +2218,7 @@ try {
       return json({ items, total, offset, limit });
     };
   ` });
-  await client.send('Page.reload', { ignoreCache: true });
+  await client.send('Page.navigate', { url: adminUrl });
   const waitAdmin = async (expression) => {
     for (let attempt = 0; attempt < 150; attempt += 1) {
       try { if (await evaluate(client, expression)) return; } catch { /* navigation context */ }
