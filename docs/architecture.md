@@ -44,7 +44,10 @@ main.js
 | Live session | `server/transcription/session.py` | runtimeは生成・終了を調停 |
 | chunk protocol | `server/transcription/messages.py` | client側は `web/src/transcription/websocket.js` |
 | ASR worker | `server/transcription/worker.py` | 依存は `WorkerDependencies` で明示 |
-| OIDC transport | `server/services/oidc_service.py` | route/runtimeはcookieとHTTPフローを調停 |
+| 要約・校正処理 | `services/summary_service.py` | routeがruntimeのmodel/observerを明示引数で渡す。request schemaは`schemas.py` |
+| OIDC HTTPフロー | `services/oidc_flow.py` | cookie/redirect/認証フローはruntimeから独立 |
+| 話者ラベル | `services/diarization_service.py` | runtimeがdiarizer/send/configを明示引数で渡す |
+| OIDC transport | `server/services/oidc_service.py` | routeはcookieとHTTPフローを調停 |
 | 認証済み履歴metadata | Database | repositoryがDB accessを所有 |
 | runtime transcript | `TranscriptStore`配下のartifact | 保存時にhistory serviceが検証・コピー |
 | 保存済みartifact | history directory | DBには検索・認可・参照用metadataを置く |
@@ -99,3 +102,55 @@ DBは一覧・検索・認可・正規化segmentのsource of truth、filesystem�
 ## 検証
 
 `tests/test_architecture.py` が単一app factory、route一意性、runtimeからのFastAPI登録排除、設定互換moduleの不在を検証する。通常のCIはさらにPython/JavaScriptテスト、SQLite/PostgreSQL migrationと起動、Docker healthを検証する。
+
+## Runtime extraction boundaries (#71)
+
+- Summary/proofread/SSE: `services/summary_service.py`; routes pass model and observer.
+- OIDC HTTP flow: `services/oidc_flow.py`; transport and auth business rules remain in their existing services.
+- Speaker labels: `services/diarization_service.py`; diarizer, sender and config are explicit dependencies.
+- Chunk WebSocket, ASR worker composition and audio preparation: `transcription/coordinator.py`.
+- Live/Qwen capture: `transcription/live.py` and `qwen_live.py`; resources come from the WebSocket route.
+- Cleanup: `services/runtime_cleanup.py`; outbox processing starts after the retention transaction commits.
+- Capabilities: `services/health_service.py`, used by the readiness route.
+- Resource construction/lifecycle: `runtime.py`; its WebSocket function injects resources into the coordinator.
+
+`core/runtime_resources.RuntimeResources` owns clients, active sockets and lifecycle tasks.
+The composition root exposes the resource object in `app.state.runtime_resources` and passes it
+explicitly to the chunk and live coordinators. Service/transcription modules cannot import runtime;
+architecture tests also prohibit reintroducing extracted HTTP handlers and legacy modules.
+Extracted modules are explicit mypy targets. No compatibility exports remain.
+Docker/PostgreSQL CI remains required before integration.
+
+OIDC discovery caching belongs to the resource-owned `OIDCFlow` instance; services do not retain a separate process-global discovery cache.
+
+## Frontend controller boundaries
+
+`web/src/app.js` is the composition and event-wiring entry. It creates a fresh
+`state/store.js` store and supplies live dependencies to the feature controllers
+in `web/src/controllers/`: recording, media capture, screenshot viewer,
+transcription, transcript, history, auth, AI, layout, settings, glossary,
+capabilities, telemetry and workspace protection. Cross-feature callbacks resolve
+through the composition context so they observe current resources and state.
+Controllers do not import the app and constructors do not register events or read
+DOM/state; the app wires listeners once after all controllers exist. The module
+entry's line budget and inert constructors are regression-tested.
+
+`ui/notifications.js` owns banner dismissal and toast rendering.
+`ui/modals.js` owns stack order, focus restoration and body scroll locking.
+Browser tests instantiate these controllers independently and exercise their real
+DOM behavior, in addition to existing screenshot and recording flows. Node tests
+cover isolated stores, settings boundaries, recording handles and workspace locks.
+
+`web/style.css` fixes the cascade order: tokens, base, layout, components,
+utilities, workspace, responsive, then meeting refinements. The last two component
+collections preserve historical theme/workspace overrides in their original
+positions; moving them before responsive rules would alter the current UI.
+Only identical top-level selector/declaration duplicates were removed. The runtime
+stylesheet still loads after this entry, and administration styles after runtime.
+No cascade layers or new design rules are introduced.
+
+Issue #72's prerequisite is satisfied: closed Issue #82 identifies Claude's
+completed refresh, commit `d50bac6` is included by merged PR #83 and is an ancestor
+of main. PR #84 and later UI changes are also integrated. This separation retains
+the existing state schema and UI behavior; narrower per-feature state interfaces
+can be developed later without changing the composition entry.

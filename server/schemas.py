@@ -54,3 +54,16 @@ class MeetingQuestionRequest(MeetingSourceRequest):
 
 class MeetingTranslationRequest(MeetingSourceRequest):
     language: str = Field(min_length=2, max_length=8)
+
+
+class SummarizeRequest(BaseModel):
+    text: str = Field(min_length=1)
+    language: str | None = None
+    prompt: str | None = None
+
+
+
+class ProofreadRequest(BaseModel):
+    text: str = Field(min_length=1)
+    language: str | None = None
+    mode: str | None = None

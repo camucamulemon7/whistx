@@ -1,0 +1,255 @@
+/* ==========================================================================
+   whistx - World-Class Design System
+   Inspired by Apple, Linear, Vercel, Stripe
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   Design Tokens - Apple/Linear Grade
+   -------------------------------------------------------------------------- */
+:root {
+  /* Core Colors */
+  --white: #ffffff;
+  --black: #000000;
+
+  /* Gray Scale - Apple Style */
+  --gray-50: #fafafa;
+  --gray-100: #f5f5f5;
+  --gray-150: #ebebeb;
+  --gray-200: #e5e5e5;
+  --gray-300: #d4d4d4;
+  --gray-400: #a3a3a3;
+  --gray-500: #737373;
+  --gray-600: #525252;
+  --gray-700: #404040;
+  --gray-800: #262626;
+  --gray-900: #171717;
+  --gray-950: #0a0a0a;
+
+  /* Accent - restrained business teal */
+  --accent-50: #eef7f6;
+  --accent-100: #d6ebe7;
+  --accent-200: #b0d8d1;
+  --accent-300: #7fbcb2;
+  --accent-400: #4f9d92;
+  --accent-500: #2f7d73;
+  --accent-600: #24665d;
+  --accent-700: #1d514a;
+  --accent-800: #173f3a;
+  --accent-900: #102d29;
+
+  /* Semantic Colors */
+  --success: #22c55e;
+  --success-bg: #dcfce7;
+  --warning: #f59e0b;
+  --warning-bg: #fef3c7;
+  --error: #ef4444;
+  --error-bg: #fee2e2;
+  --info: #3b82f6;
+  --info-bg: #dbeafe;
+
+  /* Proofread accent */
+  --purple-500: #465d7a;
+  --purple-600: #33475f;
+  --purple-bg: rgba(70, 93, 122, 0.08);
+
+  /* Summary accent */
+  --orange-500: #8a5a1f;
+  --orange-600: #6f4717;
+  --orange-bg: rgba(138, 90, 31, 0.08);
+
+  /* Theme Colors */
+  --bg-primary: var(--white);
+  --bg-secondary: var(--gray-50);
+  --bg-tertiary: var(--gray-100);
+  --bg-elevated: var(--white);
+  --bg-backdrop: rgba(255, 255, 255, 0.8);
+
+  --text-primary: var(--gray-900);
+  --text-secondary: var(--gray-600);
+  --text-tertiary: var(--gray-500);
+  --text-placeholder: var(--gray-400);
+
+  --border-primary: var(--gray-200);
+  --border-secondary: var(--gray-100);
+
+  /* Shadows - Layered & Refined */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.04);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
+
+  /* Glass Effect - Premium */
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.5);
+  --glass-blur: blur(20px);
+
+  /* Border Radius */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-3xl: 24px;
+  --radius-full: 9999px;
+
+  /* Spacing - 4px base */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+
+  /* Typography */
+  --font-sans: "IBM Plex Sans JP", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", Consolas, monospace;
+
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 20px;
+  --text-3xl: 24px;
+  --text-4xl: 30px;
+  --text-5xl: 36px;
+
+  /* Line Heights */
+  --leading-none: 1;
+  --leading-tight: 1.25;
+  --leading-snug: 1.375;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+  --leading-loose: 2;
+
+  /* Letter Spacing */
+  --tracking-tighter: -0.05em;
+  --tracking-tight: -0.025em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.025em;
+  --tracking-wider: 0.05em;
+  --tracking-widest: 0.1em;
+
+  /* Transitions */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --duration-75: 75ms;
+  --duration-100: 100ms;
+  --duration-150: 150ms;
+  --duration-200: 200ms;
+  --duration-300: 300ms;
+  --duration-500: 500ms;
+
+  /* Z-Index Scale */
+  --z-base: 0;
+  --z-dropdown: 10;
+  --z-sticky: 20;
+  --z-modal: 30;
+  --z-toast: 40;
+
+  /* Surface & Brand - Guided Workspace */
+  --surface-canvas: #f4f7f8;
+  --surface-panel: rgba(255, 255, 255, 0.94);
+  --surface-muted: #f0f5f5;
+  --brand-strong: #0f5f59;
+  --brand-bright: #1c8178;
+  --focus-ring: #0f766e;
+  --panel-border: rgba(17, 94, 89, 0.14);
+  --panel-shadow: 0 14px 40px rgba(22, 54, 51, 0.07);
+}
+
+/* Dark Mode */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: var(--gray-950);
+    --bg-secondary: var(--gray-900);
+    --bg-tertiary: var(--gray-800);
+    --bg-elevated: var(--gray-900);
+    --bg-backdrop: rgba(10, 10, 10, 0.85);
+
+    --text-primary: var(--gray-50);
+    --text-secondary: #cbd5e1;
+    --text-tertiary: #94a3b8;
+    --text-placeholder: #64748b;
+
+    --border-primary: var(--gray-800);
+    --border-secondary: var(--gray-700);
+
+    --glass-bg: rgba(23, 23, 23, 0.85);
+    --glass-border: rgba(255, 255, 255, 0.1);
+
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
+    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.2);
+  }
+}
+
+/* Manual Theme Priority (override system preference when toggled) */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-primary: var(--white);
+  --bg-secondary: var(--gray-50);
+  --bg-tertiary: var(--gray-100);
+  --bg-elevated: var(--white);
+  --bg-backdrop: rgba(255, 255, 255, 0.8);
+  --text-primary: var(--gray-900);
+  --text-secondary: var(--gray-600);
+  --text-tertiary: var(--gray-500);
+  --text-placeholder: var(--gray-400);
+  --border-primary: var(--gray-200);
+  --border-secondary: var(--gray-100);
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.5);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -2px rgba(0, 0, 0, 0.04);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-primary: var(--gray-950);
+  --bg-secondary: var(--gray-900);
+  --bg-tertiary: var(--gray-800);
+  --bg-elevated: var(--gray-900);
+  --bg-backdrop: rgba(10, 10, 10, 0.85);
+  --text-primary: var(--gray-50);
+  --text-secondary: #cbd5e1;
+  --text-tertiary: #94a3b8;
+  --text-placeholder: #64748b;
+  --border-primary: var(--gray-800);
+  --border-secondary: var(--gray-700);
+  --glass-bg: rgba(23, 23, 23, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.1);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.2);
+
+  --surface-canvas: #0c1213;
+  --surface-panel: rgba(20, 29, 30, 0.94);
+  --surface-muted: #182426;
+  --brand-strong: #78d5ca;
+  --brand-bright: #45b8ab;
+  --focus-ring: #5eead4;
+  --panel-border: rgba(148, 222, 213, 0.17);
+  --panel-shadow: 0 18px 48px rgba(0, 0, 0, 0.24);
+}
+
+/* --------------------------------------------------------------------------
+   Base Reset - World Class Foundation
+   -------------------------------------------------------------------------- */

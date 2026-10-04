@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from ... import runtime
+from ...schemas import SummarizeRequest, ProofreadRequest
+from ...services import summary_service
 from ...core.logging import emit_container_log
 from ...core.config import settings
 from ...core.rate_limit import consume
@@ -44,11 +46,11 @@ async def meeting_insights(payload: MeetingSourceRequest, user: User = Depends(g
 async def meeting_recap(payload: MeetingRecapRequest, user: User = Depends(get_current_user)) -> JSONResponse:
     if not await asyncio.to_thread(_allow_costly_request, "summary", user):
         return JSONResponse(status_code=429, content={"error": "rate_limit_exceeded"})
-    if runtime.SUMMARIZER is None:
+    if runtime.resources.summarizer is None:
         return JSONResponse(status_code=503, content={"error": "summary_not_configured"})
     try:
         snapshot = await _meeting_source(payload, user)
-        recap = await blocking_work_pool.run("llm", generate_recap, snapshot, runtime.SUMMARIZER,
+        recap = await blocking_work_pool.run("llm", generate_recap, snapshot, runtime.resources.summarizer,
                                              prompt=payload.prompt, max_chars=settings.summary_input_max_chars)
         return JSONResponse({**snapshot.public(), "recap": recap, "summary": recap_markdown(recap)})
     except MeetingError as exc:
@@ -62,13 +64,13 @@ async def meeting_recap(payload: MeetingRecapRequest, user: User = Depends(get_c
 async def meeting_ask(payload: MeetingQuestionRequest, user: User = Depends(get_current_user)) -> Response:
     if not await asyncio.to_thread(_allow_costly_request, "meeting_qa", user):
         return JSONResponse(status_code=429, content={"error": "rate_limit_exceeded"})
-    if runtime.SUMMARIZER is None:
+    if runtime.resources.summarizer is None:
         return JSONResponse(status_code=503, content={"error": "summary_not_configured"})
     try:
         snapshot = await _meeting_source(payload, user)
     except MeetingError as exc:
         return JSONResponse(status_code=exc.status_code, content={"error": exc.code})
-    return StreamingResponse(stream_answer(snapshot, runtime.SUMMARIZER, payload.question),
+    return StreamingResponse(stream_answer(snapshot, runtime.resources.summarizer, payload.question),
                              media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
@@ -103,38 +105,38 @@ def _allow_costly_request(bucket: str, user: User) -> bool:
 
 @router.post("/api/summarize")
 async def summarize(
-    payload: runtime.SummarizeRequest,
+    payload: SummarizeRequest,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
     if not await asyncio.to_thread(_allow_costly_request, "summary", user):
         return JSONResponse(status_code=429, content={"error": "rate_limit_exceeded"})
     emit_container_log(__name__, "debug", "summary requested: chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
     logger.debug("summary requested: chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
-    return await runtime.summarize(payload)
+    return await summary_service.summarize(payload, summarizer=runtime.resources.summarizer, observer=runtime.resources.observer)
 
 
 @router.post("/api/proofread")
 async def proofread(
-    payload: runtime.ProofreadRequest,
+    payload: ProofreadRequest,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
     if not await asyncio.to_thread(_allow_costly_request, "proofread", user):
         return JSONResponse(status_code=429, content={"error": "rate_limit_exceeded"})
     emit_container_log(__name__, "debug", "proofread requested(route): chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
     logger.debug("proofread requested(route): chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
-    return await runtime.proofread(payload)
+    return await summary_service.proofread(payload, proofreader=runtime.resources.proofreader, observer=runtime.resources.observer)
 
 
 @router.post("/api/proofread/stream")
 async def proofread_stream(
-    payload: runtime.ProofreadRequest,
+    payload: ProofreadRequest,
     user: User = Depends(get_current_user),
 ) -> Response:
     if not await asyncio.to_thread(_allow_costly_request, "proofread", user):
         return JSONResponse(status_code=429, content={"error": "rate_limit_exceeded"})
     emit_container_log(__name__, "debug", "proofread stream requested: chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
     logger.debug("proofread stream requested: chars=%s language=%s", len(payload.text or ""), payload.language or "auto")
-    return await runtime.proofread_stream(payload)
+    return await summary_service.proofread_stream(payload, proofreader=runtime.resources.proofreader, observer=runtime.resources.observer)
 
 
 @router.post("/api/meeting/translate")
@@ -142,7 +144,7 @@ async def meeting_translate(payload: MeetingTranslationRequest, user: User = Dep
     from ...services.meeting_translation import LANGUAGES, translation_events
     if payload.language not in LANGUAGES:
         return JSONResponse(status_code=400, content={"error": "invalid_translation_language"})
-    if runtime.SUMMARIZER is None:
+    if runtime.resources.summarizer is None:
         return JSONResponse(status_code=503, content={"error": "summary_not_configured"})
     if not await asyncio.to_thread(_allow_costly_request, "meeting_translation", user):
         return JSONResponse(status_code=429, content={"error": "rate_limit_exceeded"})
@@ -150,5 +152,5 @@ async def meeting_translate(payload: MeetingTranslationRequest, user: User = Dep
         snapshot = await _meeting_source(payload, user)
     except MeetingError as exc:
         return JSONResponse(status_code=exc.status_code, content={"error": exc.code})
-    return StreamingResponse(stream_events(lambda cancelled: translation_events(snapshot, runtime.SUMMARIZER, payload.language, cancelled=cancelled)),
+    return StreamingResponse(stream_events(lambda cancelled: translation_events(snapshot, runtime.resources.summarizer, payload.language, cancelled=cancelled)),
                              media_type="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})

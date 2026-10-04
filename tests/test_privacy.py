@@ -6,13 +6,13 @@ import logging
 import os
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 os.environ.setdefault('APP_SESSION_SECRET', 'privacy-tests-only-abcdefghijklmnopqrstuvwxyz')
 
-from server import runtime
 from server.langfuse_observer import LangfuseObserver, _safe_serialize
-from server.runtime import SummarizeRequest, ProofreadRequest
+from server.schemas import SummarizeRequest, ProofreadRequest
+from server.services import summary_service
 from server.services.meeting_stream_response import stream_events
 from server.transcription.qwen_live import QwenLiveMeeting
 
@@ -87,9 +87,8 @@ class PrivacyTests(unittest.TestCase):
             raise RuntimeError('provider-secret https://private.test/token')
         async def run():
             model = SimpleNamespace(summarize_long=fail, proofread_long=fail)
-            with patch.object(runtime, 'SUMMARIZER', model), patch.object(runtime, 'PROOFREADER', model):
-                responses = [await runtime.summarize(SummarizeRequest(text='sample')),
-                             await runtime.proofread(ProofreadRequest(text='sample'))]
+            responses = [await summary_service.summarize(SummarizeRequest(text='sample'), summarizer=model),
+                         await summary_service.proofread(ProofreadRequest(text='sample'), proofreader=model)]
             for response in responses:
                 body = json.loads(response.body)
                 self.assertEqual(response.status_code, 502)

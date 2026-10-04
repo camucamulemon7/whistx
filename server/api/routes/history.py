@@ -46,7 +46,7 @@ def create_history(
 def get_history_list(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
-    q: str | None = Query(default=None),
+    q: str | None = Query(default=None, max_length=200),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> JSONResponse:

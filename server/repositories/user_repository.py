@@ -4,6 +4,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..models import AdminBootstrapState, User
+from .search import normalize_query, substring_pattern
 
 
 def get_user_by_email(db: Session, email: str) -> User | None:
@@ -48,12 +49,12 @@ def count_pending_users(db: Session) -> int:
     return int(db.scalar(stmt) or 0)
 
 
-def list_pending_users(db: Session) -> list[User]:
+def list_pending_users(db: Session, *, limit: int = 50, offset: int = 0) -> list[User]:
     stmt = (
         select(User)
         .where(User.is_active.is_(False))
         .where(User.approved_at.is_(None))
-        .order_by(User.created_at.asc(), User.id.asc())
+        .order_by(User.created_at.asc(), User.id.asc()).limit(limit).offset(offset)
     )
     return list(db.scalars(stmt).all())
 
@@ -63,19 +64,19 @@ def list_all_users(db: Session) -> list[User]:
     return list(db.scalars(stmt).all())
 
 
-def search_users(db: Session, *, query: str) -> list[User]:
-    normalized = query.strip()
-    if not normalized:
-        return list_all_users(db)
-    pattern = f'%{normalized}%'
-    stmt = (
-        select(User)
-        .where(
-            or_(
-                User.email.ilike(pattern),
-                User.display_name.ilike(pattern),
-            )
-        )
-        .order_by(User.created_at.desc(), User.id.desc())
-    )
+def user_search_stmt(*, query: str):
+    normalized = normalize_query(query)
+    stmt = select(User)
+    if normalized:
+        pattern = substring_pattern(normalized)
+        stmt = stmt.where(or_(User.email.ilike(pattern, escape="\\"), User.display_name.ilike(pattern, escape="\\")))
+    return stmt
+
+
+def search_users(db: Session, *, query: str, limit: int = 50, offset: int = 0) -> list[User]:
+    stmt = user_search_stmt(query=query).order_by(User.created_at.desc(), User.id.desc()).limit(limit).offset(offset)
     return list(db.scalars(stmt).all())
+
+
+def count_matching_users(db: Session, *, query: str) -> int:
+    return int(db.scalar(select(func.count()).select_from(user_search_stmt(query=query).subquery())) or 0)

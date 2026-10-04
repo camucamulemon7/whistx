@@ -14,6 +14,9 @@ const userSearchClearBtnEl = document.querySelector("#userSearchClearBtn");
 
 const state = {
   userQuery: "",
+  usersOffset: 0,
+  pendingOffset: 0,
+  requestId: 0,
 };
 
 function normalizeTheme(value) {
@@ -208,21 +211,60 @@ function renderUsers(items) {
   }
 }
 
-async function loadAdminData() {
+const PAGE_SIZE = 50;
+const pagerButtons = ['pendingPrev', 'pendingNext', 'usersPrev', 'usersNext'].map((id) => document.getElementById(id));
+
+function renderPager(prefix, data) {
+  const total = Number(data.total ?? data.items.length);
+  const offset = Number(data.offset || 0);
+  const range = total ? `${offset + 1}–${offset + data.items.length} / ${total} 件` : '0 件';
+  document.getElementById(`${prefix}Range`).textContent = range;
+  document.getElementById(`${prefix}Prev`).disabled = offset === 0;
+  document.getElementById(`${prefix}Next`).disabled = offset + PAGE_SIZE >= total;
+}
+
+async function loadAdminData({ usersOffset = state.usersOffset, pendingOffset = state.pendingOffset } = {}) {
+  const requestId = ++state.requestId;
   statusEl.textContent = "読み込み中...";
+  pagerButtons.forEach((button) => { button.disabled = true; });
   const userQuery = currentUserQuery();
-  const usersPath = userQuery ? `/api/admin/users?q=${encodeURIComponent(userQuery)}` : "/api/admin/users";
-  const [pending, users] = await Promise.all([
-    fetchJson("/api/admin/pending-users"),
-    fetchJson(usersPath),
-  ]);
-  const pendingItems = Array.isArray(pending.items) ? pending.items : [];
-  const userItems = Array.isArray(users.items) ? users.items : [];
-  renderPending(pendingItems);
-  renderUsers(userItems);
-  statusEl.textContent = userQuery
-    ? `承認待ち ${pendingItems.length} 件 / 検索結果 ${userItems.length} 件`
-    : `承認待ち ${pendingItems.length} 件 / ユーザー ${userItems.length} 件`;
+  try {
+    const [pending, users] = await Promise.all([
+      fetchJson(`/api/admin/pending-users?limit=${PAGE_SIZE}&offset=${pendingOffset}`),
+      fetchJson(`/api/admin/users?limit=${PAGE_SIZE}&offset=${usersOffset}&q=${encodeURIComponent(userQuery)}`),
+    ]);
+    if (requestId !== state.requestId) return;
+    const lastOffset = (data, requested) => Math.min(requested, Math.max(0, Math.ceil(data.total / PAGE_SIZE) - 1) * PAGE_SIZE);
+    const lastUsers = lastOffset(users, usersOffset);
+    const lastPending = lastOffset(pending, pendingOffset);
+    if (lastUsers < usersOffset || lastPending < pendingOffset) {
+      return await loadAdminData({ usersOffset: lastUsers, pendingOffset: lastPending });
+    }
+    state.usersOffset = usersOffset;
+    state.pendingOffset = pendingOffset;
+    renderPending(pending.items);
+    renderUsers(users.items);
+    pendingCountEl.textContent = String(pending.total);
+    userCountEl.textContent = String(users.total);
+    renderPager('pending', pending);
+    renderPager('users', users);
+    statusEl.textContent = `承認待ち ${pending.total} 件 / ${userQuery ? '検索結果' : 'ユーザー'} ${users.total} 件`;
+  } catch (error) {
+    if (requestId !== state.requestId) return;
+    pagerButtons.forEach((button) => { button.disabled = false; });
+    throw error;
+  }
+}
+
+for (const prefix of ['pending', 'users']) {
+  for (const [direction, step] of [['Prev', -1], ['Next', 1]]) {
+    document.getElementById(`${prefix}${direction}`)?.addEventListener('click', () => {
+      const key = `${prefix}Offset`;
+      loadAdminData({ [key]: Math.max(0, state[key] + step * PAGE_SIZE) }).catch((error) => {
+        statusEl.textContent = error?.message || '読み込みに失敗しました';
+      });
+    });
+  }
 }
 
 refreshBtnEl?.addEventListener("click", () => {
@@ -234,6 +276,7 @@ refreshBtnEl?.addEventListener("click", () => {
 userSearchFormEl?.addEventListener("submit", (event) => {
   event.preventDefault();
   state.userQuery = userSearchInputEl?.value || "";
+  state.usersOffset = 0;
   loadAdminData().catch((error) => {
     statusEl.textContent = error?.message || "読み込みに失敗しました";
   });
@@ -241,6 +284,7 @@ userSearchFormEl?.addEventListener("submit", (event) => {
 
 userSearchInputEl?.addEventListener("search", () => {
   state.userQuery = userSearchInputEl.value || "";
+  state.usersOffset = 0;
   loadAdminData().catch((error) => {
     statusEl.textContent = error?.message || "読み込みに失敗しました";
   });
@@ -248,6 +292,7 @@ userSearchInputEl?.addEventListener("search", () => {
 
 userSearchClearBtnEl?.addEventListener("click", () => {
   state.userQuery = "";
+  state.usersOffset = 0;
   if (userSearchInputEl) {
     userSearchInputEl.value = "";
     userSearchInputEl.focus();

@@ -218,6 +218,42 @@ class RefinementTests(unittest.TestCase):
 
 
 class LiveResumeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_audio_root_symlink_records_relative_path_and_resumes(self):
+        from server.core.config import settings
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / 'canonical-audio'
+            target.mkdir()
+            alias = root / 'audio-alias'
+            alias.symlink_to(target, target_is_directory=True)
+
+            class Config:
+                transcripts_dir = root / 'transcripts'
+                debug_chunks_dir = alias
+                def __getattr__(self, key):
+                    return getattr(settings, key)
+
+            ws = SimpleNamespace(state=SimpleNamespace(authenticated_user_id=123, is_guest=False), cookies={})
+            model = SimpleNamespace(client=SimpleNamespace(close=lambda: None))
+            with patch('server.transcription.live.settings', Config()), \
+                 patch.object(LiveMeeting, 'create_transcriber', return_value=model):
+                live = LiveMeeting(ws, dict(tracks=['mic'], language='ja'))
+                try:
+                    audio_dir = live.audio_dir
+                    session_id = live.session_id
+                    relative = Path(live.data['audioDir'])
+                    self.assertFalse(relative.is_absolute())
+                    self.assertEqual((alias / relative).resolve(), audio_dir)
+                    self.assertTrue(audio_dir.is_relative_to(target.resolve()))
+                finally:
+                    live.close()
+                resumed = LiveMeeting(ws, dict(resumeSessionId=session_id))
+                try:
+                    self.assertEqual(resumed.audio_dir, audio_dir)
+                    self.assertEqual(resumed.data['audioDir'], str(relative))
+                finally:
+                    resumed.close()
+
     async def test_resume_recovers_agreed_text_audio_position_and_finalizes_once(self):
         from server.core.config import settings
         from server.services.meeting_source import read_json
@@ -296,7 +332,7 @@ class MeetingApiTests(unittest.TestCase):
                 self.assertEqual(client.post('/api/meeting/'+path, json=payload).status_code, 401)
             app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=123)
             model = SimpleNamespace(model='fixture', stream_meeting=lambda messages: iter(['公開日は未定です。[S1]']))
-            with patch('server.api.routes.summary._meeting_source', AsyncMock(return_value=self.snapshot)), patch('server.api.routes.summary._allow_costly_request', return_value=True), patch('server.api.routes.summary.runtime.SUMMARIZER', model):
+            with patch('server.api.routes.summary._meeting_source', AsyncMock(return_value=self.snapshot)), patch('server.api.routes.summary._allow_costly_request', return_value=True), patch('server.api.routes.summary.runtime.resources.summarizer', model):
                 response = client.post('/api/meeting/ask', json=dict(runtimeSessionId='test', question='公開日は？'))
                 self.assertEqual(response.status_code, 200)
                 self.assertIn('text/event-stream', response.headers['content-type'])

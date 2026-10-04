@@ -364,6 +364,7 @@ async function verifyDesktopPanelLayout(client) {
     assert.equal(await evaluate(client, `document.querySelector("#meetingAssistantPanel").getClientRects().length > 0`), true);
     await evaluate(client, `document.querySelector("#assistantQuestion").value = ""`);
     if (process.env.DESKTOP_SCREENSHOT && width === 1440) {
+      await evaluate(client, `document.querySelectorAll("#toastContainer .toast").forEach(node => node.remove())`);
       const shot = await client.send("Page.captureScreenshot", { format: "png" });
       await writeFile(process.env.DESKTOP_SCREENSHOT, Buffer.from(shot.data, "base64"));
     }
@@ -415,6 +416,11 @@ async function verifyAssistantPreference(client) {
 const recordingMocks = String.raw`
   (() => {
     window.__recordingTest = {
+      banners: [
+        { id: "dismissed-notice", message: "Dismiss this announcement" },
+        { id: "updated-notice", message: "Original announcement" },
+        { id: "required-notice", message: "Required announcement", dismissible: false }
+      ],
       instanceId: crypto.randomUUID(),
       mediaRequests: 0,
       startMessages: 0,
@@ -449,6 +455,7 @@ const recordingMocks = String.raw`
           model: "browser-test",
           wsPath: "/ws/transcribe",
           diarizationEnabled: true,
+          banners: window.__recordingTest.banners,
           proofreadModel: ""
         });
       }
@@ -683,6 +690,12 @@ async function verifyRecordingStartIsSingleFlight(client) {
   }
   assert.equal(await evaluate(client, `document.querySelector("#adminQueueBadge").textContent`), "3", "login refreshes the approval count through auth state");
   assert.equal(await evaluate(client, `document.querySelector("#transcriptLatestBtn").hidden`), true, "empty transcript has no latest button");
+  assert.equal(await evaluate(client, `document.querySelectorAll("#bannersContainer .notice-banner").length`), 3);
+  await evaluate(client, `(() => {
+    document.querySelectorAll("#bannersContainer .notice-banner-close").forEach(button => button.click());
+    window.__recordingTest.banners[1].message = "Updated announcement";
+  })()`);
+  assert.equal(await evaluate(client, `document.querySelectorAll("#bannersContainer .notice-banner").length`), 1);
   await verifyEmptySummaryIsNotCopied(client);
   await verifyEmptyDownloadsAreDisabled(client);
   assert.deepEqual(
@@ -746,6 +759,11 @@ async function verifyRecordingStartIsSingleFlight(client) {
   );
 
   await new Promise((resolve) => setTimeout(resolve, 180));
+  assert.deepEqual(
+    await evaluate(client, `Array.from(document.querySelectorAll("#bannersContainer .notice-banner-body"), node => node.textContent)`),
+    ["Updated announcement", "Required announcement"],
+    "recording refresh keeps dismissed announcements hidden while showing updated and mandatory notices",
+  );
   const result = await evaluate(
     client,
     `({
@@ -1059,6 +1077,72 @@ async function verifyTranscriptAutoScroll(client) {
     assert.equal(resumed.hidden, true);
     assert.equal(resumed.focused, true);
 
+  }
+}
+
+async function verifyIndependentUiControllers(client) {
+  const result = await evaluate(client, `(async () => {
+    const { createBannerController, createToastController } = await import("/src/ui/notifications.js");
+    const { createModalController } = await import("/src/ui/modals.js");
+    const fixture = document.createElement("div");
+    document.body.appendChild(fixture);
+    try {
+      const first = document.createElement("div");
+      const second = document.createElement("div");
+      fixture.append(first, second);
+      const a = createBannerController({ container: first, document });
+      const b = createBannerController({ container: second, document });
+      const notice = { id: "isolated", message: "<img src=x onerror=alert(1)>" };
+      a.renderBanners([notice]);
+      const literal = first.querySelector("p").textContent === notice.message && !first.querySelector("img");
+      first.querySelector("button").click();
+      a.renderBanners([notice]);
+      b.renderBanners([notice]);
+      const isolated = first.hidden && second.childElementCount === 1;
+      a.renderBanners([{ ...notice, dismissible: false }]);
+      const mandatory = !first.hidden && !first.querySelector("button");
+      const timers = [];
+      const toast = createToastController({ container: second, document, schedule: callback => timers.push(callback) });
+      toast.showToast("<b>plain</b>", "success");
+      const toastNode = second.querySelector(".toast");
+      const toastLiteral = toastNode.textContent === "<b>plain</b>" && !toastNode.querySelector("b");
+      timers.shift()();
+      const hiding = toastNode.classList.contains("hiding");
+      timers.shift()();
+      const removed = !toastNode.isConnected;
+      const opener = document.createElement("button");
+      fixture.appendChild(opener);
+      const makeModal = () => {
+        const modal = document.createElement("div");
+        modal.hidden = true;
+        modal.append(document.createElement("button"), document.createElement("button"));
+        fixture.appendChild(modal);
+        return modal;
+      };
+      const lower = makeModal();
+      const upper = makeModal();
+      const modals = createModalController({ document, window, getBlockingModals: () => [lower, upper] });
+      opener.focus();
+      modals.openManagedModal(lower);
+      await new Promise(requestAnimationFrame);
+      modals.openManagedModal(upper);
+      await new Promise(requestAnimationFrame);
+      const stacked = lower.inert && lower.getAttribute("aria-hidden") === "true" && modals.topmostModal() === upper;
+      upper.lastChild.focus();
+      const tab = new KeyboardEvent("keydown", { key: "Tab", cancelable: true });
+      modals.trapModalFocus(tab, upper);
+      const trapped = tab.defaultPrevented && document.activeElement === upper.firstChild;
+      modals.closeManagedModal(upper);
+      const restoredLower = !lower.inert && document.activeElement === lower.firstChild && document.body.style.overflow === "hidden";
+      modals.closeManagedModal(lower);
+      const restoredOpener = document.activeElement === opener && document.body.style.overflow === "";
+      return { literal, isolated, mandatory, toastLiteral, hiding, removed, stacked, trapped, restoredLower, restoredOpener };
+    } finally {
+      fixture.remove();
+    }
+  })()`);
+  for (const [behavior, passed] of Object.entries(result)) {
+    assert.equal(passed, true, "independent UI controller behavior: " + behavior);
   }
 }
 
@@ -2017,6 +2101,7 @@ try {
   await verifyTranscriptAutoScroll(client);
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyModalKeyboardManagement\n');
   await verifyModalKeyboardManagement(client);
+  await verifyIndependentUiControllers(client);
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyGracefulStopIsSerialized\n');
   await verifyGracefulStopIsSerialized(client);
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyIdleDestructiveActions\n');
@@ -2052,7 +2137,67 @@ try {
   }
   assert.equal(await evaluate(client, `document.documentElement.dataset.whistxReady`), "true");
   assert.equal(await evaluate(client, `document.querySelector('#language').value`), "", "Auto language must survive reload");
-  process.stdout.write("Browser UI and recording lifecycle checks passed.\n");
+  client.close();
+  const adminUrl = new URL('/admin.html', url).href;
+  client = await connectPage(browserWebSocketUrl, adminUrl);
+  await client.send('Page.addScriptToEvaluateOnNewDocument', { source: String.raw`
+    window.__adminTest = { failNext: false, offsets: [] };
+    window.fetch = async (input) => {
+      const url = new URL(String(input), location.origin);
+      const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (url.pathname === '/api/admin/settings') return json({ values: {}, configuredSecrets: {} });
+      if (window.__adminTest.failNext) {
+        window.__adminTest.failNext = false;
+        return json({ error: 'synthetic_page_failure' }, 503);
+      }
+      const pending = url.pathname.includes('pending-users');
+      const q = url.searchParams.get('q') || '';
+      const total = q ? 0 : (pending ? 51 : 105);
+      const offset = Number(url.searchParams.get('offset') || 0);
+      const limit = Number(url.searchParams.get('limit') || 50);
+      window.__adminTest.offsets.push({ path: url.pathname, offset, q });
+      const items = Array.from({ length: Math.min(limit, Math.max(0, total - offset)) }, (_, i) => ({
+        id: offset + i + 1, email: 'synthetic' + (offset + i) + '@example.test', displayName: 'Synthetic ' + (offset + i),
+        isActive: !pending, createdAt: '2026-01-01T00:00:00Z',
+      }));
+      return json({ items, total, offset, limit });
+    };
+  ` });
+  await client.send('Page.reload', { ignoreCache: true });
+  const waitAdmin = async (expression) => {
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      try { if (await evaluate(client, expression)) return; } catch { /* navigation context */ }
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    throw new Error('Admin paging condition failed: ' + expression);
+  };
+  await waitAdmin(`document.querySelector('#userCount')?.textContent === '105'`);
+  assert.equal(await evaluate(client, `document.querySelector('#userTableBody').children.length`), 50);
+  assert.equal(await evaluate(client, `document.querySelector('#usersPrev').disabled`), true);
+  await evaluate(client, `document.querySelector('#usersNext').click()`);
+  await waitAdmin(`document.querySelector('#usersRange').textContent.startsWith('51')`);
+  await evaluate(client, `document.querySelector('#usersNext').click()`);
+  await waitAdmin(`document.querySelector('#usersRange').textContent.startsWith('101')`);
+  assert.equal(await evaluate(client, `document.querySelector('#userTableBody').children.length`), 5);
+  assert.equal(await evaluate(client, `document.querySelector('#usersNext').disabled`), true);
+  await evaluate(client, `document.querySelector('#pendingNext').click()`);
+  await waitAdmin(`document.querySelector('#pendingRange').textContent.startsWith('51')`);
+  assert.equal(await evaluate(client, `document.querySelector('#pendingList').children.length`), 1);
+  await evaluate(client, `window.__adminTest.failNext = true; document.querySelector('#usersPrev').click()`);
+  await waitAdmin(`document.querySelector('#adminStatus').textContent.includes('synthetic_page_failure')`);
+  assert.equal(await evaluate(client, `document.querySelector('#usersRange').textContent.startsWith('101')`), true, 'failed page keeps the prior page');
+  await evaluate(client, `document.querySelector('#usersPrev').click()`);
+  await waitAdmin(`document.querySelector('#usersRange').textContent.startsWith('51')`);
+  await evaluate(client, `document.querySelector('#userSearchInput').value = 'missing'; document.querySelector('#userSearchForm').dispatchEvent(new Event('submit', { cancelable: true }))`);
+  await waitAdmin(`document.querySelector('#userCount').textContent === '0'`);
+  assert.equal(await evaluate(client, `document.querySelector('#usersPrev').disabled && document.querySelector('#usersNext').disabled`), true);
+  await evaluate(client, `document.querySelector('#userSearchClearBtn').click()`);
+  await waitAdmin(`document.querySelector('#usersRange').textContent.startsWith('1–50')`);
+  for (const width of [390, 1100]) {
+    await client.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width === 390 });
+    assert.equal(await evaluate(client, `Array.from(document.querySelectorAll('.admin-pagination')).every(el => el.scrollWidth <= el.clientWidth + 1)`), true);
+  }
+  process.stdout.write("Browser UI, recording lifecycle, and admin paging checks passed.\n");
 } catch (error) {
   const outputDir = path.resolve(process.env.BROWSER_ARTIFACT_DIR || "artifacts/browser");
   await mkdir(outputDir, { recursive: true });

@@ -96,6 +96,6 @@ async def ws_transcribe(ws: WebSocket) -> None:
 
 async def _run_transcription(ws: WebSocket) -> None:
     if ws.url.path == getattr(settings, "ws_path", "/ws/transcribe") + "/live":
-        await live_transcribe(ws)
+        await live_transcribe(ws, resources=runtime.resources)
     else:
         await runtime.ws_transcribe(ws)

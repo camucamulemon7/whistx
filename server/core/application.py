@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 def create_app() -> FastAPI:
     configure_application_logging(settings.app_log_level)
     app = FastAPI(title="whistx", version="2.0.0", lifespan=_app_lifespan)
+    app.state.runtime_resources = runtime.resources
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.app_allowed_hosts))
 
     @app.middleware("http")

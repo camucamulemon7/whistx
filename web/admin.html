@@ -21,9 +21,9 @@
       })();
     </script>
     <title>whistx 管理画面</title>
-    <link rel="stylesheet" href="/style.css?v=20260727" />
+    <link rel="stylesheet" href="/style.css?v=20261004" />
     <link rel="stylesheet" href="/admin.css?v=20260322b" />
-    <script type="module" src="/admin.js?v=20260322b"></script>
+    <script type="module" src="/admin.js?v=20261004"></script>
   </head>
   <body>
     <div class="admin-app">
@@ -71,6 +71,11 @@
               <span id="pendingCount" class="admin-chip">0</span>
             </summary>
             <div id="pendingList" class="admin-list"></div>
+            <nav class="admin-pagination" aria-label="承認待ちのページ">
+              <button id="pendingPrev" type="button" class="admin-link-btn" disabled>前へ</button>
+              <span id="pendingRange" role="status"></span>
+              <button id="pendingNext" type="button" class="admin-link-btn" disabled>次へ</button>
+            </nav>
           </details>
         </section>
 
@@ -91,6 +96,7 @@
               class="admin-search-input"
               type="search"
               name="q"
+              maxlength="200"
               placeholder="表示名またはメールアドレスで検索"
               autocomplete="off"
             />
@@ -115,6 +121,11 @@
           </div>
 
           <div id="userCards" class="admin-user-cards"></div>
+          <nav class="admin-pagination" aria-label="ユーザー一覧のページ">
+            <button id="usersPrev" type="button" class="admin-link-btn" disabled>前へ</button>
+            <span id="usersRange" role="status"></span>
+            <button id="usersNext" type="button" class="admin-link-btn" disabled>次へ</button>
+          </nav>
         </section>
       </main>
     </div>
