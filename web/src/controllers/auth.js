@@ -107,7 +107,7 @@ function renderAuthState() {
     if (bootstrapRequired) {
       appDependencies.registerHintEl.textContent = "";
     } else if (appDependencies.state.selfSignupEnabled) {
-      appDependencies.registerHintEl.textContent = "申請後は管理者の承認が完了するまでログインできません";
+      appDependencies.registerHintEl.textContent = "登録後すぐに一般ユーザーとして利用できます";
     } else {
       appDependencies.registerHintEl.textContent = "新規登録は現在無効です";
     }
@@ -328,8 +328,16 @@ async function registerAccount() {
 
   try {
     await registerRequest({ email, password, displayName });
-    appDependencies.showToast("登録申請を受け付けました。管理者の承認後にログインできます", "success");
     if (appDependencies.registerPasswordEl) appDependencies.registerPasswordEl.value = "";
+    try {
+      await loginRequest({ email, password });
+      persistGuestMode(false);
+      await loadAuthState();
+      appDependencies.showToast("登録が完了しました", "success");
+    } catch {
+      if (appDependencies.loginEmailEl) appDependencies.loginEmailEl.value = email;
+      appDependencies.showToast("登録が完了しました。ログインしてください", "success");
+    }
   } catch (error) {
     const payload = error?.payload || {};
     appDependencies.showToast(payload.error === "email_already_exists" ? "既に存在するメールアドレスです" : "新規登録に失敗しました", "error");

@@ -194,10 +194,10 @@ def register_user(payload, db: Session) -> AuthResult:
             password=payload.password,
             display_name=payload.display_name,
             is_admin=False,
-            is_active=False,
+            is_active=True,
         )
         db.commit()
-        return AuthResult(user=user, pending=True)
+        return AuthResult(user=user)
     except ValueError:
         db.rollback()
         raise AuthServiceError('password_too_short', 400) from None

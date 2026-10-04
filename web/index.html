@@ -493,6 +493,14 @@
                     </button>
                   </div>
                 </header>
+                <details class="summary-prompt-editor">
+                  <summary>OpenWebUI Notesに議事録を保存</summary>
+                  <p class="setting-hint">保存ボタンを押したときだけ議事録を送信します。Whistxと同じメールアドレスの自分のOpenWebUI認証を使用します。認証はこの操作だけに使用し保存しません。既存のNoteは上書きしません。</p>
+                  <label>Noteのタイトル<input id="notesTitle" class="side-panel-input" maxlength="120" value="Whistx 議事録" /></label>
+                  <label>既存OpenWebUI APIキー / トークン<input id="notesToken" class="side-panel-input" type="password" autocomplete="off" /></label>
+                  <button id="notesSave" type="button" class="btn-secondary">Notesに保存 / 確認・再試行</button>
+                  <p id="notesStatus" role="status" aria-live="polite"></p>
+                </details>
                 <div id="summaryPromptEditor" class="summary-prompt-editor" hidden>
                   <div class="summary-prompt-editor-header">
                     <div>
@@ -713,12 +721,12 @@
           </div>
         </div>
         <div id="authRegisterSection" class="auth-block" hidden>
-          <div class="auth-block-title">新規登録リクエスト</div>
+          <div class="auth-block-title">新規登録</div>
           <div class="auth-form">
             <input id="registerDisplayName" type="text" class="side-panel-input auth-input" placeholder="表示名" autocomplete="name" />
             <input id="registerEmail" type="email" class="side-panel-input auth-input" placeholder="メールアドレス" autocomplete="email" />
             <input id="registerPassword" type="password" class="side-panel-input auth-input" placeholder="パスワード（8文字以上）" autocomplete="new-password" />
-            <button id="registerBtn" type="button" class="btn-action auth-submit-btn">承認を申請</button>
+            <button id="registerBtn" type="button" class="btn-action auth-submit-btn">登録して利用を開始</button>
             <p id="registerHint" class="auth-inline-hint"></p>
           </div>
         </div>

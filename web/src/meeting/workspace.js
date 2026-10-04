@@ -1,4 +1,5 @@
 import { createTranslation } from "./translation.js";
+import { createNotesExport } from "./notes.js";
 import { fetchJson } from "../api/client.js";
 import { readSseJsonStream } from "../api/sse.js";
 import { formatTimestamp } from "../ui/format.js";
@@ -124,6 +125,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   panels.classList.add("meeting-layout");
   setView(view);
   const translation = createTranslation({ getSource, getAccess, setView });
+  const notesExport = createNotesExport({ getSource, getAccess });
 
   function busy() {
     const any = Boolean(recapController || answerController);
@@ -136,6 +138,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   }
 
   function updateAccess() {
+    notesExport.sync();
     const access = getAccess();
     const message = access === "login" ? "会議アシスタントにはログインが必要です。ゲストでは文字起こしのみ利用できます。"
       : access === "unavailable" ? "会議アシスタントを利用できません。サーバーの機能設定を確認してください。" : "";
@@ -287,6 +290,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
     const key = JSON.stringify(getSource());
     if (key === sourceKey) return;
     sourceKey = key;
+    notesExport.reset();
     generation += 1;
     translation.sync();
     loadController?.abort();

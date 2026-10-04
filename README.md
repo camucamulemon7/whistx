@@ -448,6 +448,40 @@ type|title|message|dismissible
 
 ### Summary
 
+Generation can use OpenWebUI independently of ASR. Set `OPENWEBUI_BASE_URL` to
+the OpenWebUI root URL (for example `http://localhost:3000`) and provide an
+existing authorized `OPENWEBUI_API_KEY` in administrator settings. With that
+URL configured, generation calls `/api/chat/completions` using only the
+OpenWebUI credential; it never substitutes an ASR credential. The default
+generation model is `qwopus3.8-27b-flash-v2`; `SUMMARY_MODEL` remains configurable.
+ASR endpoints and audio models remain separate. Container deployments must use
+an address reachable from the container, or the existing host gateway mapping.
+Settings take effect after a separately authorized restart/deployment.
+
+After generating a current meeting recap, open **OpenWebUI Notesに議事録を保存**
+and explicitly save with your existing OpenWebUI API key or token. The
+OpenWebUI account email must match the signed-in Whistx account. Only the recap
+text is exported to a new private Note; existing Notes are never overwritten.
+Credentials are held only for the operation and cleared from the input. They
+are not stored in browser storage, export receipts, or application logs. Notes
+permission/API access on OpenWebUI must already be enabled for that account;
+Whistx does not change those permissions or issue keys.
+
+Duplicate saves of the same recap reuse the saved receipt. After a timeout or
+ambiguous upstream failure, **確認・再試行** checks the saved Note's owner and
+unique export metadata. If no matching Note can yet be found, sending remains
+blocked to avoid a duplicate; an operator must resolve the uncertain outcome.
+Receipts under `APP_DATA_DIR/notes_exports` contain only owner/Note IDs and
+status. Keep them with the application's persistent data. OpenWebUI 0.11.4
+API contracts are covered by synthetic tests; authenticated live compatibility
+still requires an authorized existing credential.
+
+Self-registration, when enabled by `ENABLE_SELF_SIGNUP`, creates active
+ordinary users and the browser signs them in immediately. Administrator
+approval is no longer required for new registrations. Existing inactive
+accounts and administrator privileges are unchanged. Initial administrator
+creation and Keycloak identity/email verification retain their existing rules.
+
 - `SUMMARY_API_KEY`
 - `SUMMARY_BASE_URL`
 - `SUMMARY_MODEL`

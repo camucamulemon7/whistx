@@ -94,6 +94,8 @@ def admin_settings(user: User = Depends(get_current_admin)) -> JSONResponse:
         'ASR_BASE_URL': settings.openai_base_url or '', 'ASR_API_KEY': settings.openai_api_key,
         'SUMMARY_BASE_URL': settings.summary_base_url or '', 'SUMMARY_MODEL': settings.summary_model,
         'SUMMARY_API_KEY': settings.summary_api_key,
+        'OPENWEBUI_BASE_URL': settings.openwebui_base_url,
+        'OPENWEBUI_API_KEY': settings.openwebui_api_key,
     }
     values = {**active, **saved}
     values['HISTORY_RETENTION_DAYS'] = values['HISTORY_RETENTION_DAYS'] or '0'

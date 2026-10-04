@@ -331,6 +331,7 @@ serverForm.addEventListener('submit', async event => {
     serverStatus.textContent = '保存しました。コンテナ再起動後に適用されます。';
     serverForm.elements.ASR_API_KEY.value = '';
     serverForm.elements.SUMMARY_API_KEY.value = '';
+    serverForm.elements.OPENWEBUI_API_KEY.value = '';
   } catch { serverStatus.textContent = '保存できませんでした。入力内容を確認してください。'; }
   finally { button.disabled = false; }
 });

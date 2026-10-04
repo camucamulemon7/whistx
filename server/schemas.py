@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -46,6 +46,11 @@ class MeetingSourceRequest(BaseModel):
 
 class MeetingRecapRequest(MeetingSourceRequest):
     prompt: str = Field(default="", max_length=4000)
+
+
+class MeetingNoteRequest(MeetingSourceRequest):
+    token: SecretStr
+    title: str = Field(default='Whistx 議事録', max_length=120)
 
 
 class MeetingQuestionRequest(MeetingSourceRequest):

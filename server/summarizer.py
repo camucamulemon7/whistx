@@ -561,9 +561,9 @@ class OpenAISummarizer:
         }
 
         try:
-            emit_container_log(__name__, "info", "LLM POST /v1/chat/completions: model=%s messages=%d chars=%d temp=%s stream=false", model, len(messages), prompt_chars, temperature)
+            emit_container_log(__name__, "info", "LLM POST /chat/completions: model=%s messages=%d chars=%d temp=%s stream=false", model, len(messages), prompt_chars, temperature)
             logger.info(
-                "LLM POST /v1/chat/completions: model=%s messages=%d chars=%d temp=%s stream=false",
+                "LLM POST /chat/completions: model=%s messages=%d chars=%d temp=%s stream=false",
                 model,
                 len(messages),
                 prompt_chars,
@@ -574,9 +574,9 @@ class OpenAISummarizer:
             if not _is_temperature_unsupported_error(exc):
                 raise
             request_payload.pop("temperature", None)
-            emit_container_log(__name__, "info", "LLM POST /v1/chat/completions retry-without-temperature: model=%s messages=%d chars=%d stream=false", model, len(messages), prompt_chars)
+            emit_container_log(__name__, "info", "LLM POST /chat/completions retry-without-temperature: model=%s messages=%d chars=%d stream=false", model, len(messages), prompt_chars)
             logger.info(
-                "LLM POST /v1/chat/completions retry-without-temperature: model=%s messages=%d chars=%d stream=false",
+                "LLM POST /chat/completions retry-without-temperature: model=%s messages=%d chars=%d stream=false",
                 model,
                 len(messages),
                 prompt_chars,
@@ -588,9 +588,9 @@ class OpenAISummarizer:
         prompt_chars = sum(len(str(message.get("content") or "")) for message in messages if isinstance(message, dict))
         model = str(request_payload.get("model") or self.model)
         try:
-            emit_container_log(__name__, "info", "LLM POST /v1/chat/completions: model=%s messages=%d chars=%d temp=%s stream=true", model, len(messages), prompt_chars, request_payload.get("temperature"))
+            emit_container_log(__name__, "info", "LLM POST /chat/completions: model=%s messages=%d chars=%d temp=%s stream=true", model, len(messages), prompt_chars, request_payload.get("temperature"))
             logger.info(
-                "LLM POST /v1/chat/completions: model=%s messages=%d chars=%d temp=%s stream=true",
+                "LLM POST /chat/completions: model=%s messages=%d chars=%d temp=%s stream=true",
                 model,
                 len(messages),
                 prompt_chars,
@@ -602,9 +602,9 @@ class OpenAISummarizer:
                 raise
             request_payload = dict(request_payload)
             request_payload.pop("temperature", None)
-            emit_container_log(__name__, "info", "LLM POST /v1/chat/completions retry-without-temperature: model=%s messages=%d chars=%d stream=true", model, len(messages), prompt_chars)
+            emit_container_log(__name__, "info", "LLM POST /chat/completions retry-without-temperature: model=%s messages=%d chars=%d stream=true", model, len(messages), prompt_chars)
             logger.info(
-                "LLM POST /v1/chat/completions retry-without-temperature: model=%s messages=%d chars=%d stream=true",
+                "LLM POST /chat/completions retry-without-temperature: model=%s messages=%d chars=%d stream=true",
                 model,
                 len(messages),
                 prompt_chars,

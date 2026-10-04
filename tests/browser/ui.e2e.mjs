@@ -1771,6 +1771,7 @@ async function verifyMeetingInsights(client) {
   await client.send("Page.addScriptToEvaluateOnNewDocument", { source: String.raw`
     (() => {
       const original = window.fetch;
+      window.__notesSaves = 0;
       const source = { id: "000001", seq: 1, text: "履歴の文字起こし", startMs: 0, endMs: 1000 };
       const recap = { revision: "r1", throughMs: 1000, sources: [source], chapters: [{ id: "chapter-1", title: "公開準備 <script>unsafe</script>", startMs: 0, endMs: 1000, sourceIds: [source.id], summary: [{ text: "公開日は未定", sourceIds: [source.id] }], discussion: [{text:"検証が完了していないため公開日は未定", sourceIds:[source.id]}], decisions: [], actions: [], open_questions: [], imageIds: ["frame.png"] }] };
       window.fetch = async (input, options = {}) => {
@@ -1779,6 +1780,12 @@ async function verifyMeetingInsights(client) {
         if (url.includes("/api/health")) return json({ asrReady: true, model: "browser-test", wsPath: "/ws/transcribe", meetingInsights: true });
         if (url.includes("/api/meeting/insights")) return json({ revision: "r1", throughMs: 1000, images: [], turns: [], recap: null });
         if (url.includes("/api/meeting/recap")) return json({ revision: "r1", throughMs: 1000, images: [{id:'frame.png', timeMs:0,url:'/api/history/test/screenshots/frame.png'}], recap, summary: "公開日は未定" });
+        if (url.includes("/api/meeting/notes")) {
+          window.__notesSaves += 1;
+          window.__notesSource = JSON.parse(options.body).historyId;
+          await new Promise(resolve => setTimeout(resolve, 30));
+          return json({ ok: true, noteId: "synthetic-note", alreadySaved: window.__notesSaves > 1 });
+        }
         if (url.includes("/api/meeting/translate")) {
           window.__translationRequest = JSON.parse(options.body);
           const events = [{type:'sources',sources:[source],finalized:true}, {type:'translation',id:source.id,sourceText:source.text,text:'Release date is undecided. <script>unsafe</script>'}, {type:'done'}];
@@ -1808,6 +1815,13 @@ async function verifyMeetingInsights(client) {
   assert.equal(recap.cards, 1, "saved meeting should render a chapter card");
   assert.match(recap.text, /検証が完了していないため公開日は未定/);
   assert.equal(recap.scripts, 0, "model strings must remain text");
+  assert.equal(await evaluate(client, `window.__notesSaves`), 0, "recap generation must not automatically send Notes");
+  await evaluate(client, `(() => { document.querySelector('#notesToken').value = 'synthetic-existing-token'; document.querySelector('#notesSave').click(); document.querySelector('#notesSave').click(); })()`);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(await evaluate(client, `window.__notesSaves`), 1, "double click sends one Notes request");
+  assert.equal(await evaluate(client, `window.__notesSource`), 'history-1');
+  assert.equal(await evaluate(client, `document.querySelector('#notesToken').value`), '');
+  assert.match(await evaluate(client, `document.querySelector('#notesStatus').textContent`), /非公開Note/);
   assert.equal(await evaluate(client, `getComputedStyle(document.querySelector('#summaryPanelTitle')).writingMode`), 'horizontal-tb');
   assert.ok(await evaluate(client, `document.querySelector('#summaryText').getBoundingClientRect().width > 400`), 'minutes need readable width');
   assert.equal(await evaluate(client, `document.querySelectorAll('#summaryText .chapter-images img').length`), 1, 'images appear inside minutes');
@@ -2137,6 +2151,41 @@ try {
   }
   assert.equal(await evaluate(client, `document.documentElement.dataset.whistxReady`), "true");
   assert.equal(await evaluate(client, `document.querySelector('#language').value`), "", "Auto language must survive reload");
+  client.close();
+  client = await connectPage(browserWebSocketUrl, url);
+  await client.send('Page.addScriptToEvaluateOnNewDocument', { source: recordingMocks });
+  await client.send('Page.addScriptToEvaluateOnNewDocument', { source: String.raw`
+    (() => {
+      const original = window.fetch;
+      window.__signupTest = { signedIn: false, registered: false, logins: 0 };
+      const json = data => new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
+      window.fetch = (input, options = {}) => {
+        const path = new URL(String(input), location.origin).pathname;
+        const user = { id: 'new-user', email: 'new@example.test', displayName: 'New user', isAdmin: false };
+        if (path === '/api/auth/me') return Promise.resolve(json({ authenticated: window.__signupTest.signedIn,
+          user: window.__signupTest.signedIn ? user : null, selfSignupEnabled: true, bootstrapAdminRequired: false }));
+        if (path === '/api/auth/register') { window.__signupTest.registered = true; return Promise.resolve(json({ ok: true, pending: false, user })); }
+        if (path === '/api/auth/login') { window.__signupTest.signedIn = true; window.__signupTest.logins += 1; return Promise.resolve(json({ ok: true, user })); }
+        return original(input, options);
+      };
+    })()
+  ` });
+  await client.send('Page.reload', { ignoreCache: true });
+  await waitForApp(client);
+  await evaluate(client, `(() => {
+    document.querySelector('#registerEmail').value = 'new@example.test';
+    document.querySelector('#registerPassword').value = 'SyntheticPassword123!';
+    document.querySelector('#registerDisplayName').value = 'New user';
+    document.querySelector('#registerBtn').click();
+  })()`);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await evaluate(client, `window.__signupTest.signedIn && !document.body.classList.contains('whistx-auth-locked')`)) break;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.equal(await evaluate(client, `window.__signupTest.registered && window.__signupTest.logins === 1`), true);
+  assert.equal(await evaluate(client, `document.body.classList.contains('whistx-auth-locked')`), false, 'signup unlocks the workspace immediately');
+  assert.equal(await evaluate(client, `document.querySelector('#registerPassword').value`), '');
+  assert.equal(await evaluate(client, `document.querySelector('#adminQueueBadge').hidden || document.querySelector('#adminQueueBadge').closest('[hidden]') !== null`), true);
   client.close();
   const adminUrl = new URL('/admin.html', url).href;
   client = await connectPage(browserWebSocketUrl, adminUrl);
