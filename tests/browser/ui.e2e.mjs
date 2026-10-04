@@ -2178,6 +2178,13 @@ try {
   ` });
   await client.send('Page.navigate', { url });
   await waitForApp(client);
+  // Wiring is ready before async auth bootstrap. Wait for the registration UI
+  // to be available to a real user before submitting once.
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await evaluate(client, `!document.querySelector('#authRegisterSection').hidden && !document.querySelector('#registerBtn').disabled`)) break;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.equal(await evaluate(client, `!document.querySelector('#authRegisterSection').hidden && !document.querySelector('#registerBtn').disabled`), true, 'enabled signup must be visible before submission');
   await evaluate(client, `(() => {
     document.querySelector('#registerEmail').value = 'new@example.test';
     document.querySelector('#registerPassword').value = 'SyntheticPassword123!';
