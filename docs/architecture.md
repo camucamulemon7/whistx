@@ -145,8 +145,8 @@ cover isolated stores, settings boundaries, recording handles and workspace lock
 utilities, workspace, responsive, then meeting refinements. The last two component
 collections preserve historical theme/workspace overrides in their original
 positions; moving them before responsive rules would alter the current UI.
-Only identical top-level selector/declaration duplicates were removed. The runtime
-stylesheet still loads after this entry, and administration styles after runtime.
+Only identical top-level selector/declaration duplicates were removed. The normal workspace loads its runtime stylesheet after this entry; the
+administration page loads its own stylesheet after the shared entry.
 No cascade layers or new design rules are introduced.
 
 Issue #72's prerequisite is satisfied: closed Issue #82 identifies Claude's
