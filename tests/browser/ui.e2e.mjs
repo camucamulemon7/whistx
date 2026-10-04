@@ -110,9 +110,9 @@ class CdpClient {
         return;
       }
       if (!this.pending.has(message.id)) return;
-      const { resolve, reject } = this.pending.get(message.id);
+      const { resolve, reject, method } = this.pending.get(message.id);
       this.pending.delete(message.id);
-      if (message.error) reject(new Error(message.error.message));
+      if (message.error) reject(new Error(`${message.error.message} (${method})`));
       else resolve(message.result);
     });
   }
@@ -126,6 +126,7 @@ class CdpClient {
         reject(new Error(`CDP timeout: ${method} ${String(params.expression || "").slice(0, 180)}`));
       }, 30_000);
       this.pending.set(id, {
+        method,
         resolve: value => { clearTimeout(timeout); resolve(value); },
         reject: error => { clearTimeout(timeout); reject(error); },
       });
@@ -2145,14 +2146,11 @@ try {
     delete document.documentElement.dataset.whistxReady;
   })()`);
   await client.send("Page.reload", { ignoreCache: true });
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (await evaluate(client, `document.documentElement.dataset.whistxReady === 'true'`)) break;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  await waitForApp(client);
   assert.equal(await evaluate(client, `document.documentElement.dataset.whistxReady`), "true");
   assert.equal(await evaluate(client, `document.querySelector('#language').value`), "", "Auto language must survive reload");
   client.close();
-  client = await connectPage(browserWebSocketUrl, url);
+  client = await connectPage(browserWebSocketUrl, 'about:blank');
   await client.send('Page.addScriptToEvaluateOnNewDocument', { source: recordingMocks });
   await client.send('Page.addScriptToEvaluateOnNewDocument', { source: String.raw`
     (() => {
@@ -2170,7 +2168,7 @@ try {
       };
     })()
   ` });
-  await client.send('Page.reload', { ignoreCache: true });
+  await client.send('Page.navigate', { url });
   await waitForApp(client);
   await evaluate(client, `(() => {
     document.querySelector('#registerEmail').value = 'new@example.test';
