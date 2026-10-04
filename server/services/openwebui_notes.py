@@ -48,7 +48,7 @@ def save_recap(snapshot: MeetingSnapshot, *, user_id: int, email: str,
                token: str, title: str, client: httpx.Client | None = None) -> dict:
     if not settings.openwebui_base_url:
         raise NotesError('openwebui_not_configured', 503)
-    if not token or len(token) > 8192 or any(char.isspace() for char in token):
+    if not token or not token.isascii() or len(token) > 8192 or any(char.isspace() for char in token):
         raise NotesError('notes_auth_required', 401)
     recap = read_insights(snapshot).get('recap')
     if not recap or recap.get('stale'):
@@ -79,6 +79,14 @@ def save_recap(snapshot: MeetingSnapshot, *, user_id: int, email: str,
         with receipt_path.with_suffix('.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             receipt = read_json(receipt_path)
+            if receipt_path.exists() and (receipt.get('state') not in {'sending', 'saved'}
+                                         or not isinstance(receipt.get('owner'), str)
+                                         or not receipt['owner']
+                                         or (receipt['state'] == 'saved'
+                                             and (not isinstance(receipt.get('noteId'), str) or not receipt['noteId']))):
+                # A corrupt receipt cannot establish that a previous POST did
+                # not commit. Preserve it for recovery; never treat it as new.
+                raise NotesError('notes_save_uncertain', 409)
             if receipt and receipt.get('owner') != owner:
                 raise NotesError('notes_account_mismatch', 403)
             if receipt.get('state') == 'saved':

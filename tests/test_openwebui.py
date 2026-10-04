@@ -200,6 +200,24 @@ class NotesTests(unittest.TestCase):
             self.save(snapshot=replace(self.snapshot, revision='rev2'))
         self.assertEqual(self.posts, 0)
 
+    def test_corrupt_receipt_never_creates_a_duplicate_note(self):
+        self.save()
+        receipt = next((self.root / 'notes_exports').rglob('*.json'))
+        for damaged in ['{truncated', '{}', '{"state":"saved","owner":"own-webui"}',
+                        '{"state":"unknown","owner":"own-webui"}',
+                        '{"state":"saved","owner":"own-webui","noteId":""}']:
+            with self.subTest(damaged=damaged):
+                receipt.write_text(damaged)
+                self.error('notes_save_uncertain')
+                self.assertEqual(receipt.read_text(), damaged)
+                self.assertEqual(self.posts, 1)
+
+    def test_invalid_header_credential_is_rejected_before_contacting_openwebui(self):
+        with patch.object(notes.httpx, 'Client') as client:
+            with self.assertRaisesRegex(notes.NotesError, 'notes_auth_required'):
+                notes.save_recap(self.snapshot, user_id=1, email='user@example.test', token='合成token', title='Synthetic')
+            client.assert_not_called()
+
     def test_two_simultaneous_saves_create_one_note(self):
         outcomes, errors = [], []
         def run():
