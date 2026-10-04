@@ -77,3 +77,25 @@ before renaming the source. If interrupted, a manifest entry may still be at its
 original path. During offline recovery, inspect both source and quarantine paths;
 never overwrite existing material. Manifest write failures stop before moving the
 corresponding source. Only apply reconciliation with all writers stopped.
+
+
+Synthetic PostgreSQL integration can be run with
+`WHISTX_PG_TEST_DB_URL` pointing to an isolated, migrated database named
+`whistx_test`: `python -m unittest tests.test_postgres_integration`.
+The suite inserts only synthetic rows and removes its fixtures afterward.
+It checks search plans/page boundaries and six-process artifact deletion,
+row-lock skipping, restart retries and rollback. Use a dedicated instance;
+never point this test at a production database.
+
+On Mac Docker PostgreSQL 17, 10,001 synthetic users and 20,000 histories yielded
+history-search p50 0.62ms / p95 0.96ms over 20 warm queries after
+`VACUUM ANALYZE`; the natural plan used both history trigram indexes.
+Immediately after bulk ingestion, a sequential scan took approximately 181ms.
+These are fixture results, not production latency guarantees. Keep statistics
+and GIN maintenance current when assessing query plans after bulk loading.
+
+Recording seeds now use 128 bits from `crypto.getRandomValues`.
+The seed is an identifier, not an authorization credential: the server derives
+its runtime identifier and verifies owner identity or the independent guest
+grant before artifact access. Secure generation reduces collision/predictability
+risk without replacing that authorization boundary.

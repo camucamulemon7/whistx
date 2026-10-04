@@ -74,3 +74,19 @@ test("all feature controller constructors are inert until the app wires events",
     assert.ok(Object.values(controller).every(action => typeof action === "function"), name);
   }
 });
+
+
+test("recording seeds use secure randomness and fit the server session identifier", () => {
+  const recording = createRecordingController({});
+  const original = Math.random;
+  try {
+    Math.random = () => { throw new Error("insecure randomness must not be used"); };
+    const first = recording.generateSessionSeed();
+    const second = recording.generateSessionSeed();
+    assert.match(first, /^sess-[0-9a-f]{32}$/);
+    assert.notEqual(first, second);
+    assert.ok((first + "_20261004120000_abcd").length <= 96);
+  } finally {
+    Math.random = original;
+  }
+});

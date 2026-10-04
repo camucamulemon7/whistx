@@ -22,9 +22,9 @@ function selectMimeType() {
 }
 
 function generateSessionSeed() {
-  const t = Date.now().toString(36);
-  const r = Math.random().toString(36).slice(2, 6);
-  return `sess-${t}-${r}`;
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return `sess-${Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function setUiRecording(active) {
