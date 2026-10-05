@@ -260,7 +260,9 @@ const { openManagedModal, closeManagedModal, topmostModal, trapModalFocus } = cr
   window,
   getBlockingModals: () => [runtimeUi.screenshotModalEl],
 });
-const { renderBanners } = createBannerController({ container: bannersContainerEl, document });
+let bannerDismissalStorage = null;
+try { bannerDismissalStorage = window.sessionStorage; } catch { /* Restricted browser storage. */ }
+const { renderBanners } = createBannerController({ container: bannersContainerEl, document, storage: bannerDismissalStorage });
 const { showToast } = createToastController({ container: toastContainer, document });
 
 const state = createAppState({
@@ -492,7 +494,7 @@ const controllerContext = {
   get workspacePanelsEl() { return workspacePanelsEl; },
   get workspaceShellEl() { return workspaceShellEl; },
 };
-const { canUseWorkspace, setAppLocked, renderAuthState, syncAuthProfileEditor, setAuthProfileEditorOpen, handleAuthErrorFromLocation, loadAuthState, login, bootstrapAdmin, registerAccount, saveDisplayName, logout, loginAsGuest } = createAuthController(controllerContext);
+const { canUseWorkspace, setAppLocked, renderAuthState, syncAuthScreen, syncAuthProfileEditor, setAuthProfileEditorOpen, handleAuthErrorFromLocation, loadAuthState, login, bootstrapAdmin, registerAccount, saveDisplayName, logout, loginAsGuest } = createAuthController(controllerContext);
 const { selectedLanguage, setStatus, applyBranding, applyCaptureScreenshotsEnabled, applyScreenshotDiffSkipEnabled, applyShowTranscriptAudioEnabled, applyAutoGainEnabled, applyDiarizationEnabled, clampSpeakerCount, updateDiarizationSpeakerUi, applyDiarizationSpeakerSettings, resolveDiarizationStartOptions, normalizeChunkSeconds, updateChunkHint, updatePresetActive, applyChunkSeconds, audioSourceHintText, applyAudioSource, buildAutoSaveTitle } = createSettingsController(controllerContext);
 const { setProofreadButtonBusy, proofreadActionLabel, applyProofreadMode, applySummaryPromptEditorOpen, setSummary, copySummaryText, setProofread, markProofreadStale, copyProofread, proofreadAll, summarizeAll } = createAiController(controllerContext);
 const { applyHistoryDrawerOpen, applyHistoryCollapsed, updateHistoryControls, applyAdvancedSettingsOpen, syncAiResponsiveState, applyActiveAiPanel, applyWorkspaceRatios, updateWorkspaceGridTemplate, applyPanelCollapseState, setupWorkspaceResizers, setupPanelToggles, applyTheme, initTheme, updateThemeColorMeta, toggleTheme } = createLayoutController(controllerContext);
@@ -809,6 +811,15 @@ if (registerBtn) {
     registerAccount();
   });
 }
+
+window.addEventListener("hashchange", syncAuthScreen);
+syncAuthScreen();
+registerPasswordEl?.addEventListener("keydown", event => {
+  if (event.key === "Enter" && !event.isComposing) {
+    event.preventDefault();
+    registerAccount();
+  }
+});
 
 if (settingsAdvancedToggleEl) {
   settingsAdvancedToggleEl.addEventListener("click", () => {

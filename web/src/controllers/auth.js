@@ -11,6 +11,32 @@ import { logoutRequest } from "../auth/api.js";
 import { clearHistoryState } from "../history/state.js";
 
 export function createAuthController(appDependencies) {
+let registrationInFlight = false;
+let registrationMessage = "";
+let registrationKind = "";
+let authScreen = "";
+let authScreenGeneration = 0;
+
+function syncAuthScreen() {
+  const next = location.hash === "#register" ? "register" : "login";
+  if (next !== authScreen) authScreenGeneration += 1;
+  authScreen = next;
+  renderAuthState();
+  if (!canUseWorkspace()) {
+    const input = appDependencies.state.auth.bootstrapAdminRequired
+      ? appDependencies.bootstrapDisplayNameEl
+      : next === "register" && appDependencies.state.selfSignupEnabled
+        ? appDependencies.registerDisplayNameEl : appDependencies.loginEmailEl;
+    input?.focus();
+  }
+}
+
+function registrationFeedback(message, kind) {
+  registrationMessage = message;
+  registrationKind = kind;
+  renderAuthState();
+}
+
 function canUseWorkspace() {
   return canUseWorkspaceForAuth(appDependencies.state.auth);
 }
@@ -43,6 +69,7 @@ function renderAuthState() {
   const isGuest = !!appDependencies.state.auth.isGuest;
   const workspaceEnabled = authenticated || isGuest;
   const bootstrapRequired = !!appDependencies.state.auth.bootstrapAdminRequired;
+  const registeringScreen = location.hash === "#register" && appDependencies.state.selfSignupEnabled && !bootstrapRequired;
   const isAdmin = !!appDependencies.state.auth.user?.isAdmin;
   const userLabel = authenticated ? serializeUserLabel(appDependencies.state.auth.user) : isGuest ? "ゲスト利用中" : "未ログイン";
   if (appDependencies.authUserLabelEl) {
@@ -85,10 +112,26 @@ function renderAuthState() {
     appDependencies.authBootstrapSectionEl.hidden = !bootstrapRequired;
   }
   if (appDependencies.authLoginSectionEl) {
-    appDependencies.authLoginSectionEl.hidden = bootstrapRequired;
+    appDependencies.authLoginSectionEl.hidden = bootstrapRequired || registeringScreen;
   }
   if (appDependencies.authRegisterSectionEl) {
-    appDependencies.authRegisterSectionEl.hidden = bootstrapRequired || !appDependencies.state.selfSignupEnabled;
+    appDependencies.authRegisterSectionEl.hidden = !registeringScreen;
+  }
+  const registrationLink = document.querySelector("#registrationLink");
+  if (registrationLink) registrationLink.hidden = bootstrapRequired || !appDependencies.state.selfSignupEnabled;
+  const heading = document.querySelector("#authScreenTitle");
+  if (heading) heading.textContent = bootstrapRequired ? "管理者アカウント作成" : registeringScreen ? "新規登録" : "ログイン";
+  const card = document.querySelector("#authCard");
+  if (card) card.setAttribute("aria-label", heading?.textContent || "ログイン");
+  const flowStatus = document.querySelector("#authFlowStatus");
+  if (flowStatus) {
+    flowStatus.textContent = registrationMessage || (location.hash === "#register" && !appDependencies.state.selfSignupEnabled ? "新規登録は現在無効です。ログインをご利用ください。" : "");
+    flowStatus.dataset.kind = registrationKind;
+  }
+  const accountStatus = document.querySelector("#accountStatus");
+  if (accountStatus) {
+    accountStatus.hidden = !authenticated || registrationKind !== "success";
+    accountStatus.textContent = accountStatus.hidden ? "" : registrationMessage;
   }
   if (appDependencies.keycloakLoginBtnEl) {
     appDependencies.keycloakLoginBtnEl.hidden = bootstrapRequired || !appDependencies.state.auth.keycloakEnabled;
@@ -101,7 +144,9 @@ function renderAuthState() {
     appDependencies.adminQueueBadgeEl.textContent = String(appDependencies.state.auth.pendingApprovalCount || 0);
   }
   if (appDependencies.registerBtn) {
-    appDependencies.registerBtn.disabled = !appDependencies.state.selfSignupEnabled;
+    appDependencies.registerBtn.disabled = !appDependencies.state.selfSignupEnabled || registrationInFlight || authenticated;
+    appDependencies.registerBtn.textContent = registrationInFlight ? "登録処理中…" : "登録して利用を開始";
+    appDependencies.registerBtn.setAttribute("aria-busy", String(registrationInFlight));
   }
   if (appDependencies.registerHintEl) {
     if (bootstrapRequired) {
@@ -227,7 +272,7 @@ async function loadAuthState() {
       if (appDependencies.state.auth.bootstrapAdminRequired) {
         appDependencies.bootstrapDisplayNameEl?.focus();
       } else {
-        appDependencies.loginEmailEl?.focus();
+        syncAuthScreen();
       }
     }
     appDependencies.logClientEvent("auth_state.load.success", {
@@ -314,33 +359,64 @@ async function bootstrapAdmin() {
 }
 
 async function registerAccount() {
+  if (registrationInFlight || appDependencies.state.auth.authenticated) return;
   if (!appDependencies.state.selfSignupEnabled) {
-    appDependencies.showToast("新規登録は無効です", "error");
+    registrationFeedback("新規登録は現在無効です", "error");
     return;
   }
   const email = String(appDependencies.registerEmailEl?.value || "").trim();
   const password = String(appDependencies.registerPasswordEl?.value || "");
   const displayName = String(appDependencies.registerDisplayNameEl?.value || "").trim();
   if (!email || password.length < 8) {
-    appDependencies.showToast("メールアドレスと8文字以上のパスワードを入力してください", "error");
+    registrationFeedback("メールアドレスと8文字以上のパスワードを入力してください", "error");
     return;
   }
 
+  const submittedScreen = authScreenGeneration;
+  registrationInFlight = true;
+  registrationFeedback("ユーザー登録を処理しています…", "pending");
   try {
-    await registerRequest({ email, password, displayName });
+    const registered = await registerRequest({ email, password, displayName });
+    if (registered?.ok !== true || String(registered.user?.email || "").toLowerCase() !== email.toLowerCase() || registered.pending) {
+      registrationFeedback("登録結果を確認できません。ログイン画面でアカウントをご確認ください。", "error");
+      return;
+    }
     if (appDependencies.registerPasswordEl) appDependencies.registerPasswordEl.value = "";
+    registrationFeedback("ユーザー登録が完了しました。ログインしています…", "success");
+    if (appDependencies.loginEmailEl) appDependencies.loginEmailEl.value = email;
+    if (submittedScreen !== authScreenGeneration) {
+      registrationFeedback("ユーザー登録が完了しました。ログイン画面からログインできます。", "success");
+      return;
+    }
     try {
-      await loginRequest({ email, password });
+      const loggedIn = await loginRequest({ email, password });
+      if (loggedIn?.ok !== true) throw new Error("login_not_confirmed");
       persistGuestMode(false);
       await loadAuthState();
-      appDependencies.showToast("登録が完了しました", "success");
+      if (!appDependencies.state.auth.authenticated || String(appDependencies.state.auth.user?.email || "").toLowerCase() !== email.toLowerCase()) {
+        throw new Error("login_not_confirmed");
+      }
+      registrationFeedback("ユーザー登録が完了しました。ログインしました。", "success");
+      const url = new URL(location.href);
+      url.hash = "";
+      window.history.replaceState({}, "", url);
+      authScreen = "login";
+      document.querySelector("#workspaceMain")?.focus();
+      appDependencies.showToast("ユーザー登録が完了しました。ログインしました。", "success", 7000);
     } catch {
-      if (appDependencies.loginEmailEl) appDependencies.loginEmailEl.value = email;
-      appDependencies.showToast("登録が完了しました。ログインしてください", "success");
+      registrationFeedback("ユーザー登録が完了しました。自動ログインを確認できませんでした。ログインしてください。", "success");
+      location.hash = "login";
     }
   } catch (error) {
     const payload = error?.payload || {};
-    appDependencies.showToast(payload.error === "email_already_exists" ? "既に存在するメールアドレスです" : "新規登録に失敗しました", "error");
+    const message = payload.error === "email_already_exists" ? "このメールアドレスは既に登録されています。ログインをご利用ください。"
+      : error?.code === "timeout" || error?.code === "network" || error?.code === "offline"
+        ? "通信エラーで登録結果を確認できませんでした。入力を保持しています。既に登録されている場合はログインしてください。"
+        : "新規登録に失敗しました。入力を確認して再試行してください。";
+    registrationFeedback(message, "error");
+  } finally {
+    registrationInFlight = false;
+    renderAuthState();
   }
 }
 
@@ -371,6 +447,8 @@ async function logout() {
   if (!appDependencies.confirmWorkspaceDiscard("破棄してログアウト")) {
     return;
   }
+  registrationMessage = "";
+  registrationKind = "";
   await logoutRequest().catch(() => null);
   if (appDependencies.state.recording || appDependencies.state.finalizingStop) {
     appDependencies.stopRecording();
@@ -426,5 +504,5 @@ function loginAsGuest() {
   appDependencies.showToast("ゲストモードで開始しました", "success");
 }
 
-  return { canUseWorkspace, setAppLocked, renderAuthState, syncAuthProfileEditor, setAuthProfileEditorOpen, handleAuthErrorFromLocation, loadAuthState, login, bootstrapAdmin, registerAccount, saveDisplayName, logout, loginAsGuest };
+  return { canUseWorkspace, setAppLocked, renderAuthState, syncAuthScreen, syncAuthProfileEditor, setAuthProfileEditorOpen, handleAuthErrorFromLocation, loadAuthState, login, bootstrapAdmin, registerAccount, saveDisplayName, logout, loginAsGuest };
 }

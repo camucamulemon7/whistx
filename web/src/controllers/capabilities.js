@@ -2,10 +2,13 @@ import { fetchCapabilities } from "../capabilities/api.js";
 import { normalizeWsPath } from "../transcription/websocket.js";
 
 export function createCapabilitiesController(appDependencies) {
+let capabilitiesGeneration = 0;
 async function loadCapabilities() {
+  const generation = ++capabilitiesGeneration;
   appDependencies.logClientEvent("capabilities.load.start");
   try {
     const health = await fetchCapabilities();
+    if (generation !== capabilitiesGeneration) return;
     appDependencies.state.wsPath = normalizeWsPath(health.wsPath || appDependencies.state.wsPath);
     appDependencies.state.meetingInsights = !!health.meetingInsights;
     appDependencies.state.asrBackend = health.asrBackend || "whisper";
@@ -99,6 +102,7 @@ async function loadCapabilities() {
     });
     return health;
   } catch {
+    if (generation !== capabilitiesGeneration) return;
     // ignore capability check errors
     appDependencies.logClientEvent("capabilities.load.failed");
     return null;

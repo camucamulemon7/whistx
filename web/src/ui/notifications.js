@@ -1,7 +1,12 @@
 import { normalizeBannerType } from "./format.js";
 
-export function createBannerController({ container: bannersContainerEl, document }) {
+export function createBannerController({ container: bannersContainerEl, document, storage = null }) {
   const dismissedBannerKeys = new Set();
+  const storageKey = "whistx.dismissedAnnouncements.v1";
+  try {
+    const saved = JSON.parse(storage?.getItem(storageKey) || "[]");
+    if (Array.isArray(saved)) saved.filter(key => typeof key === "string").forEach(key => dismissedBannerKeys.add(key));
+  } catch { /* Unavailable or corrupt storage must not prevent dismissal. */ }
   function renderBanners(rawBanners) {
     if (!bannersContainerEl) return;
 
@@ -17,8 +22,10 @@ export function createBannerController({ container: bannersContainerEl, document
       const dismissible = record.dismissible !== false;
 
       if (!message) return;
-      // Remember this announcement for this page session, allowing changed notices to appear.
-      const dismissalKey = JSON.stringify([id, type, title, message]);
+      // Generated IDs follow list positions; reordering must not revive the
+      // same content. Explicit IDs still distinguish separately issued notices.
+      const identity = /^banner-\d+$/.test(id) ? "" : id;
+      const dismissalKey = JSON.stringify([identity, type, title, message]);
       if (dismissible && dismissedBannerKeys.has(dismissalKey)) return;
       const node = document.createElement("article");
       node.className = `notice-banner notice-${type}`;
@@ -40,6 +47,7 @@ export function createBannerController({ container: bannersContainerEl, document
         closeBtn.textContent = "×";
         closeBtn.addEventListener("click", () => {
           dismissedBannerKeys.add(dismissalKey);
+          try { storage?.setItem(storageKey, JSON.stringify([...dismissedBannerKeys])); } catch { /* Keep the in-memory dismissal. */ }
           node.remove();
           bannersContainerEl.hidden = bannersContainerEl.childElementCount === 0;
         });

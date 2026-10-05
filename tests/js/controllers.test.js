@@ -90,3 +90,33 @@ test("recording seeds use secure randomness and fit the server session identifie
     Math.random = original;
   }
 });
+
+test("late capabilities responses cannot overwrite the latest notices or settings", async () => {
+  const { createCapabilitiesController } = await import("../../web/src/controllers/capabilities.js");
+  const originalFetch = globalThis.fetch;
+  const originalDocument = globalThis.document;
+  const pending = [];
+  const rendered = [];
+  const dependencies = {
+    state: state(), DIARIZATION_SPEAKER_MIN: 1, DIARIZATION_SPEAKER_MAX: 8,
+    renderBanners: banners => rendered.push(banners),
+  };
+  for (const action of ["logClientEvent", "setSessionSettingsLocked", "applyBranding", "renderPromptTemplateButtons", "renderAuthState", "setProofread", "setStatus", "applyDiarizationSpeakerSettings", "applyDiarizationEnabled", "updateDiarizationSpeakerUi"]) dependencies[action] = () => {};
+  try {
+    globalThis.document = { querySelector: () => ({ textContent: "", checked: false }) };
+    globalThis.fetch = () => new Promise(resolve => pending.push(resolve));
+    const controller = createCapabilitiesController(dependencies);
+    const older = controller.loadCapabilities();
+    const latest = controller.loadCapabilities();
+    pending[1](new Response(JSON.stringify({ banners: [{ message: "Current notice" }], asrReady: true, model: "current" })));
+    await latest;
+    pending[0](new Response(JSON.stringify({ banners: [{ message: "Old notice" }], asrReady: false })));
+    await older;
+    assert.deepEqual(rendered, [[{ message: "Current notice" }]]);
+    assert.equal(dependencies.state.asrAvailable, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  }
+});

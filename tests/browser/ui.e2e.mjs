@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const webRoot = path.join(root, "web");
+const webRoot = process.env.WEB_ROOT ? path.resolve(process.env.WEB_ROOT) : path.join(root, "web");
 
 async function findChrome() {
   const candidates = [
@@ -1108,6 +1108,23 @@ async function verifyIndependentUiControllers(client) {
       const isolated = first.hidden && second.childElementCount === 1;
       a.renderBanners([{ ...notice, dismissible: false }]);
       const mandatory = !first.hidden && !first.querySelector("button");
+      const saved = new Map();
+      const storage = { getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value) };
+      const persistent = createBannerController({ container: first, document, storage });
+      persistent.renderBanners([{ id: "banner-1", type: "warning", message: "Persistent warning" }]);
+      first.querySelector("button").click();
+      const remounted = createBannerController({ container: first, document, storage });
+      remounted.renderBanners([{ id: "banner-2", type: "warning", message: "Persistent warning" }]);
+      const persisted = first.hidden;
+      remounted.renderBanners([{ id: "banner-2", type: "warning", message: "Changed warning" }]);
+      const changedContent = !first.hidden;
+      const unavailable = createBannerController({ container: first, document, storage: {
+        getItem() { throw new Error("blocked"); }, setItem() { throw new Error("quota"); }
+      } });
+      unavailable.renderBanners([notice]);
+      first.querySelector("button").click();
+      unavailable.renderBanners([notice]);
+      const blockedStorage = first.hidden;
       const timers = [];
       const toast = createToastController({ container: second, document, schedule: callback => timers.push(callback) });
       toast.showToast("<b>plain</b>", "success");
@@ -1143,7 +1160,7 @@ async function verifyIndependentUiControllers(client) {
       const restoredLower = !lower.inert && document.activeElement === lower.firstChild && document.body.style.overflow === "hidden";
       modals.closeManagedModal(lower);
       const restoredOpener = document.activeElement === opener && document.body.style.overflow === "";
-      return { literal, isolated, mandatory, toastLiteral, hiding, removed, stacked, trapped, restoredLower, restoredOpener };
+      return { literal, isolated, mandatory, persisted, changedContent, blockedStorage, toastLiteral, hiding, removed, stacked, trapped, restoredLower, restoredOpener };
     } finally {
       fixture.remove();
     }
@@ -2075,6 +2092,69 @@ async function verifyQwenLiveRevision(client) {
   await new Promise(resolve => setTimeout(resolve, 150));
 }
 
+async function waitCondition(client, expression) {
+  for (let attempt = 0; attempt < 160; attempt += 1) {
+    try { if (await evaluate(client, expression)) return; } catch (error) {
+      if (!/navigated|Execution context|Cannot find context/.test(String(error))) throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  throw new Error(`Browser condition not reached: ${expression}`);
+}
+
+async function verifyReportedAnnouncements(client) {
+  await client.send('Page.addScriptToEvaluateOnNewDocument', { source: recordingMocks });
+  await client.send('Page.addScriptToEvaluateOnNewDocument', { source: String.raw`
+    (() => {
+      const original = window.fetch;
+      window.__recordingTest.banners = [
+        { id: 'banner-1', type: 'warning', title: 'Warning', message: 'Synthetic warning' },
+        { id: 'banner-2', type: 'info', title: 'Info', message: 'Synthetic info' }
+      ];
+      window.confirm = () => true;
+      window.__bannerHealthCalls = 0;
+      window.fetch = async (input, options) => {
+        if (String(input).includes('/api/health')) {
+          window.__bannerHealthCalls += 1;
+          const result = await original(input, options);
+          const snapshot = await result.json();
+          if (window.__bannerHealthCalls > 1) await new Promise(resolve => setTimeout(resolve, 250));
+          return new Response(JSON.stringify(snapshot), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return original(input, options);
+      };
+    })()
+  ` });
+  await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
+  await client.send('Page.reload', { ignoreCache: true });
+  await waitForApp(client);
+  await waitCondition(client, `!document.querySelector('#startBtn').disabled && document.querySelectorAll('#bannersContainer .notice-banner').length === 2`);
+  await evaluate(client, `document.querySelector('#startBtn').click()`);
+  await waitCondition(client, `window.__bannerHealthCalls >= 2`);
+  await evaluate(client, `document.querySelectorAll('#bannersContainer .notice-banner-close').forEach(button => button.click())`);
+  await waitCondition(client, `window.__recordingTest.startMessages === 1 && !document.querySelector('#startBtn').disabled && document.querySelector('#startBtn .record-label').textContent === '停止'`);
+  assert.equal(await evaluate(client, `document.querySelectorAll('#bannersContainer .notice-warning, #bannersContainer .notice-info').length`), 0, 'warning and info dismissed during delayed recording-start health response must remain hidden');
+  await evaluate(client, `document.querySelector('#startBtn').click()`);
+  await waitCondition(client, `document.querySelector('#startBtn .record-label').textContent === '録音開始' && !document.querySelector('#startBtn').disabled`);
+  await evaluate(client, `window.__recordingTest.banners.reverse().forEach((notice, index) => { notice.id = 'banner-' + (index + 1); })`);
+  await evaluate(client, `document.querySelector('#startBtn').click()`);
+  await waitCondition(client, `window.__recordingTest.startMessages === 2 && !document.querySelector('#startBtn').disabled && document.querySelector('#startBtn .record-label').textContent === '停止'`);
+  assert.equal(await evaluate(client, `document.querySelectorAll('#bannersContainer .notice-banner').length`), 0, 'restart and positional-ID changes must not revive dismissed notices');
+  await evaluate(client, `document.querySelector('#startBtn').click()`);
+  await waitCondition(client, `document.querySelector('#startBtn .record-label').textContent === '録音開始' && !document.querySelector('#startBtn').disabled`);
+  await evaluate(client, `window.__recordingTest.banners.find(notice => notice.type === 'warning').message = 'Updated synthetic warning'`);
+  await evaluate(client, `document.querySelector('#startBtn').click()`);
+  await waitCondition(client, `window.__recordingTest.startMessages === 3 && !document.querySelector('#startBtn').disabled && document.querySelector('#startBtn .record-label').textContent === '停止'`);
+  assert.deepEqual(await evaluate(client, `Array.from(document.querySelectorAll('#bannersContainer .notice-banner-body'), node => node.textContent)`), ['Updated synthetic warning'], 'updated warning appears while the same info stays dismissed');
+  await evaluate(client, `document.querySelectorAll('#bannersContainer .notice-banner-close').forEach(button => button.click()); document.querySelector('#startBtn').click()`);
+  await waitCondition(client, `document.querySelector('#startBtn .record-label').textContent === '録音開始' && !document.querySelector('#startBtn').disabled`);
+  await evaluate(client, `document.querySelector('#clearBtn').click(); delete document.documentElement.dataset.whistxReady`);
+  await client.send('Page.reload', { ignoreCache: true });
+  await waitForApp(client);
+  await waitCondition(client, `window.__bannerHealthCalls === 1 && !document.querySelector('#startBtn').disabled`);
+  assert.equal(await evaluate(client, `document.querySelectorAll('#bannersContainer .notice-banner').length`), 0, 'same-tab reload retains warning and info dismissal');
+}
+
 const chrome = await findChrome();
 const profileDir = await mkdtemp(path.join(os.tmpdir(), "whistx-chrome-"));
 const { server, url } = await startStaticServer();
@@ -2106,6 +2186,9 @@ try {
     })()`,
   );
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyDesktopPanelLayout\n');
+  if (process.env.BANNER_REPRO_ONLY) {
+    await verifyReportedAnnouncements(client);
+  } else {
   await verifyDesktopPanelLayout(client);
   await verifyAssistantPreference(client);
   for (const width of [390, 640, 768, 1100]) {
@@ -2157,27 +2240,80 @@ try {
   await waitForApp(client);
   assert.equal(await evaluate(client, `document.documentElement.dataset.whistxReady`), "true");
   assert.equal(await evaluate(client, `document.querySelector('#language').value`), "", "Auto language must survive reload");
+  await verifyReportedAnnouncements(client);
   client.close();
   client = await connectPage(browserWebSocketUrl, 'about:blank');
   await client.send('Page.addScriptToEvaluateOnNewDocument', { source: recordingMocks });
   await client.send('Page.addScriptToEvaluateOnNewDocument', { source: String.raw`
     (() => {
       const original = window.fetch;
-      window.__signupTest = { signedIn: false, registered: false, logins: 0 };
-      const json = data => new Response(JSON.stringify(data), { headers: { 'Content-Type': 'application/json' } });
-      window.fetch = (input, options = {}) => {
+      window.__signupTest = { signedIn: false, registered: false, logins: 0, registrations: 0, mode: 'success', enabled: true };
+      const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
+      window.fetch = async (input, options = {}) => {
         const path = new URL(String(input), location.origin).pathname;
         const user = { id: 'new-user', email: 'new@example.test', displayName: 'New user', isAdmin: false };
-        if (path === '/api/auth/me') return Promise.resolve(json({ authenticated: window.__signupTest.signedIn,
-          user: window.__signupTest.signedIn ? user : null, selfSignupEnabled: true, bootstrapAdminRequired: false }));
-        if (path === '/api/auth/register') { window.__signupTest.registered = true; return Promise.resolve(json({ ok: true, pending: false, user })); }
-        if (path === '/api/auth/login') { window.__signupTest.signedIn = true; window.__signupTest.logins += 1; return Promise.resolve(json({ ok: true, user })); }
+        if (path === '/api/auth/me') {
+          if (window.__signupTest.mode === 'sessionFailure' && window.__signupTest.signedIn) return json({ error: 'synthetic_session_failure' }, 503);
+          return json({ authenticated: window.__signupTest.signedIn,
+            user: window.__signupTest.signedIn ? user : null, selfSignupEnabled: window.__signupTest.enabled, bootstrapAdminRequired: false });
+        }
+        if (path === '/api/auth/register') {
+          window.__signupTest.registrations += 1;
+          const mode = window.__signupTest.mode;
+          await new Promise(resolve => setTimeout(resolve, 180));
+          if (mode === 'duplicate') return json({ error: 'email_already_exists' }, 409);
+          if (mode === 'network') throw new TypeError('synthetic network failure');
+          if (mode === 'server') return json({ error: 'synthetic_server_failure' }, 503);
+          if (mode === 'malformed') return json({});
+          window.__signupTest.registered = true;
+          return json({ ok: true, pending: false, user });
+        }
+        if (path === '/api/auth/login') {
+          window.__signupTest.logins += 1;
+          if (window.__signupTest.mode === 'loginFailure') return json({ error: 'synthetic_login_failure' }, 401);
+          window.__signupTest.signedIn = true;
+          return json({ ok: true, user });
+        }
         return original(input, options);
       };
     })()
   ` });
   await client.send('Page.navigate', { url });
   await waitForApp(client);
+  await waitCondition(client, `!document.querySelector('#registrationLink').hidden && !document.querySelector('#authLoginSection').hidden`);
+  assert.equal(await evaluate(client, `document.querySelector('#authRegisterSection').hidden`), true, 'login is a separate screen');
+  await evaluate(client, `document.querySelector('#registrationLink').focus()`);
+  await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await waitCondition(client, `!document.querySelector('#authRegisterSection').hidden && document.querySelector('#authLoginSection').hidden`);
+  await evaluate(client, `document.querySelector('#registerDisplayName').value = 'New user'; history.back()`);
+  await waitCondition(client, `!document.querySelector('#authLoginSection').hidden`);
+  await evaluate(client, `history.forward()`);
+  await waitCondition(client, `!document.querySelector('#authRegisterSection').hidden`);
+  assert.equal(await evaluate(client, `document.querySelector('#registerDisplayName').value`), 'New user', 'Back/Forward preserves signup input');
+  for (const [mode, text] of [['duplicate', '既に登録'], ['network', '登録結果を確認できません'], ['server', '失敗'], ['malformed', '登録結果を確認できません']]) {
+    await evaluate(client, `window.__signupTest.mode = ${JSON.stringify(mode)}; document.querySelector('#registerEmail').value = 'new@example.test'; document.querySelector('#registerPassword').value = 'SyntheticPassword123!'; document.querySelector('#registerBtn').click(); document.querySelector('#registerBtn').click()`);
+    await waitCondition(client, `!document.querySelector('#registerBtn').disabled && document.querySelector('#authFlowStatus').textContent.includes(${JSON.stringify(text)})`);
+    assert.equal(await evaluate(client, `document.querySelector('#authFlowStatus').dataset.kind`), 'error');
+    assert.equal(await evaluate(client, `window.__signupTest.logins`), 0, 'failed registration does not attempt login');
+    assert.equal(await evaluate(client, `document.querySelector('#registerPassword').value`), 'SyntheticPassword123!', 'failed signup preserves input');
+  }
+  assert.equal(await evaluate(client, `window.__signupTest.registrations`), 4, 'double submits send only one registration request');
+  for (const mode of ['loginFailure', 'sessionFailure']) {
+    await evaluate(client, `window.__signupTest.mode = ${JSON.stringify(mode)}; document.querySelector('#registerBtn').click()`);
+    await waitCondition(client, `location.hash === '#login' && document.querySelector('#authFlowStatus').textContent.includes('自動ログインを確認できません')`);
+    assert.equal(await evaluate(client, `document.body.classList.contains('whistx-auth-locked')`), true, 'unconfirmed login keeps workspace locked');
+    assert.equal(await evaluate(client, `document.querySelector('#accountStatus').hidden`), true, 'unconfirmed login never displays workspace success');
+    await evaluate(client, `window.__signupTest.signedIn = false; document.querySelector('#registrationLink').click(); document.querySelector('#registerPassword').value = 'SyntheticPassword123!'`);
+    await waitCondition(client, `!document.querySelector('#authRegisterSection').hidden`);
+  }
+  await evaluate(client, `window.__signupTest.mode = 'success'; document.querySelector('#registerBtn').click()`);
+  await waitCondition(client, `document.querySelector('#registerBtn').disabled`);
+  await evaluate(client, `document.querySelector('#registrationBackLink').click()`);
+  await waitCondition(client, `!document.querySelector('#registerBtn').disabled`);
+  assert.equal(await evaluate(client, `window.__signupTest.logins`), 2, 'leaving signup during processing prevents automatic login');
+  await evaluate(client, `document.querySelector('#registrationLink').click(); window.__signupTest.registrations = 0; window.__signupTest.logins = 0`);
+
   // Wiring is ready before async auth bootstrap. Wait for the registration UI
   // to be available to a real user before submitting once.
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -2189,8 +2325,11 @@ try {
     document.querySelector('#registerEmail').value = 'new@example.test';
     document.querySelector('#registerPassword').value = 'SyntheticPassword123!';
     document.querySelector('#registerDisplayName').value = 'New user';
-    document.querySelector('#registerBtn').click();
+    document.querySelector('#registerPassword').focus();
   })()`);
+  await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await waitCondition(client, `!document.querySelector('#accountStatus').hidden && document.querySelector('#accountStatus').textContent.includes('ログインしました。')`);
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (await evaluate(client, `window.__signupTest.signedIn && !document.body.classList.contains('whistx-auth-locked')`)) break;
     await new Promise(resolve => setTimeout(resolve, 30));
@@ -2198,7 +2337,30 @@ try {
   assert.equal(await evaluate(client, `window.__signupTest.registered && window.__signupTest.logins === 1`), true);
   assert.equal(await evaluate(client, `document.body.classList.contains('whistx-auth-locked')`), false, 'signup unlocks the workspace immediately');
   assert.equal(await evaluate(client, `document.querySelector('#registerPassword').value`), '');
+  assert.equal(await evaluate(client, `document.querySelector('#accountStatus').textContent`), 'ユーザー登録が完了しました。ログインしました。');
+  assert.equal(await evaluate(client, `document.querySelector('#accountStatus').hidden`), false);
   assert.equal(await evaluate(client, `document.querySelector('#adminQueueBadge').hidden || document.querySelector('#adminQueueBadge').closest('[hidden]') !== null`), true);
+  client.close();
+  client = await connectPage(browserWebSocketUrl, 'about:blank');
+  await client.send('Page.addScriptToEvaluateOnNewDocument', { source: recordingMocks });
+  await client.send('Page.addScriptToEvaluateOnNewDocument', { source: String.raw`
+    (() => {
+      const original = window.fetch;
+      window.__disabledSignupPosts = 0;
+      window.fetch = (input, options) => {
+        const path = new URL(String(input), location.origin).pathname;
+        if (path === '/api/auth/me') return Promise.resolve(new Response(JSON.stringify({ authenticated: false, selfSignupEnabled: false, bootstrapAdminRequired: false }), { headers: { 'Content-Type': 'application/json' } }));
+        if (path === '/api/auth/register') window.__disabledSignupPosts += 1;
+        return original(input, options);
+      };
+    })()
+  ` });
+  await client.send('Page.navigate', { url: url + '#register' });
+  await waitForApp(client);
+  await waitCondition(client, `!document.querySelector('#authLoginSection').hidden && document.querySelector('#authFlowStatus').textContent.includes('無効')`);
+  assert.equal(await evaluate(client, `document.querySelector('#registrationLink').hidden && document.querySelector('#authRegisterSection').hidden && document.querySelector('#registerBtn').disabled`), true, 'disabled signup has no registration screen or enabled submit');
+  await evaluate(client, `document.querySelector('#registerBtn').click()`);
+  assert.equal(await evaluate(client, `window.__disabledSignupPosts`), 0);
   client.close();
   const adminUrl = new URL('/admin.html', url).href;
   client = await connectPage(browserWebSocketUrl, 'about:blank');
@@ -2258,6 +2420,7 @@ try {
   for (const width of [390, 1100]) {
     await client.send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width === 390 });
     assert.equal(await evaluate(client, `Array.from(document.querySelectorAll('.admin-pagination')).every(el => el.scrollWidth <= el.clientWidth + 1)`), true);
+  }
   }
   process.stdout.write("Browser UI, recording lifecycle, and admin paging checks passed.\n");
 } catch (error) {
