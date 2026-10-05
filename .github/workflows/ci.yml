@@ -133,6 +133,18 @@ jobs:
         run: python -m unittest tests.test_quota_concurrency
         env:
           QUOTA_TEST_DB_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/whistx
+      - name: Synthetic search and artifact cleanup integration
+        env:
+          WHISTX_PG_TEST_DB_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/whistx_test
+        run: |
+          python - <<'PYCODE'
+          import os
+          import psycopg
+          with psycopg.connect(os.environ['APP_DB_URL'].replace('postgresql+psycopg:', 'postgresql:'), autocommit=True) as connection:
+              connection.execute('CREATE DATABASE whistx_test')
+          PYCODE
+          APP_DB_URL="$WHISTX_PG_TEST_DB_URL" alembic upgrade head
+          python -m unittest tests.test_postgres_integration
       - name: Migrate and start with PostgreSQL
         run: |
           alembic upgrade head
@@ -207,6 +219,7 @@ jobs:
         env:
           CHROME_BIN: /usr/bin/google-chrome
           BROWSER_ARTIFACT_DIR: artifacts/browser
+          BROWSER_DEBUG: "1"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

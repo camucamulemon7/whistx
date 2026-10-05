@@ -21,9 +21,9 @@
       })();
     </script>
     <title>whistx 管理画面</title>
-    <link rel="stylesheet" href="/style.css?v=20260727" />
+    <link rel="stylesheet" href="/style.css?v=20261004" />
     <link rel="stylesheet" href="/admin.css?v=20260322b" />
-    <script type="module" src="/admin.js?v=20260322b"></script>
+    <script type="module" src="/admin.js?v=20261004"></script>
   </head>
   <body>
     <div class="admin-app">
@@ -52,7 +52,10 @@
           <label>ASR 接続先<input name="ASR_BASE_URL" type="url" required /></label>
           <label>ASR モデル<input name="ASR_MODEL" required /></label>
           <label>ASR APIキー<input name="ASR_API_KEY" type="password" autocomplete="new-password" /></label>
-          <label>要約 接続先<input name="SUMMARY_BASE_URL" type="url" required /></label>
+          <label>OpenWebUI URL<input name="OPENWEBUI_BASE_URL" type="url" placeholder="http://localhost:3000" /></label>
+          <label>OpenWebUI 生成用APIキー<input name="OPENWEBUI_API_KEY" type="password" autocomplete="new-password" /></label>
+          <p>OpenWebUI URLを設定すると生成処理はそのAPIを使用します。Notes保存には各利用者自身のOpenWebUI認証を使用します。</p>
+          <label>要約 接続先（OpenWebUI未設定時）<input name="SUMMARY_BASE_URL" type="url" /></label>
           <label>要約 モデル<input name="SUMMARY_MODEL" required /></label>
           <label>要約 APIキー<input name="SUMMARY_API_KEY" type="password" autocomplete="new-password" /></label>
           <button type="submit" class="admin-primary-btn">設定を保存</button>
@@ -71,6 +74,11 @@
               <span id="pendingCount" class="admin-chip">0</span>
             </summary>
             <div id="pendingList" class="admin-list"></div>
+            <nav class="admin-pagination" aria-label="承認待ちのページ">
+              <button id="pendingPrev" type="button" class="admin-link-btn" disabled>前へ</button>
+              <span id="pendingRange" role="status"></span>
+              <button id="pendingNext" type="button" class="admin-link-btn" disabled>次へ</button>
+            </nav>
           </details>
         </section>
 
@@ -91,6 +99,7 @@
               class="admin-search-input"
               type="search"
               name="q"
+              maxlength="200"
               placeholder="表示名またはメールアドレスで検索"
               autocomplete="off"
             />
@@ -115,6 +124,11 @@
           </div>
 
           <div id="userCards" class="admin-user-cards"></div>
+          <nav class="admin-pagination" aria-label="ユーザー一覧のページ">
+            <button id="usersPrev" type="button" class="admin-link-btn" disabled>前へ</button>
+            <span id="usersRange" role="status"></span>
+            <button id="usersNext" type="button" class="admin-link-btn" disabled>次へ</button>
+          </nav>
         </section>
       </main>
     </div>

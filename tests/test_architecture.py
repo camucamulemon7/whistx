@@ -22,7 +22,6 @@ SERVER = ROOT / "server"
 # Temporary composition boundaries. Route modules not listed here must depend on
 # services rather than the legacy runtime module.
 RUNTIME_IMPORT_ALLOWLIST = {
-    "server/api/routes/auth.py",  # OIDC coordinator
     "server/api/routes/health.py",  # runtime resource readiness
     "server/api/routes/summary.py",  # model resources
     "server/api/ws/transcribe.py",  # live transcription coordinator
@@ -30,6 +29,12 @@ RUNTIME_IMPORT_ALLOWLIST = {
 }
 
 REMOVED_RUNTIME_HANDLERS = {
+    "auth_keycloak_login",
+    "auth_keycloak_callback",
+    "health",
+    "summarize",
+    "proofread",
+    "proofread_stream",
     "admin_approve_pending_user",
     "admin_pending_users",
     "admin_update_user_role",
@@ -137,7 +142,23 @@ class ArchitectureTests(unittest.TestCase):
 
     def test_runtime_remains_below_composition_boundary_budget(self) -> None:
         line_count = len((SERVER / "runtime.py").read_text(encoding="utf-8").splitlines())
-        self.assertLessEqual(line_count, 1_500)
+        self.assertLessEqual(line_count, 240)
+
+    def test_services_do_not_depend_on_runtime(self) -> None:
+        violations = [
+            path.relative_to(ROOT).as_posix()
+            for path in sorted((SERVER / "services").rglob("*.py"))
+            if _imports_runtime(ast.parse(path.read_text(encoding="utf-8")))
+        ]
+        self.assertEqual(violations, [])
+
+    def test_transcription_modules_do_not_import_runtime(self) -> None:
+        violations = [
+            path.relative_to(ROOT).as_posix()
+            for path in sorted((SERVER / "transcription").rglob("*.py"))
+            if _imports_runtime(ast.parse(path.read_text(encoding="utf-8")))
+        ]
+        self.assertEqual(violations, [])
 
     def test_services_do_not_depend_on_api_routes(self) -> None:
         violations: list[str] = []

@@ -39,7 +39,8 @@ MAX_MEETING_SAMPLES = 4 * 60 * 60 * SAMPLE_RATE
 
 
 class LiveMeeting:
-    def __init__(self, ws: WebSocket, payload: dict):
+    def __init__(self, ws: WebSocket, payload: dict, *, resources=None):
+        self.resources = resources
         self.ws = ws
         self.wake = asyncio.Event()
         self.stopping = False
@@ -114,7 +115,7 @@ class LiveMeeting:
         if resume:
             self.data = read_json(self.state_path)
         self.next_seq = max((int(row.get("seq", -1)) for row in self.records if row.get("type") == "final"), default=-1) + 1
-        self.audio_dir = build_debug_chunks_dir(settings.debug_chunks_dir, self.session_id)
+        self.audio_dir = build_debug_chunks_dir(settings.debug_chunks_dir.resolve(), self.session_id)
         # Preserve the original dated audio folder when resuming on another day.
         existing = self.data.get("audioDir")
         if existing:
@@ -122,7 +123,7 @@ class LiveMeeting:
             if candidate.is_relative_to(settings.debug_chunks_dir.resolve()):
                 self.audio_dir = candidate
         self.audio_dir.mkdir(parents=True, exist_ok=True)
-        self.data["audioDir"] = str(self.audio_dir.relative_to(settings.debug_chunks_dir.resolve())) if self.audio_dir.is_absolute() else str(self.audio_dir.relative_to(settings.debug_chunks_dir))
+        self.data["audioDir"] = str(self.audio_dir.relative_to(settings.debug_chunks_dir.resolve()))
         self.transcriber = self.create_transcriber()
         write_json_atomic(self.state_path, self.data)
 
@@ -317,9 +318,9 @@ class LiveMeeting:
             await blocking_work_pool.run("artifact", write_json_atomic, self.state_path, copy.deepcopy(self.data))
 
     async def diarize(self):
-        from .. import runtime
         from ..diarizer import AudioChunk
-        if not self.data.get("diarizationRequested") or runtime.DIARIZER is None:
+        from ..services.diarization_service import pick_speaker
+        if not self.data.get("diarizationRequested") or self.resources is None or self.resources.diarizer is None:
             return
         await self.send({"type": "info", "message": "diarization_started"})
         patches = []
@@ -331,11 +332,11 @@ class LiveMeeting:
                 chunks = [AudioChunk(seq=row["seq"], path=self.audio_dir / Path(row.get("rawAudioPath") or f"raw-{row['seq']:06d}.wav").name,
                                      offset_ms=row["chunkOffsetMs"], duration_ms=row["chunkDurationMs"]) for row in rows]
                 counts = self.data.get("speakerCounts", [0, 0, 0])
-                turns = await blocking_work_pool.run("diarization", runtime.DIARIZER.diarize,
+                turns = await blocking_work_pool.run("diarization", self.resources.diarizer.diarize,
                     session_id=f"{self.session_id}-{track}", chunks=chunks, work_dir=settings.diarization_work_dir,
                     num_speakers=counts[0], min_speakers=counts[1], max_speakers=counts[2])
                 for row in rows:
-                    speaker = runtime._pick_speaker(turns, row["tsStart"], row["tsEnd"])
+                    speaker = pick_speaker(turns, row["tsStart"], row["tsEnd"])
                     if speaker:
                         row["speaker"] = ("共有音声 · " if track == "display" else "") + speaker
                         patches.append({"seq": row["seq"], "speaker": row["speaker"]})
@@ -388,7 +389,7 @@ def vars_record(record):
     return asdict(record)
 
 
-async def live_transcribe(ws: WebSocket):
+async def live_transcribe(ws: WebSocket, *, resources=None):
     await ws.accept()
     meeting = None
     worker = None
@@ -401,7 +402,7 @@ async def live_transcribe(ws: WebSocket):
             raise MeetingError(error)
         from .qwen_live import QwenLiveMeeting
         meeting_class = QwenLiveMeeting if settings.asr_backend == "qwen3_vllm" else LiveMeeting
-        meeting = await blocking_work_pool.run("artifact", meeting_class, ws, initial)
+        meeting = await blocking_work_pool.run("artifact", meeting_class, ws, initial, resources=resources)
         await meeting.send({"type": "info", "message": "ready", "protocolVersion": 2, "asrBackend": settings.asr_backend,
                             "tracks": {key: {"seq": value["seq"], "samples": value["received"]} for key, value in meeting.data["tracks"].items()},
                             "records": [row for row in meeting.records if row.get("type") == "final"],

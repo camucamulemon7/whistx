@@ -8,6 +8,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from ... import runtime
+from ...services import health_service
 from ...core.config import settings
 from ...core.logging import emit_container_log
 from ...db import schema_revision_status
@@ -49,9 +50,9 @@ async def _readiness_response() -> JSONResponse:
                 },
             },
         )
-    response = await runtime.health()
+    response = await health_service.health(resources=runtime.resources)
     provider_required = bool(settings.openai_api_key)
-    provider_ready = runtime.TRANSCRIBER_FACTORY is not None
+    provider_ready = runtime.resources.transcriber_factory is not None
     payload = json.loads(response.body)
     payload.update(
         {

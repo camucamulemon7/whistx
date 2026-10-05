@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from server import auth as auth_module
-from server import runtime
+from server.services import oidc_flow as runtime
 from server.schemas import LoginRequest
 from server.api.routes import auth as auth_routes
 from server.api.routes import summary as summary_routes
@@ -274,7 +274,9 @@ class RegressionTests(unittest.TestCase):
 
 
     def test_keycloak_login_respects_forwarded_https_headers(self) -> None:
+        from server.core.runtime_resources import RuntimeResources
         app = FastAPI()
+        app.state.runtime_resources = RuntimeResources()
         app.include_router(auth_routes.router)
 
         with (

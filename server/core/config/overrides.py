@@ -11,8 +11,9 @@ FIELDS = {
     'HISTORY_RETENTION_DAYS', 'ENABLE_SELF_SIGNUP', 'ALLOW_GUEST_TRANSCRIPTION',
     'ASR_BACKEND', 'ASR_BASE_URL', 'ASR_MODEL', 'ASR_API_KEY',
     'SUMMARY_BASE_URL', 'SUMMARY_MODEL', 'SUMMARY_API_KEY',
+    'OPENWEBUI_BASE_URL', 'OPENWEBUI_API_KEY',
 }
-SECRETS = {'ASR_API_KEY', 'SUMMARY_API_KEY'}
+SECRETS = {'ASR_API_KEY', 'SUMMARY_API_KEY', 'OPENWEBUI_API_KEY'}
 
 
 def overrides_path() -> Path:
@@ -39,6 +40,9 @@ def validate(values: dict) -> dict:
         if key == 'ASR_BACKEND' and value not in {'whisper', 'qwen3_vllm'}:
             raise ValueError('invalid_backend')
         if key.endswith('_BASE_URL'):
+            if not value and key in {'OPENWEBUI_BASE_URL', 'SUMMARY_BASE_URL'}:
+                result[key] = ''
+                continue
             url = urlsplit(value)
             if url.scheme not in {'http', 'https'} or not url.hostname or url.username or url.password or url.query or url.fragment:
                 raise ValueError('invalid_url')
@@ -54,7 +58,7 @@ def load_overrides() -> None:
     os.environ.update(validate(read_overrides()))
     gateway = os.getenv('APP_CONTAINER_HOST_GATEWAY', '').strip()
     if gateway:
-        for key in ('ASR_BASE_URL', 'SUMMARY_BASE_URL', 'PROOFREAD_BASE_URL'):
+        for key in ('ASR_BASE_URL', 'SUMMARY_BASE_URL', 'PROOFREAD_BASE_URL', 'OPENWEBUI_BASE_URL'):
             value = os.environ.get(key, '')
             parsed = urlsplit(value)
             if parsed.hostname in {'localhost', '127.0.0.1', '::1'} and not parsed.username and not parsed.password:

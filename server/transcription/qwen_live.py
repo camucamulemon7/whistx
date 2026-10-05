@@ -24,8 +24,8 @@ class QwenLiveMeeting(LiveMeeting):
     def create_transcriber(self):
         return None
 
-    def __init__(self, ws, payload):
-        super().__init__(ws, payload)
+    def __init__(self, ws, payload, *, resources=None):
+        super().__init__(ws, payload, resources=resources)
         try:
             backend = self.data.get('asrBackend')
             if payload.get('resumeSessionId') and backend != 'qwen3_vllm':

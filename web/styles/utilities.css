@@ -1,0 +1,410 @@
+
+
+/* --------------------------------------------------------------------------
+   Toast - Premium Notifications
+   -------------------------------------------------------------------------- */
+.toast-container {
+  position: fixed;
+  top: var(--space-6);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+  pointer-events: auto;
+  animation: toastIn var(--duration-300) var(--ease-out-expo);
+}
+
+.toast.success {
+  background: var(--success-bg);
+  border-color: rgba(34, 197, 94, 0.2);
+  color: var(--gray-800);
+}
+
+.toast.error {
+  background: var(--error-bg);
+  border-color: rgba(239, 68, 68, 0.2);
+  color: var(--gray-800);
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.toast.hiding {
+  animation: toastOut var(--duration-200) var(--ease-in-out) forwards;
+}
+
+@keyframes toastOut {
+  to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.95);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Animations - Reveal
+   -------------------------------------------------------------------------- */
+.reveal {
+  opacity: 1;
+  transform: none;
+}
+
+.reveal.delay-1 { animation-delay: 0ms; }
+.reveal.delay-2 { animation-delay: 0ms; }
+.reveal.delay-3 { animation-delay: 0ms; }
+
+@keyframes reveal {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Responsive - Adaptive Excellence
+   -------------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+   Refined Enhancements - Quiet Confidence
+   Subtle polish that serves function, not decoration.
+   -------------------------------------------------------------------------- */
+
+/* Recording Active State - Subtle Opacity Pulse Only */
+.record-btn.is-recording .record-btn-inner {
+  animation: recordPulse 2s ease-in-out infinite;
+}
+
+@keyframes recordPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.85; }
+}
+
+/* Button Inner Icon Container */
+.record-btn-inner {
+  position: relative;
+}
+
+/* Premium Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--gray-300);
+  border-radius: var(--radius-full);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-400);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: var(--gray-700);
+}
+
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-600);
+}
+
+/* Smooth Image Rendering */
+img, svg {
+  image-rendering: -webkit-optimize-contrast;
+}
+
+/* Premium Input States */
+.select-wrapper select:focus,
+.setting-number-input:focus,
+.chunk-input:focus,
+.prompt-section textarea:focus {
+  box-shadow:
+    0 0 0 1px var(--accent-500),
+    0 0 0 4px rgba(47, 125, 115, 0.12);
+}
+
+/* Premium Toast Shadow */
+.toast {
+  box-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.08),
+    0 10px 20px -5px rgba(0, 0, 0, 0.12),
+    0 0 0 1px rgba(0, 0, 0, 0.03);
+}
+
+html[data-theme="dark"] .toast {
+  box-shadow:
+    0 4px 6px -1px rgba(0, 0, 0, 0.3),
+    0 10px 20px -5px rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+/* Log Row Hover State */
+.log-row {
+  transition: background-color var(--duration-150) var(--ease-out-quart),
+              transform var(--duration-150) var(--ease-out-quart);
+}
+
+.log-row:hover {
+  background: var(--bg-secondary);
+}
+
+/* Speaker Badge Enhancement */
+.speaker-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  background: var(--accent-50);
+  color: var(--accent-700);
+  border-radius: var(--radius-sm);
+  margin-right: var(--space-2);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-theme="dark"] .speaker-badge {
+  background: rgba(47, 125, 115, 0.12);
+  color: var(--accent-300);
+}
+
+/* Skeleton Loading State */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-tertiary) 0%,
+    var(--bg-secondary) 50%,
+    var(--bg-tertiary) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--radius-md);
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Print Styles */
+@media print {
+  .header,
+  .settings-panel,
+  .record-section,
+  .downloads-bar,
+  .panel-actions,
+  .toast-container {
+    display: none !important;
+  }
+
+  .glass-panel {
+    box-shadow: none;
+    border: 1px solid #ddd;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Audio Level Indicator - Visual Feedback
+   -------------------------------------------------------------------------- */
+.audio-level-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 40px;
+  margin-top: var(--space-3);
+}
+
+.audio-level-indicator[hidden] {
+  display: none;
+}
+
+.audio-level-shell {
+  width: 100%;
+  max-width: 220px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: 999px;
+}
+
+.audio-level-label {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  color: var(--text-tertiary);
+  letter-spacing: 0.08em;
+}
+
+.audio-level-matrix {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 2px;
+  height: 26px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.audio-level-column {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+}
+
+.audio-level-stack {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 2px;
+  height: 100%;
+  width: 100%;
+}
+
+.audio-level-cell {
+  width: 100%;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+  transition: background-color 90ms linear, opacity 90ms linear, transform 90ms linear;
+  opacity: 0.5;
+}
+
+.audio-level-cell.is-active {
+  background: #0f172a;
+  opacity: 1;
+  transform: translateZ(0);
+}
+
+.record-section:has(.record-btn.is-recording) .audio-level-cell.is-active {
+  background: #b91c1c;
+}
+
+html[data-theme="dark"] .audio-level-shell {
+  background: var(--gray-900);
+  border-color: var(--gray-700);
+}
+
+html[data-theme="dark"] .audio-level-label {
+  color: var(--text-tertiary);
+}
+
+html[data-theme="dark"] .audio-level-cell {
+  background: rgba(71, 85, 105, 0.34);
+}
+
+html[data-theme="dark"] .audio-level-cell.is-active {
+  background: var(--gray-50);
+}
+
+html[data-theme="dark"] .record-section:has(.record-btn.is-recording) .audio-level-cell.is-active {
+  background: #fca5a5;
+}
+
+/* Brand Icon - Static, No Animation */
+.brand-icon {
+  position: relative;
+  border-radius: var(--radius-lg);
+}
+/* Hide pulse element entirely */
+.brand-icon-pulse {
+  display: none;
+}
+
+/* Recording Active Brand Icon */
+.record-section:has(.record-btn.is-recording) ~ .header .brand-icon-pulse,
+body:has(.record-btn.is-recording) .brand-icon-pulse {
+  animation: brandPulseRecord 1s ease-out infinite;
+}
+
+@keyframes brandPulseRecord {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+    background: rgba(239, 68, 68, 0.5);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+    background: rgba(239, 68, 68, 0);
+    box-shadow: 0 0 0 30px rgba(239, 68, 68, 0);
+  }
+}
+
+/* Premium Segment Counter Animation */
+#segmentCount {
+  transition: transform var(--duration-150) var(--ease-spring);
+}
+
+#segmentCount.updated {
+  animation: countPop 300ms var(--ease-spring);
+}
+
+@keyframes countPop {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+/* Smooth Dark Mode Transition */
+html {
+  color-scheme: light;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+body,
+.glass-panel,
+.status-item,
+.select-wrapper select,
+.setting-number-input,
+.chunk-input,
+.prompt-section textarea,
+.log-row {
+  transition:
+    background-color var(--duration-200) var(--ease-out-quart),
+    border-color var(--duration-200) var(--ease-out-quart),
+    color var(--duration-200) var(--ease-out-quart);
+}

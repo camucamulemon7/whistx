@@ -9,6 +9,7 @@ from ..auth import approve_user
 from ..core.security import serialize_user
 from ..models import User
 from ..repositories import user_repository
+from ..repositories.search import normalize_query
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ class AdminServiceError(Exception):
         self.status_code = status_code
 
 
-def list_pending_users_payload(db: Session) -> dict[str, Any]:
+def list_pending_users_payload(db: Session, *, limit: int = 50, offset: int = 0) -> dict[str, Any]:
     items = [
         {
             'id': item.id,
@@ -28,9 +29,9 @@ def list_pending_users_payload(db: Session) -> dict[str, Any]:
             'displayName': item.display_name,
             'createdAt': item.created_at.isoformat(),
         }
-        for item in user_repository.list_pending_users(db)
+        for item in user_repository.list_pending_users(db, limit=limit, offset=offset)
     ]
-    return {'items': items}
+    return {'items': items, 'total': user_repository.count_pending_users(db), 'limit': limit, 'offset': offset}
 
 
 def approve_pending_user(db: Session, *, pending_user_id: int, admin: User) -> dict[str, Any]:
@@ -42,7 +43,7 @@ def approve_pending_user(db: Session, *, pending_user_id: int, admin: User) -> d
     return {'ok': True, 'user': serialize_user(pending_user)}
 
 
-def list_users_payload(db: Session, *, query: str = '') -> dict[str, Any]:
+def list_users_payload(db: Session, *, query: str = '', limit: int = 50, offset: int = 0) -> dict[str, Any]:
     items = [
         {
             'id': item.id,
@@ -54,9 +55,9 @@ def list_users_payload(db: Session, *, query: str = '') -> dict[str, Any]:
             'lastLoginAt': item.last_login_at.isoformat() if item.last_login_at else None,
             'approvedAt': item.approved_at.isoformat() if item.approved_at else None,
         }
-        for item in user_repository.search_users(db, query=query)
+        for item in user_repository.search_users(db, query=query, limit=limit, offset=offset)
     ]
-    return {'items': items, 'query': query.strip()}
+    return {'items': items, 'query': normalize_query(query), 'total': user_repository.count_matching_users(db, query=query), 'limit': limit, 'offset': offset}
 
 
 def update_user_role(db: Session, *, user_id: int, role: str) -> dict[str, Any]:

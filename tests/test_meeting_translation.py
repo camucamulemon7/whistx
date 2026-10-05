@@ -68,7 +68,7 @@ class TranslationTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(router)
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=123)
-        with TestClient(app) as client, patch('server.api.routes.summary._meeting_source', AsyncMock(return_value=self.snapshot)) as source, patch('server.api.routes.summary._allow_costly_request', return_value=True), patch('server.api.routes.summary.runtime.SUMMARIZER', self.model):
+        with TestClient(app) as client, patch('server.api.routes.summary._meeting_source', AsyncMock(return_value=self.snapshot)) as source, patch('server.api.routes.summary._allow_costly_request', return_value=True), patch('server.api.routes.summary.runtime.resources.summarizer', self.model):
             response = client.post('/api/meeting/translate', json={'runtimeSessionId':'test','language':'en'})
             self.assertEqual(response.status_code, 200)
             events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]

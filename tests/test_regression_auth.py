@@ -185,10 +185,10 @@ class RegressionTests(unittest.TestCase):
         )
         client = TestClient(app)
 
-        async def fake_summarize(payload):
+        async def fake_summarize(payload, *, summarizer, observer):
             return summary_routes.JSONResponse({'summary': payload.text, 'model': 'test'})
 
-        with patch.object(summary_routes.runtime, 'summarize', side_effect=fake_summarize):
+        with patch.object(summary_routes.summary_service, 'summarize', side_effect=fake_summarize):
             response = client.post('/api/summarize', json={'text': 'hello', 'language': 'ja'})
 
         self.assertEqual(response.status_code, 200)
@@ -321,7 +321,8 @@ class RegressionTests(unittest.TestCase):
             ),
         ]
 
-        with patch.object(admin_service.user_repository, 'search_users', return_value=[users[0]]) as search_mock:
+        with patch.object(admin_service.user_repository, 'search_users', return_value=[users[0]]) as search_mock, \
+             patch.object(admin_service.user_repository, 'count_matching_users', return_value=1):
             payload = admin_service.list_users_payload(SimpleNamespace(), query='alice')
 
         self.assertEqual(payload['query'], 'alice')

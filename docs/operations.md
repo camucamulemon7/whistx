@@ -32,3 +32,70 @@ Run before a release that changes storage/schema and on the operator's scheduled
 3. Restore artifact permissions for the container runtime user. Start the matching application commit and verify that the owner can open/download the saved recording and the other user cannot. Replay subsequent deletion records and verify deleted material is inaccessible.
 4. Stop the disposable server, run `make migrate` at the candidate commit, start it, and perform the release smoke checks. Exercise rollback to the matched backup/image as described above.
 5. Record backup age, restore duration, checksums, missing artifacts, test results, and whether the deployment's recovery-time and recovery-point targets were met. Remove the disposable data after review according to retention policy.
+
+## Artifact deletion and reconciliation
+
+Migration `20260913_0008` adds a deletion outbox. User deletion and retention expiry remove the history row and enqueue cleanup in the same transaction. Files are removed only after that transaction commits. A filesystem failure leaves the request with an attempt count and error class; the periodic cleanup worker retries batches of 100. Requests with fewer attempts run first so permanently invalid paths do not starve new requests. Missing files are treated as already deleted. PostgreSQL workers lock queue rows, and repeated execution is safe. Do not downgrade this migration with pending requests: first resolve/drain the queue or retain a backup of it.
+
+`python -m server.storage_cli` is a read-only audit. It detects missing transcript files, unreferenced history directories, staging directories older than 24 hours, and abandoned ZIP exports in the application-owned `_exports` directory. Scheduled cleanup runs the same read-only scan and logs counts, along with pending deletion count and oldest pending age in seconds. These are structured log metrics for the operator's collector; paths and history IDs are restricted diagnostic metadata.
+
+To retry durable deletions immediately, run `python -m server.storage_cli --retry-deletions`. To quarantine old unreferenced data, stop all application and cleanup processes, then run `python -m server.storage_cli --apply --offline`. This command rechecks references, moves only recognized paths under the configured history root, and writes a manifest under `_quarantine/TIMESTAMP/`. It never deletes a database row for missing files and never moves fresh or referenced data. Restore missing artifacts from the matching backup while offline; if irrecoverable, have the owner delete the history normally. Paths outside the root, ownership mismatches, and symlinks require manual investigation, not automatic deletion.
+
+Retain quarantine for at least seven days for review. The operator then checks the manifest against backups and deletion policy, records approval in the restricted change log, and removes only that reviewed quarantine directory. There is no automatic quarantine purge. A mistaken quarantine can be restored offline to its manifest path after confirming that no newer data occupies it. Legacy ZIP files created in the OS-wide temp directory before this migration are excluded from automatic cleanup; review them separately with process ownership evidence.
+
+## Search and administration paging
+
+User and pending-user APIs return `items`, `total`, `limit` and `offset` (default 50,
+maximum 100). History keeps its existing 20/100 paging. Results use ID tie-breakers
+for equal timestamps. Searches are trimmed, limited to 200 characters and treat
+`%`, `_` and backslash literally. The admin page preserves the previous successful
+page on failure and exposes previous/next controls and total counts.
+
+Migration `20261004_0009` adds admin ordering indexes on both databases and GIN
+trigram indexes for history title/text and user email/display name on PostgreSQL.
+The migration role must be able to install the trusted `pg_trgm` extension, or the
+DB operator must preinstall it. SQLite keeps literal substring matching without
+trigram acceleration. Apply during a planned migration window: ordinary index
+creation can block writes on existing production tables. Downgrade removes only
+our indexes and leaves the shared extension installed.
+
+SQLite tests exercise 2,100 synthetic users and 1,100 synthetic histories with
+bounded results, totals, literal matching and stable ordering. This is not a
+production throughput measurement. PostgreSQL index SQL was generated offline;
+real migration, EXPLAIN ANALYZE for representative queries (including short search
+terms), and latency/load budgets remain an operator/CI gate before deployment.
+
+History list queries retrieve only a 2,048-character trimmed preview prefix and
+leave full transcript/summary/proofread columns deferred. The UI preview remains
+at most 180 characters from the first two prefix lines. Leading/trailing ASCII
+spaces are trimmed by the database; unusually long or whitespace-heavy text may
+produce a shorter preview than the detail view. Full text remains in the detail
+and download APIs.
+
+Quarantine records each intended move in an atomically replaced, fsynced manifest
+before renaming the source. If interrupted, a manifest entry may still be at its
+original path. During offline recovery, inspect both source and quarantine paths;
+never overwrite existing material. Manifest write failures stop before moving the
+corresponding source. Only apply reconciliation with all writers stopped.
+
+
+Synthetic PostgreSQL integration can be run with
+`WHISTX_PG_TEST_DB_URL` pointing to an isolated, migrated database named
+`whistx_test`: `python -m unittest tests.test_postgres_integration`.
+The suite inserts only synthetic rows and removes its fixtures afterward.
+It checks search plans/page boundaries and six-process artifact deletion,
+row-lock skipping, restart retries and rollback. Use a dedicated instance;
+never point this test at a production database.
+
+On Mac Docker PostgreSQL 17, 10,001 synthetic users and 20,000 histories yielded
+history-search p50 0.62ms / p95 0.96ms over 20 warm queries after
+`VACUUM ANALYZE`; the natural plan used both history trigram indexes.
+Immediately after bulk ingestion, a sequential scan took approximately 181ms.
+These are fixture results, not production latency guarantees. Keep statistics
+and GIN maintenance current when assessing query plans after bulk loading.
+
+Recording seeds now use 128 bits from `crypto.getRandomValues`.
+The seed is an identifier, not an authorization credential: the server derives
+its runtime identifier and verifies owner identity or the independent guest
+grant before artifact access. Secure generation reduces collision/predictability
+risk without replacing that authorization boundary.

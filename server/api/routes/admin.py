@@ -22,9 +22,10 @@ router = APIRouter()
 
 @router.get("/api/admin/pending-users")
 def admin_pending_users(
-    user: User = Depends(get_current_admin), db: Session = Depends(get_db)
+    user: User = Depends(get_current_admin), db: Session = Depends(get_db),
+    limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0),
 ) -> JSONResponse:
-    return JSONResponse(list_pending_users_payload(db))
+    return JSONResponse(list_pending_users_payload(db, limit=limit, offset=offset))
 
 
 @router.post("/api/admin/pending-users/{user_id}/approve")
@@ -43,11 +44,13 @@ def admin_approve_pending_user(
 
 @router.get("/api/admin/users")
 def admin_users(
-    q: str = Query(default=""),
+    q: str = Query(default="", max_length=200),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ) -> JSONResponse:
-    return JSONResponse(list_users_payload(db, query=q))
+    return JSONResponse(list_users_payload(db, query=q, limit=limit, offset=offset))
 
 
 @router.post("/api/admin/users/{user_id}/role")
@@ -91,6 +94,8 @@ def admin_settings(user: User = Depends(get_current_admin)) -> JSONResponse:
         'ASR_BASE_URL': settings.openai_base_url or '', 'ASR_API_KEY': settings.openai_api_key,
         'SUMMARY_BASE_URL': settings.summary_base_url or '', 'SUMMARY_MODEL': settings.summary_model,
         'SUMMARY_API_KEY': settings.summary_api_key,
+        'OPENWEBUI_BASE_URL': settings.openwebui_base_url,
+        'OPENWEBUI_API_KEY': settings.openwebui_api_key,
     }
     values = {**active, **saved}
     values['HISTORY_RETENTION_DAYS'] = values['HISTORY_RETENTION_DAYS'] or '0'

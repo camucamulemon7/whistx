@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .. import runtime
-from ..api.routes import admin, auth, glossary, health, history, summary, transcript
+from ..api.routes import admin, auth, glossary, health, history, notes, summary, transcript
 from ..api.ws.transcribe import router as transcribe_router
 from .config import settings
 from .logging import configure_application_logging, emit_container_log
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 def create_app() -> FastAPI:
     configure_application_logging(settings.app_log_level)
     app = FastAPI(title="whistx", version="2.0.0", lifespan=_app_lifespan)
+    app.state.runtime_resources = runtime.resources
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.app_allowed_hosts))
 
     @app.middleware("http")
@@ -108,6 +109,7 @@ def create_app() -> FastAPI:
     app.include_router(glossary.router)
     app.include_router(history.router)
     app.include_router(summary.router)
+    app.include_router(notes.router)
     app.include_router(transcript.router)
     app.include_router(transcribe_router)
 

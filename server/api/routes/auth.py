@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
-from ... import runtime
+from ...services import oidc_flow
 from ...core.logging import emit_container_log
 from ...core.security import (
     clear_session_cookie,
@@ -88,12 +88,12 @@ def auth_bootstrap_admin(
 
 @router.get('/api/auth/keycloak/login')
 async def auth_keycloak_login(request: Request) -> Response:
-    return await runtime.auth_keycloak_login(request)
+    return await oidc_flow.auth_keycloak_login(request, flow=request.app.state.runtime_resources.oidc_flow)
 
 
 @router.get('/api/auth/keycloak/callback')
 async def auth_keycloak_callback(request: Request, db: Session = Depends(get_db)) -> Response:
-    return await runtime.auth_keycloak_callback(request, db)
+    return await oidc_flow.auth_keycloak_callback(request, db, flow=request.app.state.runtime_resources.oidc_flow)
 
 
 @router.post('/api/auth/register')

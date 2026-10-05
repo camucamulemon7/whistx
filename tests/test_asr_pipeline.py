@@ -36,7 +36,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from server.audio_pipeline import AudioPreprocessor, PreparedAudio
-from server import runtime
+from server.transcription import coordinator as runtime
+from server.core.runtime_resources import RuntimeResources
 from server.transcription import media
 from server.asr import ASRChunkResult
 
@@ -124,7 +125,7 @@ class AudioPipelineTests(unittest.TestCase):
                             asr_vad_speech_ratio_min=0.02,
                         ),
                     ):
-                        await runtime._session_worker(object(), session)
+                        await runtime._session_worker(object(), session, resources=RuntimeResources())
 
         asyncio.run(run_test())
         self.assertFalse(session.transcriber.called)
@@ -285,7 +286,7 @@ class AudioPipelineTests(unittest.TestCase):
                                 debug_chunks_dir=Path(temp_dir),
                             ),
                         ):
-                            await runtime._session_worker(object(), session)
+                            await runtime._session_worker(object(), session, resources=RuntimeResources())
 
         asyncio.run(run_test())
         self.assertEqual(session.transcriber.calls, 2)

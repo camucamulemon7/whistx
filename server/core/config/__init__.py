@@ -12,6 +12,7 @@ from .base import decode_env_text, to_float, to_int
 from .diarization import DiarizationConfig, load_diarization_config
 from .observability import ObservabilityConfig, load_observability_config
 from .ui import UiConfig, load_ui_config
+from .openwebui import DEFAULT_GENERATION_MODEL, normalize_openwebui_url
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,8 @@ class Settings:
     diarization: DiarizationConfig
     ui: UiConfig
     observability: ObservabilityConfig
+    openwebui_base_url: str
+    openwebui_api_key: str
     summary_api_key: str
     summary_base_url: str | None
     summary_model: str
@@ -51,8 +54,11 @@ def load_settings() -> Settings:
     diarization = load_diarization_config(app.app_data_dir)
     ui = load_ui_config()
     observability = load_observability_config()
-    summary_api_key = os.getenv("SUMMARY_API_KEY", "").strip() or asr.openai_api_key
-    summary_base_url = os.getenv("SUMMARY_BASE_URL", "").strip() or asr.openai_base_url
+    openwebui_base_url = normalize_openwebui_url(os.getenv("OPENWEBUI_BASE_URL", ""))
+    summary_api_key = (os.getenv("OPENWEBUI_API_KEY", "").strip() if openwebui_base_url
+                       else os.getenv("SUMMARY_API_KEY", "").strip() or asr.openai_api_key)
+    summary_base_url = (f'{openwebui_base_url}/api' if openwebui_base_url
+                        else os.getenv("SUMMARY_BASE_URL", "").strip() or asr.openai_base_url)
     summary_system_prompt = decode_env_text(os.getenv("SUMMARY_SYSTEM_PROMPT", ""))
     summary_prompt_template = decode_env_text(os.getenv("SUMMARY_PROMPT_TEMPLATE", ""))
     proofread_api_key = os.getenv("PROOFREAD_API_KEY", "").strip() or summary_api_key or asr.openai_api_key
@@ -66,16 +72,18 @@ def load_settings() -> Settings:
         diarization=diarization,
         ui=ui,
         observability=observability,
+        openwebui_base_url=openwebui_base_url,
+        openwebui_api_key=os.getenv("OPENWEBUI_API_KEY", "").strip(),
         summary_api_key=summary_api_key,
         summary_base_url=summary_base_url,
-        summary_model=os.getenv("SUMMARY_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
+        summary_model=os.getenv("SUMMARY_MODEL", DEFAULT_GENERATION_MODEL).strip() or DEFAULT_GENERATION_MODEL,
         summary_temperature=to_float("SUMMARY_TEMPERATURE", 0.2),
         summary_input_max_chars=max(2_000, to_int("SUMMARY_INPUT_MAX_CHARS", 16_000)),
         summary_system_prompt=summary_system_prompt,
         summary_prompt_template=summary_prompt_template,
         proofread_api_key=proofread_api_key,
         proofread_base_url=proofread_base_url,
-        proofread_model=os.getenv("PROOFREAD_MODEL", "").strip() or os.getenv("SUMMARY_MODEL", "").strip() or "gpt-4o-mini",
+        proofread_model=os.getenv("PROOFREAD_MODEL", "").strip() or os.getenv("SUMMARY_MODEL", "").strip() or DEFAULT_GENERATION_MODEL,
         proofread_temperature=to_float("PROOFREAD_TEMPERATURE", 0.0),
         proofread_input_max_chars=max(2_000, to_int("PROOFREAD_INPUT_MAX_CHARS", 24_000)),
         proofread_system_prompt=proofread_system_prompt,

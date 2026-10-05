@@ -23,7 +23,7 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="/style.css?v=20260724" />
+    <link rel="stylesheet" href="/style.css?v=20261004" />
     <link rel="stylesheet" href="/runtime-ui.css?v=20260728" />
     <link rel="stylesheet" href="/meeting.css?v=20260909" />
     <script type="module" src="/main.js?v=20260724"></script>
@@ -115,6 +115,7 @@
         </div>
       </header>
 
+      <p id="accountStatus" class="auth-result-message" role="status" aria-live="polite" hidden></p>
       <main id="workspaceMain" class="main-content" tabindex="-1">
         <section id="bannersContainer" class="banners-container reveal" aria-label="お知らせ" hidden></section>
 
@@ -493,6 +494,14 @@
                     </button>
                   </div>
                 </header>
+                <details class="summary-prompt-editor">
+                  <summary>OpenWebUI Notesに議事録を保存</summary>
+                  <p class="setting-hint">保存ボタンを押したときだけ議事録を送信します。Whistxと同じメールアドレスの自分のOpenWebUI認証を使用します。認証はこの操作だけに使用し保存しません。既存のNoteは上書きしません。</p>
+                  <label>Noteのタイトル<input id="notesTitle" class="side-panel-input" maxlength="120" value="Whistx 議事録" /></label>
+                  <label>既存OpenWebUI APIキー / トークン<input id="notesToken" class="side-panel-input" type="password" autocomplete="off" /></label>
+                  <button id="notesSave" type="button" class="btn-secondary">Notesに保存 / 確認・再試行</button>
+                  <p id="notesStatus" role="status" aria-live="polite"></p>
+                </details>
                 <div id="summaryPromptEditor" class="summary-prompt-editor" hidden>
                   <div class="summary-prompt-editor-header">
                     <div>
@@ -677,7 +686,7 @@
 
     <div id="authGuestView" class="auth-overlay" hidden>
       <div class="auth-overlay-backdrop"></div>
-      <section class="auth-card glass-panel" aria-label="ログイン">
+      <section id="authCard" class="auth-card glass-panel" aria-label="ログイン">
         <div class="auth-card-header">
           <div class="brand auth-brand">
             <div class="brand-icon">
@@ -688,11 +697,12 @@
               </svg>
             </div>
             <div class="brand-text">
-              <h2 class="auth-title">ログイン</h2>
+              <h2 id="authScreenTitle" class="auth-title">ログイン</h2>
               <p class="auth-description">保存履歴を使うにはログインが必要です</p>
             </div>
           </div>
         </div>
+        <p id="authFlowStatus" class="auth-result-message" role="status" aria-live="polite"></p>
         <div id="authBootstrapSection" class="auth-block" hidden>
           <div class="auth-block-title">初回管理者アカウント作成</div>
           <div class="auth-form">
@@ -710,16 +720,18 @@
             <button id="loginSubmitBtn" type="button" class="btn-action auth-submit-btn">ログイン</button>
             <a id="keycloakLoginBtn" href="/api/auth/keycloak/login" class="btn-secondary auth-submit-btn auth-provider-btn" hidden>Keycloakでログイン</a>
             <button id="guestLoginBtn" type="button" class="btn-secondary auth-submit-btn">ゲストで利用</button>
+            <a id="registrationLink" href="#register" hidden>新規登録はこちら</a>
           </div>
         </div>
         <div id="authRegisterSection" class="auth-block" hidden>
-          <div class="auth-block-title">新規登録リクエスト</div>
+          <div class="auth-block-title">新規登録</div>
           <div class="auth-form">
             <input id="registerDisplayName" type="text" class="side-panel-input auth-input" placeholder="表示名" autocomplete="name" />
             <input id="registerEmail" type="email" class="side-panel-input auth-input" placeholder="メールアドレス" autocomplete="email" />
             <input id="registerPassword" type="password" class="side-panel-input auth-input" placeholder="パスワード（8文字以上）" autocomplete="new-password" />
-            <button id="registerBtn" type="button" class="btn-action auth-submit-btn">承認を申請</button>
+            <button id="registerBtn" type="button" class="btn-action auth-submit-btn">登録して利用を開始</button>
             <p id="registerHint" class="auth-inline-hint"></p>
+            <a id="registrationBackLink" href="#login">ログイン画面に戻る</a>
           </div>
         </div>
         <p class="auth-footnote">ゲスト利用が有効な環境では文字起こしを利用できますが、履歴保存はできません。</p>
