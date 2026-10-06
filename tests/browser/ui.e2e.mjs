@@ -2209,6 +2209,10 @@ async function verifyWhisperLegacyTranslation(browserWebSocketUrl, url) {
         const json = (body, status = 200) => new Response(JSON.stringify(body), {status, headers:{'Content-Type':'application/json'}});
         window.fetch = async (input, options = {}) => {
           const path = new URL(String(input), location.origin).pathname;
+          if (path === '/api/auth/me') {
+            await new Promise(resolve => setTimeout(resolve, 150));
+            return original(input, options);
+          }
           if (path === '/api/health') return json({ ...await (await original(input, options)).json(), asrBackend: 'whisper', meetingInsights: true });
           if (path === '/api/meeting/insights') return json({ images:[], turns:[], recap:null });
           if (path === '/api/meeting/translate') {
@@ -2230,6 +2234,7 @@ async function verifyWhisperLegacyTranslation(browserWebSocketUrl, url) {
     ` });
     await page.send('Page.navigate', { url });
     await waitForApp(page);
+    await waitCondition(page, `!document.querySelector('#startBtn').disabled && !document.body.classList.contains('whistx-auth-locked')`);
     await evaluate(page, `document.querySelector('#startBtn').click()`);
     await waitCondition(page, `window.__recordingTest.startMessages === 1 && document.querySelector('#startBtn').textContent.includes('停止')`);
     await waitCondition(page, `window.__whisperTranslation.requests.length > 0`);
