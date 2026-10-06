@@ -375,7 +375,7 @@
                   <button id="retryLiveStop" type="button" class="btn-secondary" hidden>最終処理を再試行</button>
                   <button id="downloadPendingAudio" type="button" class="btn-secondary" hidden>未送信音声を保存</button>
                 </div>
-                <div id="liveTranscript" class="live-transcript" hidden></div>
+                <div id="liveTranscript" class="live-transcript" role="status" aria-live="polite" aria-label="認識途中の文字起こし" hidden></div>
                 <div id="log" class="log-container" role="log" aria-live="polite" aria-relevant="additions" tabindex="0" aria-label="文字起こし本文">
                   <div class="empty-state">
                     <div class="empty-icon">
@@ -598,8 +598,7 @@
         </div>
         <p class="chunk-description">通常モードの区切り時間です。ライブモードでは連続した音声から順次表示します。</p>
         </div>
-        <label class="meeting-live-toggle" for="liveTranscriptionEnabled"><input id="liveTranscriptionEnabled" type="checkbox" checked /> ライブ文字起こし</label>
-        <p class="chunk-description">認識途中の文字を表示します。音声は復旧と再確認のため保存されます。</p>
+        <p class="chunk-description">文字起こしは録音中に自動更新します。音声は復旧と再確認のため保存されます。</p>
       </div>
 
       <div class="side-panel-section">

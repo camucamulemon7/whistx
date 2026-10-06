@@ -70,7 +70,7 @@ async function startStaticServer() {
 function waitForDevTools(child) {
   return new Promise((resolve, reject) => {
     let stderr = "";
-    const timeout = setTimeout(() => reject(new Error(`Chrome DevTools did not start:\n${stderr}`)), 10_000);
+    const timeout = setTimeout(() => reject(new Error(`Chrome DevTools did not start:\n${stderr}`)), 30_000);
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
       const match = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/);
@@ -1893,10 +1893,14 @@ async function verifyLiveRecordingAndRefinement(client) {
   await client.send("Page.addScriptToEvaluateOnNewDocument", { source: String.raw`
     (() => {
       const originalFetch = window.fetch;
+      window.__recordingTest.banners = [
+        {id:'live-warning',type:'warning',message:'Synthetic live warning'},
+        {id:'live-info',type:'info',message:'Synthetic live info'}
+      ];
       window.fetch = async (input, options = {}) => {
         const url = String(input);
         const json = data => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
-        if (url.includes("/api/health")) return json({ asrReady: true, model: "browser-test", wsPath: "/ws/transcribe", liveWsPath: "/ws/transcribe/live", meetingInsights: true });
+        if (url.includes("/api/health")) return json({ asrReady: true, asrBackend:'whisper', model: "browser-test", wsPath: "/ws/transcribe", liveWsPath: "/ws/transcribe/live", meetingInsights: true, banners:window.__recordingTest.banners });
         if (url.includes("/api/meeting/insights")) {
           if (JSON.parse(options.body || "{}").runtimeSessionId === "live-browser") {
             await new Promise(resolve => { window.__releaseLiveInsights = resolve; });
@@ -1908,7 +1912,15 @@ async function verifyLiveRecordingAndRefinement(client) {
           const event = { type: "done", id: "live-answer", question: window.__liveQuestion.question, answer: "録音を続けながら回答できました", throughMs: 1000, citations: [] };
           return new Response("data: " + JSON.stringify(event) + "\n\n", { headers: { "Content-Type": "text/event-stream" } });
         }
+        if (url.includes("/api/meeting/translate")) {
+          window.__liveTranslationRequest = JSON.parse(options.body);
+          const source = {id:'mic-0',text:window.__liveRefined ? '音声から再認識した結果' : 'ライブ録音の結果',startMs:0,endMs:2000,quality:''};
+          const events = [{type:'sources',sources:window.__liveFinalized ? [source] : [],finalized:!!window.__liveFinalized},
+            ...(window.__liveFinalized ? [{type:'translation',id:source.id,sourceText:source.text,text:window.__liveRefined ? 'Refined synthetic translation' : 'Live synthetic translation'}] : []), {type:'done'}];
+          return new Response(events.map(event => 'data: '+JSON.stringify(event)+'\n\n').join(''),{headers:{'Content-Type':'text/event-stream'}});
+        }
         if (url.includes("/api/meeting/refine")) {
+          window.__liveRefined = true;
           const event = { type: "done", records: [{ type: "final", segmentId: "mic-0", seq: 0, tsStart: 0, tsEnd: 2000, text: "音声から再認識した結果", originalText: "ライブ録音の結果" }] };
           return new Response("data: " + JSON.stringify(event) + "\n\n", { headers: { "Content-Type": "text/event-stream" } });
         }
@@ -1937,27 +1949,35 @@ async function verifyLiveRecordingAndRefinement(client) {
           } else if (data.type === "audio") {
             window.__liveAudio = data;
             this.emit({ type: "capture_ack", track: data.track, seq: data.seq, samples: data.sampleStart + atob(data.pcm).length/2 });
-            this.emit({ type: "partial", track: "mic", text: "ライブ録音の", stableText: "ライブ" });
+            this.emit({ type: "partial", track: "mic", segmentId: "mic-0", text: "ライブ録音の", stableText: "ライブ" });
           } else if (data.type === "stop") {
-            this.emit({ type: "final", segmentId: "mic-0", seq: 0, text: "ライブ録音の結果", tsStart: 0, tsEnd: 2000 });
+            window.__liveFinalized = true;
+            this.emit({ type: "final", track: "mic", segmentId: "mic-0", seq: 0, text: "ライブ録音の結果", tsStart: 0, tsEnd: 2000 });
             this.emit({ type: "info", message: "finalized" });
           }
         }
       };
-      localStorage.setItem("whistx_live_transcription", "1");
+      localStorage.setItem("whistx_live_transcription", "0");
       localStorage.setItem("whistx_audio_source", "mic");
+      localStorage.setItem("whistx_translation_enabled", "1");
     })();
   ` });
   await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
   await client.send("Page.reload", { ignoreCache: true });
   await waitForApp(client);
   await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(await evaluate(client, `document.querySelectorAll('#bannersContainer .notice-warning, #bannersContainer .notice-info').length`), 2);
+  await evaluate(client, `document.querySelectorAll('#bannersContainer .notice-banner-close').forEach(button => button.click())`);
   await evaluate(client, `document.querySelector("#startBtn").click()`);
   await new Promise(resolve => setTimeout(resolve, 200));
   assert.equal(await evaluate(client, `window.__liveStart?.protocolVersion`), 2, "live capture must use the PCM protocol: " + await evaluate(client, `document.querySelector("#toastContainer").textContent + " / " + document.querySelector("#statusText").textContent`));
+  assert.equal(await evaluate(client, `document.querySelector('#liveTranscriptionEnabled')`), null, 'no checkbox or old disabled preference may suppress live transcription');
+  assert.equal(await evaluate(client, `document.querySelectorAll('#bannersContainer .notice-banner').length`), 0, 'starting always-live Whisper must not revive dismissed warning/info notices');
   await evaluate(client, `window.__liveNode.port.onmessage({ data: { type: "pcm", sampleStart: 0, pcm: new Int16Array(16000).buffer } })`);
   await new Promise(resolve => setTimeout(resolve, 50));
-  assert.equal(await evaluate(client, `document.querySelector("#liveTranscript").hidden`), true);
+  assert.equal(await evaluate(client, `document.querySelector("#liveTranscript").hidden`), false, 'Whisper hypotheses must be visible before recording stops');
+  assert.equal(await evaluate(client, `document.querySelector('#liveTranscript .live-transcript-stable').textContent`), 'ライブ');
+  assert.equal(await evaluate(client, `document.querySelectorAll('#log .log-row').length`), 0, 'hypotheses must not become saved transcript records');
   await evaluate(client, `document.querySelector("#assistantQuestion").value = "ここまでの要点は？"`);
   for (const [width, height] of [[1440, 1000], [1280, 720], [390, 844]]) {
     await client.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 640 });
@@ -1997,21 +2017,34 @@ async function verifyLiveRecordingAndRefinement(client) {
   await evaluate(client, `document.querySelector("#startBtn").click()`);
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.match(await evaluate(client, `document.querySelector("#log").textContent`), /ライブ録音の結果/);
+  await waitCondition(client, `document.querySelector('#translationRows').textContent.includes('Live synthetic translation')`);
+  assert.equal(await evaluate(client, `window.__liveTranslationRequest.runtimeSessionId`), 'live-browser');
+  assert.equal(await evaluate(client, `document.querySelector('#liveTranscript').hidden`), true, 'finalization clears the temporary hypothesis');
   assert.equal(await evaluate(client, `document.querySelector("#refineAudioBtn").disabled`), false);
   await evaluate(client, `document.querySelector("#refineAudioBtn").click()`);
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.match(await evaluate(client, `document.querySelector("#log").textContent`), /音声から再認識した結果/);
+  await waitCondition(client, `document.querySelector('#translationRows').textContent.includes('Refined synthetic translation')`);
+  assert.doesNotMatch(await evaluate(client, `document.querySelector('#translationRows').textContent`), /Live synthetic translation/, 'refinement must replace the old source and translation');
 }
 
-async function verifyQwenLiveRevision(client) {
+async function verifyLiveRevision(client, backend) {
   await client.send("Page.addScriptToEvaluateOnNewDocument", { source: String.raw`
     (() => {
       const originalFetch = window.fetch;
       window.fetch = async (input, options) => {
         if (String(input).includes("/api/health")) return new Response(JSON.stringify({
-          asrReady: true, model: "Qwen3-ASR-1.7B", asrBackend: "qwen3_vllm", capturePacketMs: 250,
+          asrReady: true, model: "synthetic-live-asr", asrBackend: "qwen3_vllm", capturePacketMs: 250, highAccuracyWindowSeconds: 30,
           wsPath: "/ws/transcribe", liveWsPath: "/ws/transcribe/live", meetingInsights: true,
         }), { headers: { "Content-Type": "application/json" } });
+        if (String(input).includes('/api/meeting/translate')) {
+          window.__hqTranslationRequests = (window.__hqTranslationRequests || 0) + 1;
+          const row = window.__hqSource;
+          const source = row && {id:row.segmentId, text:row.text, startMs:row.tsStart, endMs:row.tsEnd, quality:row.quality};
+          const events = [{type:'sources', sources:source ? [source] : [], finalized:!!window.__hqFinalized},
+            ...(source ? [{type:'translation',id:source.id,sourceText:source.text,text:'Automatic HQ translation'}] : []), {type:'done'}];
+          return new Response(events.map(event => 'data: '+JSON.stringify(event)+'\n\n').join(''), {headers:{'Content-Type':'text/event-stream'}});
+        }
         return originalFetch(input, options);
       };
       const OldNode = window.AudioWorkletNode;
@@ -2020,26 +2053,34 @@ async function verifyQwenLiveRevision(client) {
       };
       const OldSocket = window.WebSocket;
       window.WebSocket = class extends OldSocket {
+        emit(data) {
+          if (data.type === 'transcript_revision') window.__hqSource = data.record;
+          if (data.message === 'ready') window.__hqSource = data.records?.find(row => row.quality === 'high_accuracy');
+          if (data.message === 'finalized') window.__hqFinalized = true;
+          super.emit(data);
+        }
         send(raw) {
           const data = JSON.parse(raw);
           window.__qwenSocket = this;
           if (data.type === "start") {
             window.__liveStart = data;
-            this.emit({ type: "info", message: "ready", protocolVersion: 2, asrBackend: "qwen3_vllm", records: [], tracks: { mic: { seq: -1, samples: 0 } } });
+            this.emit({ type: "info", message: "ready", protocolVersion: 2, asrBackend: "qwen3_vllm", highAccuracyEnabled: true, records: [], tracks: { mic: { seq: -1, samples: 0 } } });
           } else if (data.type === "stop") this.emit({ type: "info", message: "finalized" });
           else super.send(raw);
         }
       };
       localStorage.setItem("whistx_live_transcription", "0");
+      localStorage.setItem('whistx_translation_enabled', '1');
+      localStorage.setItem('whistx_translation_language', 'en');
     })();
-  ` });
+  `.replaceAll('"qwen3_vllm"', JSON.stringify(backend)) });
   await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
   await client.send("Page.reload", { ignoreCache: true });
   await waitForApp(client);
   await new Promise(resolve => setTimeout(resolve, 200));
   await evaluate(client, `document.querySelector("#startBtn").click()`);
   await new Promise(resolve => setTimeout(resolve, 200));
-  assert.equal(await evaluate(client, `window.__liveStart?.language`), "ja", "Qwen must preserve the selected language");
+  assert.equal(await evaluate(client, `window.__liveStart?.language`), "ja", `${backend} must preserve the selected language`);
   assert.equal(await evaluate(client, `window.__qwenPacketSamples`), 4000);
   assert.equal(await evaluate(client, `document.querySelector('#audioLevelIndicator').hidden`), false);
   assert.ok(await evaluate(client, `document.querySelector('#audioLevelMatrix').getBoundingClientRect().height >= 26`), "Input meter must be visible at full height");
@@ -2048,7 +2089,7 @@ async function verifyQwenLiveRevision(client) {
       startSample: i*80000, endSample: (i+1)*80000, tsStart: i*5000, tsEnd: (i+1)*5000, quality: "realtime" });
     window.__rtRows = [row(0, "速報一"), row(1, "速報二")].map(item => ({ ...item, screenshotPath: "/api/transcripts/live-browser/screenshots/slide.webp" }));
     for (const item of window.__rtRows) window.__qwenSocket.emit(item);
-    window.__qwenSocket.emit({ type: "partial", track: "mic", text: "次の発言", stableText: "" });
+    window.__qwenSocket.emit({ type: "partial", track: "mic", segmentId: "mic-rt-160000", text: "次の発言", stableText: "" });
   })()`);
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(await evaluate(client, `document.querySelectorAll("#log .log-row").length`), 2);
@@ -2078,11 +2119,13 @@ async function verifyQwenLiveRevision(client) {
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(await evaluate(client, `document.querySelectorAll("#log .log-row").length`), 1);
   assert.match(await evaluate(client, `document.querySelector("#log").textContent`), /APIのreview/);
-  assert.equal(await evaluate(client, `document.querySelector("#liveTranscript").hidden`), true);
+  assert.equal(await evaluate(client, `document.querySelector("#liveTranscript").hidden`), false, 'an HQ revision for older speech must preserve the current hypothesis');
   assert.equal(await evaluate(client, `document.querySelector("#log .log-row").dataset.quality`), "high_accuracy");
   assert.match(await evaluate(client, `document.querySelector("#hqStatus").textContent`), /高精度認識を反映/);
   assert.equal(await evaluate(client, `document.querySelector('#log .transcript-quality').textContent`), "高精度");
-  await evaluate(client, `window.__qwenSocket.emit({ type: "info", message: "ready", asrBackend: "qwen3_vllm", records: [
+  await waitCondition(client, `document.querySelector('#translationRows').textContent.includes('Automatic HQ translation')`);
+  assert.ok(await evaluate(client, `window.__hqTranslationRequests > 0 && !window.__hqFinalized`), 'HQ revisions must translate automatically while recording continues');
+  await evaluate(client, `window.__qwenSocket.emit({ type: "info", message: "ready", asrBackend: ${JSON.stringify(backend)}, records: [
     { type: "final", track: "mic", segmentId: "hq-snapshot", seq: 0, text: "再接続で復元", tsStart: 0, tsEnd: 10000, startSample: 0, endSample: 160000, quality: "high_accuracy" }
   ], tracks: { mic: { seq: -1, samples: 0 } } })`);
   await new Promise(resolve => setTimeout(resolve, 30));
@@ -2155,6 +2198,60 @@ async function verifyReportedAnnouncements(client) {
   assert.equal(await evaluate(client, `document.querySelectorAll('#bannersContainer .notice-banner').length`), 0, 'same-tab reload retains warning and info dismissal');
 }
 
+async function verifyWhisperLegacyTranslation(browserWebSocketUrl, url) {
+  const page = await connectPage(browserWebSocketUrl, 'about:blank');
+  try {
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: recordingMocks });
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source: String.raw`
+      (() => {
+        const original = window.fetch;
+        window.__whisperTranslation = { requests: [], failure: '' };
+        const json = (body, status = 200) => new Response(JSON.stringify(body), {status, headers:{'Content-Type':'application/json'}});
+        window.fetch = async (input, options = {}) => {
+          const path = new URL(String(input), location.origin).pathname;
+          if (path === '/api/auth/me') {
+            await new Promise(resolve => setTimeout(resolve, 150));
+            return original(input, options);
+          }
+          if (path === '/api/health') return json({ ...await (await original(input, options)).json(), asrBackend: 'whisper', meetingInsights: true });
+          if (path === '/api/meeting/insights') return json({ images:[], turns:[], recap:null });
+          if (path === '/api/meeting/translate') {
+            const body = JSON.parse(options.body);
+            window.__whisperTranslation.requests.push(body);
+            if (window.__whisperTranslation.failure) return json({error:window.__whisperTranslation.failure}, 503);
+            const finalized = window.__recordingTest.stopMessages > 0;
+            const source = {id:'legacy-2',text:'停止直前の文字起こし',startMs:1000,endMs:2000,quality:''};
+            const events = [{type:'sources',sources:finalized ? [source] : [],finalized},
+              ...(finalized ? [{type:'translation',id:source.id,sourceText:source.text,text:body.language === 'ja' ? '日本語の合成訳' : 'Synthetic translated source'}] : []), {type:'done'}];
+            return new Response(events.map(event => 'data: '+JSON.stringify(event)+'\n\n').join(''),{headers:{'Content-Type':'text/event-stream'}});
+          }
+          return original(input, options);
+        };
+        localStorage.setItem('whistx_live_transcription','0');
+        localStorage.setItem('whistx_translation_enabled','1');
+        localStorage.setItem('whistx_translation_language','en');
+      })();
+    ` });
+    await page.send('Page.navigate', { url });
+    await waitForApp(page);
+    await waitCondition(page, `!document.querySelector('#startBtn').disabled && !document.body.classList.contains('whistx-auth-locked')`);
+    await evaluate(page, `document.querySelector('#startBtn').click()`);
+    await waitCondition(page, `window.__recordingTest.startMessages === 1 && document.querySelector('#startBtn').textContent.includes('停止')`);
+    await waitCondition(page, `window.__whisperTranslation.requests.length > 0`);
+    assert.equal(await evaluate(page, `document.querySelector('#translationRows').children.length`), 0, 'Whisper recording waits for session finalization');
+    await evaluate(page, `document.querySelector('#startBtn').click()`);
+    await waitCondition(page, `document.querySelector('#translationRows').textContent.includes('Synthetic translated source')`);
+    assert.equal(await evaluate(page, `window.__whisperTranslation.requests.at(-1).runtimeSessionId`), 'browser-test-1');
+    assert.equal(await evaluate(page, `window.__whisperTranslation.requests.at(-1).language`), 'en');
+    assert.equal(await evaluate(page, `document.querySelector('#liveTranscript').hidden`), true);
+    await evaluate(page, `(() => {const language=document.querySelector('#translationLanguage');language.value='ja';language.dispatchEvent(new Event('change'));})()`);
+    await waitCondition(page, `document.querySelector('#translationRows').textContent.includes('日本語の合成訳')`);
+    await evaluate(page, `window.__whisperTranslation.failure='summary_not_configured'; document.querySelector('#translationRetry').click()`);
+    await waitCondition(page, `document.querySelector('#translationStatus').textContent.includes('要約モデルが未設定')`);
+    assert.match(await evaluate(page, `document.querySelector('#translationRows').textContent`), /日本語の合成訳/, 'model errors retain existing translations');
+  } finally { page.close(); }
+}
+
 const chrome = await findChrome();
 const profileDir = await mkdtemp(path.join(os.tmpdir(), "whistx-chrome-"));
 const { server, url } = await startStaticServer();
@@ -2165,6 +2262,8 @@ const chromeProcess = spawn(
     "--no-sandbox",
     "--disable-gpu",
     "--disable-dev-shm-usage",
+    "--no-first-run",
+    "--no-default-browser-check",
     "--remote-debugging-port=0",
     `--user-data-dir=${profileDir}`,
     "about:blank",
@@ -2228,8 +2327,11 @@ try {
   await verifyMeetingInsights(client);
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyLiveRecordingAndRefinement\n');
   await verifyLiveRecordingAndRefinement(client);
-  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyQwenLiveRevision\n');
-  await verifyQwenLiveRevision(client);
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyLiveRevision: qwen3_vllm\n');
+  await verifyLiveRevision(client, 'qwen3_vllm');
+  if (process.env.BROWSER_DEBUG) process.stdout.write('verifyLiveRevision: whisper\n');
+  await verifyLiveRevision(client, 'whisper');
+  await verifyWhisperLegacyTranslation(browserWebSocketUrl, url);
   await evaluate(client, `(() => {
     const language = document.querySelector('#language');
     language.value = '';

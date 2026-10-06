@@ -550,7 +550,7 @@ async function refineMeetingAudio() {
         }
         appDependencies.markWorkspaceDirty();
         status.textContent = "音声から再認識しました。元の文は保存時のZIPに含まれます。";
-        appDependencies.meetingWorkspace.refresh();
+        appDependencies.meetingWorkspace.refresh({ transcriptChanged: true });
       }
     });
     if (!completed) throw new Error("再認識が中断されました");
@@ -612,7 +612,7 @@ async function startRecording() {
     }
 
     if (health.asrBackend === "qwen3_vllm" && typeof AudioWorkletNode === "undefined") throw new Error("audio_worklet_required");
-    if (health.liveWsPath && (health.asrBackend === "qwen3_vllm" || document.querySelector("#liveTranscriptionEnabled")?.checked) && typeof AudioWorkletNode !== "undefined") {
+    if (health.liveWsPath && typeof AudioWorkletNode !== "undefined") {
       await startLiveRecording(health, selectedAudioSource);
       return;
     }

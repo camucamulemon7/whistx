@@ -152,6 +152,19 @@ class MeetingTests(unittest.TestCase):
 
 
 class LiveJournalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_silence_clears_the_old_hypothesis_without_requesting_asr(self):
+        from unittest.mock import AsyncMock
+        meeting = LiveMeeting.__new__(LiveMeeting)
+        meeting.data = dict(tracks={'mic': dict(windowStart=0, received=32000, lastDecode=0,
+                           hypothesis='Old text', stable='Old', stableSegment={'text': 'Old'})})
+        meeting._read_audio = lambda *args: b'\0\0' * 32000
+        meeting.send = AsyncMock()
+        meeting.checkpoint = AsyncMock()
+        await meeting._infer('mic', flush=False)
+        meeting.send.assert_awaited_once_with(dict(type='partial', track='mic', text='', stableText=''))
+        self.assertEqual(meeting.data['tracks']['mic']['hypothesis'], '')
+        self.assertNotIn('stableSegment', meeting.data['tracks']['mic'])
+
     async def test_ack_is_durable_duplicates_idempotent_and_gaps_request_resend(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -289,8 +302,12 @@ class LiveResumeTests(unittest.IsolatedAsyncioTestCase):
                     return dict(track='mic', seq=seq, sampleStart=seq*32000, pcm=base64.b64encode(b'\xff\x0f'*32000).decode())
                 await live.accept_audio(packet(0))
                 await live._infer('mic', flush=False)
+                self.assertEqual(ws.events[-1]['type'], 'partial')
+                self.assertEqual(ws.events[-1]['text'], '公開日は未定です。')
+                self.assertEqual([row for row in live.records if row.get('type') == 'final'], [])
                 await live.accept_audio(packet(1))
                 await live._infer('mic', flush=False)
+                self.assertEqual(ws.events[-1]['stableText'], '公開日は未定です。')
                 self.assertEqual(read_json(live.state_path)['stableSegments'][0]['text'], '公開日は未定です。')
                 session = live.session_id
                 live.close()

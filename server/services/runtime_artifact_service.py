@@ -49,9 +49,12 @@ def get_txt(
     return FileResponse(str(path), media_type="text/plain")
 
 
-def _qwen_jsonl_snapshot(path: Path) -> str | None:
+def _revision_jsonl_snapshot(path: Path) -> str | None:
     from .meeting_source import read_json
-    if read_json(path.with_suffix(".meta.json")).get("asrBackend") != "qwen3_vllm":
+    metadata = read_json(path.with_suffix(".meta.json"))
+    if metadata.get("asrBackend") != "qwen3_vllm" and not (
+        metadata.get("asrBackend") == "whisper" and metadata.get("highAccuracyEnabled")
+    ):
         return None
     return "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in read_jsonl_records(path))
 
@@ -66,7 +69,7 @@ def get_jsonl(
     path = resolve_transcript_path(settings.transcripts_dir, session_id, "jsonl")
     if not path or not path.exists():
         return HTMLResponse(status_code=404, content="not found")
-    snapshot = _qwen_jsonl_snapshot(path)
+    snapshot = _revision_jsonl_snapshot(path)
     if snapshot is not None:
         return Response(content=snapshot, media_type="application/x-ndjson")
     return FileResponse(str(path), media_type="application/x-ndjson")
@@ -113,7 +116,7 @@ def get_zip(
                 temp_path, "w", compression=zipfile.ZIP_DEFLATED
             ) as archive:
                 archive.write(txt_path, arcname=f"{session_id}.txt")
-                snapshot = _qwen_jsonl_snapshot(jsonl_path)
+                snapshot = _revision_jsonl_snapshot(jsonl_path)
                 if snapshot is None:
                     archive.write(jsonl_path, arcname=f"{session_id}.jsonl")
                 else:

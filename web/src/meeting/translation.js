@@ -32,7 +32,7 @@ export function createTranslation({ getSource, getAccess, setView }) {
       original.append(time, text);
       const translated = document.createElement('p');
       const result = translations.get(source.id);
-      translated.textContent = result?.sourceText === source.text ? result.text : '高精度認識の確定後に翻訳します';
+      translated.textContent = result?.sourceText === source.text ? result.text : '録音終了後、または高精度認識の確定後に翻訳します';
       translated.lang = language.value;
       translated.className = result?.sourceText === source.text ? '' : 'translation-pending';
       row.append(original, translated);
@@ -50,7 +50,7 @@ export function createTranslation({ getSource, getAccess, setView }) {
     sources = [];
     translations.clear();
     render();
-    status.textContent = enabled.checked ? '高精度認識が確定すると翻訳します（録音終了時は残りも翻訳）。' : '';
+    status.textContent = enabled.checked ? '録音終了後、または高精度認識の確定後に翻訳します。' : '';
   }
   async function run() {
     if (!enabled.checked || !getSource()) return;
@@ -60,13 +60,13 @@ export function createTranslation({ getSource, getAccess, setView }) {
     controller = current;
     const stamp = version;
     const timeout = setTimeout(() => current.abort('timeout'), 300_000);
-    status.textContent = '高精度の文字起こしを翻訳しています…';
+    status.textContent = '確定した文字起こしを翻訳しています…';
     retry.hidden = true;
     let done = false;
     try {
       const response = await fetch('/api/meeting/translate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...getSource(), language: language.value }), signal: current.signal });
-      if (!response.ok) throw new Error((await response.json()).error || 'translation_failed');
+      if (!response.ok) throw Object.assign(new Error((await response.json()).error || 'translation_failed'), { status: response.status });
       await readSseJsonStream(response, event => {
         if (stamp !== version || current.signal.aborted) return;
         if (event.type === 'error') throw new Error(event.error);
@@ -75,13 +75,16 @@ export function createTranslation({ getSource, getAccess, setView }) {
         if (event.type === 'done') {
           done = true;
           const count = sources.filter(row => translations.get(row.id)?.sourceText === row.text).length;
-          status.textContent = count ? `${count}区間を翻訳済み · 新しい高精度確定分は自動で追加します` : '高精度認識が確定すると翻訳します';
+          status.textContent = count ? `${count}区間を翻訳済み · 新しい対象区間は自動で追加します` : '録音終了後、または高精度認識の確定後に翻訳します';
         }
       });
       if (!done && !current.signal.aborted) throw new Error('incomplete_translation');
     } catch (error) {
       if (stamp === version && (current.signal.reason === 'timeout' || !current.signal.aborted)) {
-        status.textContent = error.message === 'rate_limit_exceeded' ? '翻訳が混み合っています。少し待って再試行してください。' : '翻訳に失敗しました。原文と翻訳済みの内容は保持しています。';
+        status.textContent = error.message === 'rate_limit_exceeded' ? '翻訳が混み合っています。少し待って再試行してください。'
+          : error.message === 'summary_not_configured' ? '翻訳用の要約モデルが未設定です。管理者にモデルの設定を確認してください。'
+          : error.status === 401 ? '翻訳にはログインが必要です。ログイン後に再試行してください。'
+          : '翻訳に失敗しました。原文と翻訳済みの内容は保持しています。';
         retry.hidden = false;
       }
     } finally {

@@ -91,7 +91,6 @@ function updateSaveControls() {
 
 function setSessionSettingsLocked(locked = isRecordingInteractionLocked()) {
   const sessionInputs = [
-    document.querySelector("#liveTranscriptionEnabled"),
     appDependencies.languageEl,
     appDependencies.audioSourceEl,
     appDependencies.chunkSecondsEl,
@@ -100,9 +99,8 @@ function setSessionSettingsLocked(locked = isRecordingInteractionLocked()) {
   ];
   sessionInputs.forEach((element) => {
     if (!element) return;
-    const qwenFixed = appDependencies.state.asrBackend === "qwen3_vllm" && element.id === "liveTranscriptionEnabled";
-    element.disabled = !!locked || qwenFixed;
-    element.title = qwenFixed ? "日本語・英語を自動認識するライブ文字起こしを使用します" : locked ? "録音中・停止処理中は変更できません" : "";
+    element.disabled = !!locked;
+    element.title = locked ? "録音中・停止処理中は変更できません" : "";
   });
   appDependencies.presetButtons.forEach((button) => {
     button.disabled = !!locked;
