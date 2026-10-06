@@ -21,6 +21,7 @@ async function ensureSocket() {
   appDependencies.logWsEvent("connect", { url: wsUrl() });
 
   ws.addEventListener("message", (event) => {
+    if (appDependencies.state.ws !== ws) return;
     let data;
     try {
       data = JSON.parse(event.data);
@@ -60,6 +61,7 @@ async function ensureSocket() {
       } else if (data.message === "finalized") {
         appDependencies.state.runtimeSessionFinalized = true;
       }
+      appDependencies.meetingWorkspace.liveEvent(data);
       appDependencies.updateDownloadLinks();
       return;
     }
@@ -75,6 +77,7 @@ async function ensureSocket() {
         String(data.rawAudioPath || ""),
         String(data.audioPath || "")
       );
+      appDependencies.meetingWorkspace.liveEvent(data);
       return;
     }
 

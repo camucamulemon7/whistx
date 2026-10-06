@@ -294,8 +294,8 @@ class MixedCoverageTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([r['startSample'] for r in result['highAccuracySegments']], [0, 160000, 320000])
                 self.assertEqual(result['endSample'], 480000)
                 self.assertNotIn('retainedRealtimeSegmentIds', result)
-                from server.services.runtime_artifact_service import _qwen_jsonl_snapshot
-                exported = [loads(line) for line in _qwen_jsonl_snapshot(live.store.jsonl_path).splitlines()]
+                from server.services.runtime_artifact_service import _revision_jsonl_snapshot
+                exported = [loads(line) for line in _revision_jsonl_snapshot(live.store.jsonl_path).splitlines()]
                 self.assertEqual(exported, live.records)
             finally:
                 live.close()

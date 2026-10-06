@@ -14,10 +14,9 @@ async function loadCapabilities() {
     appDependencies.state.asrBackend = health.asrBackend || "whisper";
     document.querySelector('#hqIntervalHint').textContent = health.highAccuracyWindowSeconds
       ? `高精度認識は通常${health.highAccuracyWindowSeconds}秒分ごと（発話の区切りでは早めに実行）`
-      : '翻訳は高精度認識の確定後、または録音終了後に実行';
-    if (appDependencies.state.asrBackend === "qwen3_vllm") {
-      document.querySelector("#liveTranscriptionEnabled").checked = true;
-    }
+      : health.asrBackend === 'whisper'
+        ? '録音中に文字起こしを更新します。翻訳は録音終了後、音声から再認識は終了後の手動操作です。'
+        : '翻訳は録音終了後に実行します';
     appDependencies.setSessionSettingsLocked();
     appDependencies.renderBanners(health.banners);
     appDependencies.applyBranding(health.uiBrandTitle, health.uiBrandTagline);

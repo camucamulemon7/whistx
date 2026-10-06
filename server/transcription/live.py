@@ -165,8 +165,11 @@ class LiveMeeting:
             source.seek(start * 2)
             return source.read(max(0, end - start) * 2)
 
-    def _append_record(self, record: TranscriptRecord):
-        self.store.append_final(record)
+    def _append_record(self, record: TranscriptRecord | dict):
+        if isinstance(record, dict):
+            self.store.append_record(record)
+        else:
+            self.store.append_final(record)
         # A checkpoint must never advance past an undurable final transcript.
         for path in (self.store.jsonl_path, self.store.txt_path):
             with path.open("rb") as source:
@@ -247,27 +250,47 @@ class LiveMeeting:
             await blocking_work_pool.run("artifact", write_json_atomic, self.state_path, copy.deepcopy(self.data))
         await self.send({"type": "screen", "timeMs": stamp, "screenshotPath": record.screenshotPath})
 
+    def _window_end(self, start: int) -> int:
+        return start + MAX_WINDOW_SAMPLES
+
+    def _final_record(self, record, track, start, end):
+        return vars_record(record)
+
+    def _silence_samples(self):
+        return int(0.65 * SAMPLE_RATE)
+
+    def _note_pause(self, track, end, quiet_samples):
+        pass
+
+    async def _request_budget(self):
+        async with self.state_lock:
+            if self.is_guest and self.data["asrRequests"] >= settings.guest_ws_max_asr_requests:
+                raise MeetingError("guest_asr_request_limit", 429)
+            allowed = await asyncio.to_thread(consume, bucket="asr", subject=self.rate_subject,
+                                              limit=settings.costly_api_rate_limit_requests, window_seconds=settings.costly_api_rate_limit_window_seconds)
+            if not allowed:
+                raise MeetingError("rate_limit_exceeded", 429)
+            self.data["asrRequests"] += 1
+            await blocking_work_pool.run("artifact", write_json_atomic, self.state_path, copy.deepcopy(self.data))
+
     async def _infer(self, track: str, *, flush: bool):
         state = self.data["tracks"][track]
         start = state["windowStart"]
-        end = min(state["received"], start + MAX_WINDOW_SAMPLES)
-        if end <= start or (not flush and end - state["lastDecode"] < UPDATE_SAMPLES):
+        limit = self._window_end(start)
+        end = min(state["received"], limit)
+        if end <= start or (not flush and end < limit and end - state["lastDecode"] < UPDATE_SAMPLES):
             return False
         pcm = await blocking_work_pool.run("artifact", self._read_audio, track, start, end)
         bounds = await blocking_work_pool.run("media", speech_bounds, pcm)
         if bounds is None:
             state.update(windowStart=end, lastDecode=end, hypothesis="", stable="")
+            self._note_pause(track, end, len(pcm) // 2)
             state.pop("stableSegment", None)
+            await self.send({"type": "partial", "track": track, "text": "", "stableText": ""})
             await self.checkpoint()
             return True
-        final = flush or end - start >= MAX_WINDOW_SAMPLES or len(pcm) // 2 - bounds[1] >= int(0.65 * SAMPLE_RATE)
-        if self.is_guest and self.data["asrRequests"] >= settings.guest_ws_max_asr_requests:
-            raise MeetingError("guest_asr_request_limit", 429)
-        allowed = await asyncio.to_thread(consume, bucket="asr", subject=self.rate_subject,
-                                          limit=settings.costly_api_rate_limit_requests, window_seconds=settings.costly_api_rate_limit_window_seconds)
-        if not allowed:
-            raise MeetingError("rate_limit_exceeded", 429)
-        self.data["asrRequests"] += 1
+        final = flush or end >= limit or len(pcm) // 2 - bounds[1] >= self._silence_samples()
+        await self._request_budget()
         started = time.monotonic()
         context = " ".join(str(row.get("text") or "") for row in self.records[-6:] if row.get("type") == "final")[-300:]
         prompt = (self.data["vocabulary"][:250] + " " + self.data["prompt"][:200] + " " + context).strip()
@@ -286,23 +309,26 @@ class LiveMeeting:
                  "text": text, "stableText": stable, "tsStart": start_ms, "tsEnd": end_ms, "speaker": speaker,
                  "inferenceMs": round((time.monotonic() - started) * 1000), "backlogMs": (state["received"] - end) * 1000 // SAMPLE_RATE}
         if final:
-            existing = any(row.get("type") == "final" and row.get("segmentId") == segment_id for row in self.records)
-            if text and not existing:
-                audio_name = f"raw-{self.next_seq:06d}.wav"
-                await blocking_work_pool.run("artifact", (self.audio_dir / audio_name).write_bytes, pcm_wav(pcm))
-                images = [row for row in self.records if row.get("type") == "screen" and row.get("tsStart", 0) <= end_ms]
-                image_path = images[-1].get("screenshotPath") if images else None
-                record = TranscriptRecord(type="final", segmentId=segment_id, seq=self.next_seq, text=text,
-                                          tsStart=start_ms, tsEnd=end_ms, chunkOffsetMs=start * 1000 // SAMPLE_RATE,
-                                          chunkDurationMs=(end - start) * 1000 // SAMPLE_RATE, language=self.data["language"],
-                                          createdAt=datetime.now(timezone.utc).isoformat(), speaker=speaker or None,
-                                          screenshotPath=image_path, rawAudioPath=f"/api/transcripts/{self.session_id}/audio/{audio_name}")
-                await blocking_work_pool.run("artifact", self._append_record, record)
-                self.records.append(vars_record(record))
-                self.next_seq += 1
-                await self.send({**vars_record(record), "track": track})
+            async with self.state_lock:
+                existing = any(row.get("type") == "final" and row.get("segmentId") == segment_id for row in self.records)
+                if text and not existing:
+                    audio_name = f"raw-{self.next_seq:06d}.wav"
+                    await blocking_work_pool.run("artifact", (self.audio_dir / audio_name).write_bytes, pcm_wav(pcm))
+                    images = [row for row in self.records if row.get("type") == "screen" and row.get("tsStart", 0) <= end_ms]
+                    image_path = images[-1].get("screenshotPath") if images else None
+                    record = TranscriptRecord(type="final", segmentId=segment_id, seq=self.next_seq, text=text,
+                                              tsStart=start_ms, tsEnd=end_ms, chunkOffsetMs=start * 1000 // SAMPLE_RATE,
+                                              chunkDurationMs=(end - start) * 1000 // SAMPLE_RATE, language=self.data["language"],
+                                              createdAt=datetime.now(timezone.utc).isoformat(), speaker=speaker or None,
+                                              screenshotPath=image_path, rawAudioPath=f"/api/transcripts/{self.session_id}/audio/{audio_name}")
+                    row = self._final_record(record, track, start, end)
+                    await blocking_work_pool.run("artifact", self._append_record, row)
+                    self.records.append(row)
+                    self.next_seq += 1
+                    await self.send({**row, "track": track})
             # Every source sample is retained, even when a hard window ends.
             state.update(windowStart=end, lastDecode=end, hypothesis="", stable="")
+            self._note_pause(track, end, len(pcm) // 2 - bounds[1])
             await self.send({"type": "partial", "track": track, "text": "", "stableText": ""})
         else:
             state["stableSegment"] = {**event, "text": stable}
@@ -401,11 +427,13 @@ async def live_transcribe(ws: WebSocket, *, resources=None):
         if error:
             raise MeetingError(error)
         from .qwen_live import QwenLiveMeeting
-        meeting_class = QwenLiveMeeting if settings.asr_backend == "qwen3_vllm" else LiveMeeting
+        from .whisper_live import WhisperLiveMeeting
+        meeting_class = QwenLiveMeeting if settings.asr_backend == "qwen3_vllm" else WhisperLiveMeeting
         meeting = await blocking_work_pool.run("artifact", meeting_class, ws, initial, resources=resources)
         await meeting.send({"type": "info", "message": "ready", "protocolVersion": 2, "asrBackend": settings.asr_backend,
                             "tracks": {key: {"seq": value["seq"], "samples": value["received"]} for key, value in meeting.data["tracks"].items()},
                             "records": [row for row in meeting.records if row.get("type") == "final"],
+                            "highAccuracyEnabled": bool(meeting.data.get("highAccuracyEnabled")),
                             "finalized": bool(meeting.data.get("finalized"))})
         if meeting.data.get("finalized"):
             await meeting.send({"type": "info", "message": "finalized", "state": "completed"})

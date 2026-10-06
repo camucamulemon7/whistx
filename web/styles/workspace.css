@@ -1215,3 +1215,14 @@ body.is-modal-open {
 body.is-history-drawer-open {
   overflow: hidden;
 }
+
+.live-transcript {
+  margin: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+}
+.live-transcript-row + .live-transcript-row { margin-top: var(--space-3); }
+.live-transcript-row small { color: var(--text-secondary); }
+.live-transcript-row p { margin: var(--space-1) 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.live-transcript-hypothesis { opacity: .7; text-decoration: underline dotted; text-underline-offset: .2em; }

@@ -1133,12 +1133,6 @@ meetingWorkspace.syncSource();
 document.querySelector("#refineAudioBtn")?.addEventListener("click", refineMeetingAudio);
 document.querySelector("#retryLiveStop")?.addEventListener("click", finalizeLiveRecording);
 document.querySelector("#downloadPendingAudio")?.addEventListener("click", () => state.liveCapture?.downloadPending());
-const liveToggle = document.querySelector("#liveTranscriptionEnabled");
-if (liveToggle) {
-  liveToggle.checked = readStoredValue("whistx_live_transcription", "1") !== "0";
-  liveToggle.addEventListener("change", () => writeStoredValue("whistx_live_transcription", liveToggle.checked ? "1" : "0"));
-}
-
 (async () => {
   logClientEvent("bootstrap.start");
   await loadCapabilities();

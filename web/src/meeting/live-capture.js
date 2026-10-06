@@ -80,8 +80,7 @@ export class LiveCapture {
           this.retry = 0;
           for (const [track, position] of Object.entries(data.tracks || {})) this.ack(track, position.seq, position.samples);
           this.onEvent(data);
-          if (data.asrBackend === "qwen3_vllm") this.onEvent({ type: "transcript_snapshot", records: data.records || [] });
-          else for (const record of data.records || []) this.onEvent({ ...record, sessionId: this.sessionId });
+          this.onEvent({ type: "transcript_snapshot", records: data.records || [] });
           resolve();
           this.pump();
           return;
