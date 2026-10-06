@@ -70,7 +70,7 @@ async function startStaticServer() {
 function waitForDevTools(child) {
   return new Promise((resolve, reject) => {
     let stderr = "";
-    const timeout = setTimeout(() => reject(new Error(`Chrome DevTools did not start:\n${stderr}`)), 10_000);
+    const timeout = setTimeout(() => reject(new Error(`Chrome DevTools did not start:\n${stderr}`)), 30_000);
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
       const match = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/);
@@ -2257,6 +2257,8 @@ const chromeProcess = spawn(
     "--no-sandbox",
     "--disable-gpu",
     "--disable-dev-shm-usage",
+    "--no-first-run",
+    "--no-default-browser-check",
     "--remote-debugging-port=0",
     `--user-data-dir=${profileDir}`,
     "about:blank",
