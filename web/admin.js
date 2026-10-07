@@ -315,24 +315,45 @@ loadAdminData().catch((error) => {
 
 const serverForm = document.querySelector('#serverSettingsForm');
 const serverStatus = document.querySelector('#serverSettingsStatus');
+const secretFields = ['ASR_API_KEY', 'SUMMARY_API_KEY', 'OPENWEBUI_API_KEY'];
+let settingsVersion = 0;
+function showConfiguredSecrets(values) {
+  for (const key of secretFields) {
+    serverForm.elements.namedItem(key).placeholder = values[key] ? '設定済み（変更時のみ入力）' : '未設定';
+  }
+}
 async function loadServerSettings() {
+  const version = settingsVersion;
   try {
     const result = await fetchJson('/api/admin/settings');
+    if (version !== settingsVersion) return;
     for (const [key, value] of Object.entries(result.values)) serverForm.elements.namedItem(key).value = value;
-    for (const [key, configured] of Object.entries(result.configuredSecrets)) serverForm.elements.namedItem(key).placeholder = configured ? '設定済み（変更時のみ入力）' : '未設定';
-  } catch { serverStatus.textContent = '設定を読み込めませんでした'; }
+    showConfiguredSecrets(result.configuredSecrets);
+  } catch { if (version === settingsVersion) serverStatus.textContent = '設定を読み込めませんでした'; }
 }
 serverForm.addEventListener('submit', async event => {
   event.preventDefault();
   const button = serverForm.querySelector('button');
+  if (button.disabled) return;
+  settingsVersion++;
+  const submitted = Object.fromEntries(new FormData(serverForm));
+  let saved = false;
   button.disabled = true;
   try {
-    await fetchJson('/api/admin/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(Object.fromEntries(new FormData(serverForm)))});
+    const result = await fetchJson('/api/admin/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(submitted)});
+    if (!result?.ok) throw new Error('settings_save_unconfirmed');
+    saved = true;
+    for (const key of secretFields) {
+      const input = serverForm.elements.namedItem(key);
+      if (input.value === submitted[key]) input.value = '';
+    }
+    const current = await fetchJson('/api/admin/settings');
+    showConfiguredSecrets(current.configuredSecrets);
     serverStatus.textContent = '保存しました。コンテナ再起動後に適用されます。';
-    serverForm.elements.ASR_API_KEY.value = '';
-    serverForm.elements.SUMMARY_API_KEY.value = '';
-    serverForm.elements.OPENWEBUI_API_KEY.value = '';
-  } catch { serverStatus.textContent = '保存できませんでした。入力内容を確認してください。'; }
+  } catch {
+    serverStatus.textContent = saved ? '保存しました。保存状態の表示を確認できませんでした。画面を再読み込みして確認してください。'
+      : '保存できませんでした。入力内容を確認してください。';
+  }
   finally { button.disabled = false; }
 });
 loadServerSettings();

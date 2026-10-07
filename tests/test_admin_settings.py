@@ -56,6 +56,22 @@ class AdminSettingsTests(unittest.TestCase):
         with patch.object(history_service, 'settings', SimpleNamespace(history_retention_days=0)):
             self.assertEqual(history_service.cleanup_expired_histories(None), 0)
 
+    def test_api_keeps_all_saved_credentials_when_empty_fields_are_resubmitted(self):
+        secrets = {'ASR_API_KEY':'synthetic-asr', 'SUMMARY_API_KEY':'synthetic-summary',
+                   'OPENWEBUI_API_KEY':'synthetic-openwebui'}
+        with patch.object(deps, 'get_optional_user', return_value=SimpleNamespace(is_admin=True)):
+            response = self.client.put('/api/admin/settings', json=secrets)
+            self.assertTrue(response.json()['ok'])
+            response = self.client.get('/api/admin/settings')
+            self.assertTrue(all(response.json()['configuredSecrets'][key] for key in secrets))
+            for value in secrets.values():
+                self.assertNotIn(value, response.text)
+            response = self.client.put('/api/admin/settings', json={key:'' for key in secrets})
+            self.assertTrue(response.json()['ok'])
+            self.assertEqual({key:read_overrides()[key] for key in secrets}, secrets)
+            response = self.client.get('/api/admin/settings')
+            self.assertTrue(all(response.json()['configuredSecrets'][key] for key in secrets))
+
 
     def test_container_gateway_maps_saved_urls_without_changing_file(self):
         save_overrides({'ASR_BASE_URL': 'http://localhost:4000/v1', 'SUMMARY_BASE_URL': 'https://[::1]:4001/v1'})

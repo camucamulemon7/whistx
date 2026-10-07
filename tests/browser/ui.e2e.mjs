@@ -2480,11 +2480,26 @@ try {
   const adminUrl = new URL('/admin.html', url).href;
   client = await connectPage(browserWebSocketUrl, 'about:blank');
   await client.send('Page.addScriptToEvaluateOnNewDocument', { source: String.raw`
-    window.__adminTest = { failNext: false, offsets: [] };
-    window.fetch = async (input) => {
+    window.__adminTest = { failNext: false, offsets: [], settingsSaves: 0, settingsFail: false, settingsDelay: 0,
+      settings: {HISTORY_RETENTION_DAYS:'0', ENABLE_SELF_SIGNUP:'0', ALLOW_GUEST_TRANSCRIPTION:'0', ASR_BACKEND:'whisper', ASR_BASE_URL:'http://openwebui.test/api/v1', ASR_MODEL:'whisper-1', OPENWEBUI_BASE_URL:'http://openwebui.test', SUMMARY_BASE_URL:'', SUMMARY_MODEL:'synthetic-model'},
+      secrets: {ASR_API_KEY:false, SUMMARY_API_KEY:false, OPENWEBUI_API_KEY:false} };
+    window.fetch = async (input, options = {}) => {
       const url = new URL(String(input), location.origin);
       const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-      if (url.pathname === '/api/admin/settings') return json({ values: {}, configuredSecrets: {} });
+      if (url.pathname === '/api/admin/settings') {
+        if (options.method === 'PUT') {
+          window.__adminTest.settingsSaves++;
+          const body = JSON.parse(options.body);
+          await new Promise(resolve => setTimeout(resolve, window.__adminTest.settingsDelay));
+          if (window.__adminTest.settingsFail) return json({error:'synthetic_save_failure'},503);
+          for (const [key,value] of Object.entries(body)) {
+            if (key in window.__adminTest.secrets) { if (value) window.__adminTest.secrets[key] = true; }
+            else window.__adminTest.settings[key] = value;
+          }
+          return json({ok:true,restartRequired:true});
+        }
+        return json({values:window.__adminTest.settings,configuredSecrets:window.__adminTest.secrets});
+      }
       if (window.__adminTest.failNext) {
         window.__adminTest.failNext = false;
         return json({ error: 'synthetic_page_failure' }, 503);
@@ -2511,6 +2526,24 @@ try {
     throw new Error('Admin paging condition failed: ' + expression);
   };
   await waitAdmin(`document.querySelector('#userCount')?.textContent === '105'`);
+  await waitAdmin(`document.querySelector('[name=OPENWEBUI_API_KEY]').placeholder === '未設定'`);
+  await evaluate(client, `(() => { const form=document.querySelector('#serverSettingsForm'); form.elements.ASR_API_KEY.value='synthetic-asr-key'; form.elements.OPENWEBUI_API_KEY.value='synthetic-openwebui-key'; form.requestSubmit(); })()`);
+  await waitAdmin(`document.querySelector('#serverSettingsStatus').textContent.includes('保存しました') && !document.querySelector('#serverSettingsForm button').disabled`);
+  assert.equal(await evaluate(client, `window.__adminTest.secrets.OPENWEBUI_API_KEY`), true, 'generation key must be sent to the settings API');
+  assert.equal(await evaluate(client, `document.querySelector('[name=OPENWEBUI_API_KEY]').value`), '', 'saved secrets must not be redisplayed');
+  assert.equal(await evaluate(client, `document.querySelector('[name=OPENWEBUI_API_KEY]').placeholder`), '設定済み（変更時のみ入力）', 'save acknowledgement must show the key is still stored');
+  await evaluate(client, `document.querySelector('#serverSettingsForm').requestSubmit()`);
+  await waitAdmin(`window.__adminTest.settingsSaves === 2 && !document.querySelector('#serverSettingsForm button').disabled`);
+  assert.equal(await evaluate(client, `window.__adminTest.secrets.OPENWEBUI_API_KEY`), true, 'saving a blank credential preserves the stored key');
+  await evaluate(client, `window.__adminTest.settingsDelay=150; document.querySelector('[name=OPENWEBUI_API_KEY]').value='synthetic-saved-first'; document.querySelector('#serverSettingsForm').requestSubmit()`);
+  await waitAdmin(`document.querySelector('#serverSettingsForm button').disabled`);
+  await evaluate(client, `document.querySelector('[name=OPENWEBUI_API_KEY]').value='synthetic-next-unsaved'`);
+  await waitAdmin(`!document.querySelector('#serverSettingsForm button').disabled`);
+  assert.equal(await evaluate(client, `document.querySelector('[name=OPENWEBUI_API_KEY]').value`), 'synthetic-next-unsaved', 'a save response must not erase a newer credential edit');
+  await evaluate(client, `window.__adminTest.settingsFail=true; document.querySelector('#serverSettingsForm').requestSubmit()`);
+  await waitAdmin(`document.querySelector('#serverSettingsStatus').textContent.includes('保存できませんでした') && !document.querySelector('#serverSettingsForm button').disabled`);
+  assert.equal(await evaluate(client, `document.querySelector('[name=OPENWEBUI_API_KEY]').value`), 'synthetic-next-unsaved', 'failed save preserves credential input');
+  await evaluate(client, `window.__adminTest.settingsFail=false; window.__adminTest.settingsDelay=0`);
   assert.equal(await evaluate(client, `document.querySelector('#userTableBody').children.length`), 50);
   assert.equal(await evaluate(client, `document.querySelector('#usersPrev').disabled`), true);
   await evaluate(client, `document.querySelector('#usersNext').click()`);
