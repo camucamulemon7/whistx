@@ -2120,6 +2120,8 @@ async function verifyLiveRevision(client, backend) {
     const shot = await client.send("Page.captureScreenshot", { format: "png" });
     await writeFile(process.env.MEETING_READING_SCREENSHOT, Buffer.from(shot.data, "base64"));
   }
+  await evaluate(client, `document.querySelector('[data-meeting-tab="summary"]').click()`);
+  assert.equal(await evaluate(client, `getComputedStyle(document.querySelector('#meetingTranslationPanel')).display`), 'none');
   await evaluate(client, `(() => {
     const revision = { type: "transcript_revision", track: "mic", startSample: 0, endSample: 160000,
       replacesSegmentIds: ["rt-0", "rt-1"], record: { type: "final", track: "mic", segmentId: "hq-0", seq: 0,
@@ -2138,6 +2140,8 @@ async function verifyLiveRevision(client, backend) {
   assert.equal(await evaluate(client, `document.querySelector('#log .transcript-quality').textContent`), "高精度");
   await waitCondition(client, `document.querySelector('#translationRows').textContent.includes('Automatic HQ translation')`);
   assert.ok(await evaluate(client, `window.__hqTranslationRequests > 0 && !window.__hqFinalized`), 'HQ revisions must translate automatically while recording continues');
+  assert.equal(await evaluate(client, `document.querySelector('#workspacePanels').dataset.meetingView`), 'summary', `${backend} must translate without opening the translation tab`);
+  assert.equal(await evaluate(client, `getComputedStyle(document.querySelector('#meetingTranslationPanel')).display`), 'none', 'translation must complete while its panel stays hidden');
   await evaluate(client, `window.__qwenSocket.emit({ type: "info", message: "ready", asrBackend: ${JSON.stringify(backend)}, records: [
     { type: "final", track: "mic", segmentId: "hq-snapshot", seq: 0, text: "再接続で復元", tsStart: 0, tsEnd: 10000, startSample: 0, endSample: 160000, quality: "high_accuracy" }
   ], tracks: { mic: { seq: -1, samples: 0 } } })`);
