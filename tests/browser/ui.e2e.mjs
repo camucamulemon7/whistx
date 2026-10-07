@@ -1814,7 +1814,9 @@ async function verifyMeetingInsights(client) {
         }
         if (url.includes("/api/meeting/translate")) {
           window.__translationRequest = JSON.parse(options.body);
-          const events = [{type:'sources',sources:[source],finalized:true}, {type:'translation',id:source.id,sourceText:source.text,text:'Release date is undecided. <script>unsafe</script>'}, {type:'done'}];
+          const original = { ...source, text: window.__translationEnglish ? 'The release date is not decided.' : source.text };
+          const text = window.__translationRequest.language === 'ja' ? '公開日は決まっていません。' : 'Release date is undecided. <script>unsafe</script>';
+          const events = [{type:'sources',sources:[original],finalized:true}, {type:'translation',id:original.id,sourceText:original.text,text}, {type:'done'}];
           return new Response(events.map(e => 'data: '+JSON.stringify(e)+'\n\n').join(''), {headers:{'Content-Type':'text/event-stream'}});
         }
         if (url.includes("/api/meeting/ask")) {
@@ -1873,6 +1875,17 @@ async function verifyMeetingInsights(client) {
   await evaluate(client, `(() => {const language=document.querySelector('#translationLanguage');language.value='ja';language.dispatchEvent(new Event('change'));})()`);
   await new Promise(resolve => setTimeout(resolve, 650));
   assert.equal(await evaluate(client, `window.__translationRequest.language`), 'ja');
+  await evaluate(client, `window.__translationEnglish = true; document.querySelector('#language').value = 'en'; document.querySelector('#translationRetry').click()`);
+  await waitCondition(client, `document.querySelector('#translationRows .translation-row > p')?.textContent === '公開日は決まっていません。' && document.querySelector('#translationRows .translation-row > div p')?.textContent === 'The release date is not decided.'`);
+  const sourceBefore = await evaluate(client, `document.querySelector('#log').textContent`);
+  assert.equal(await evaluate(client, `document.querySelector('#language').value`), 'en', 'translation must not change ASR input language');
+  await evaluate(client, `document.querySelector('#translationEnabled').click(); document.querySelector('#translationEnabled').click()`);
+  await waitCondition(client, `document.querySelector('#translationRows .translation-row > div p')?.textContent === 'The release date is not decided.' && document.querySelector('#translationRows .translation-row > p')?.textContent === '公開日は決まっていません。'`);
+  assert.equal(await evaluate(client, `document.querySelector('#translationRows .translation-row > p').textContent`), '公開日は決まっていません。');
+  assert.equal(await evaluate(client, `document.querySelector('#log').textContent`), sourceBefore, 'translation toggle must preserve the saved transcript');
+  await evaluate(client, `(() => {const language=document.querySelector('#translationLanguage');language.value='en';language.dispatchEvent(new Event('change'));})()`);
+  await waitCondition(client, `document.querySelector('#translationRows .translation-row > p')?.textContent.includes('Release date is undecided')`);
+  assert.equal(await evaluate(client, `document.querySelector('#translationRows .translation-row > div p').textContent`), 'The release date is not decided.', 'changing translation target must preserve original English');
   if (process.env.TRANSLATION_SCREENSHOT) {
     const shot = await client.send('Page.captureScreenshot', {format:'png'});
     await writeFile(process.env.TRANSLATION_SCREENSHOT, Buffer.from(shot.data, 'base64'));

@@ -261,6 +261,64 @@ class WhisperDualLaneTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     live.close()
 
+    async def test_english_source_is_not_replaced_by_translated_hq_output(self):
+        cases = [('Hello everyone.', '皆さんこんにちは。'),
+                 ('We will review the project next Friday.', '次の金曜日にWhistxを確認します。')]
+        for original, candidate in cases:
+            with self.subTest(original=original), tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+                config, _, _ = self.fixture(stack, directory, models=(Model(text=original), Model(text=candidate)))
+                live = WhisperLiveMeeting(Socket(), dict(tracks=['mic'], language='auto'))
+                try:
+                    await self.feed(live, 0, 5)
+                    await live._infer('mic', flush=False)
+                    rt_rows = copy.deepcopy(live.records)
+                    live.stopping = True
+                    await asyncio.wait_for(live.work(), 10)
+                    self.assertTrue(live.data['finalized'])
+                    self.assertEqual(live.records, rt_rows, 'HQ must retain the English source when recognition translates it')
+                    self.assertEqual(live.data['hqRetainedIntervals'][0]['reason'], 'language_coverage')
+                    with patch('server.services.meeting_source.settings', config), patch('server.services.meeting_source.runtime_access_allowed', return_value=True):
+                        snapshot = load_meeting(user_id=123, runtime_session_id=live.session_id)
+                    translator = SimpleNamespace(complete_meeting=lambda messages, **kwargs: json.dumps({'translations': [
+                        {'id': row['id'], 'text': candidate} for row in json.loads(messages[1]['content'])]}))
+                    events = list(translation_events(snapshot, translator, 'ja', cancelled=threading.Event()))
+                    self.assertEqual(events[0]['sources'][0]['text'], original)
+                    translated = next(event for event in events if event['type'] == 'translation')
+                    self.assertEqual((translated['sourceText'], translated['text']), (original, candidate))
+                    self.assertEqual(snapshot.segments[0]['text'], original)
+                finally:
+                    live.close()
+
+    async def test_short_english_is_retained_inside_mixed_language_hq_and_translation(self):
+        japanese, english = '会議の内容を確認します。', 'Hello everyone.'
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            rt, hq = Model(text=japanese), Model(text=japanese)
+            config, _, _ = self.fixture(stack, directory, models=(rt, hq))
+            live = WhisperLiveMeeting(Socket(), dict(tracks=['mic'], language='auto'))
+            try:
+                await self.feed(live, 0, 5)
+                await live._infer('mic', flush=False)
+                rt.text = english
+                await self.feed(live, 5, 10)
+                await live._infer('mic', flush=False)
+                english_id = live.records[-1]['segmentId']
+                await live._hq_interval(None, 'mic', 0, RATE * 10)
+                self.assertEqual(live.records[0]['text'], japanese + '\n' + english)
+                self.assertEqual(live.records[0]['retainedRealtimeSegmentIds'], [english_id])
+                self.assertEqual(len(hq.requests), 3, 'mixed speech must be redecoded as anchored source groups')
+                with patch('server.services.meeting_source.settings', config), patch('server.services.meeting_source.runtime_access_allowed', return_value=True):
+                    snapshot = load_meeting(user_id=123, runtime_session_id=live.session_id)
+                self.assertFalse(snapshot.finalized)
+                translator = SimpleNamespace(complete_meeting=lambda messages, **kwargs: json.dumps({'translations': [
+                    {'id': row['id'], 'text': japanese + '\n皆さんこんにちは。'} for row in json.loads(messages[1]['content'])]}))
+                events = list(translation_events(snapshot, translator, 'ja', cancelled=threading.Event()))
+                self.assertIn(english, events[0]['sources'][0]['text'])
+                translated = next(event for event in events if event['type'] == 'translation')
+                self.assertIn(english, translated['sourceText'])
+                self.assertNotIn(english, translated['text'])
+            finally:
+                live.close()
+
     async def test_legacy_resume_preserves_old_rows_and_model_identity(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             _, models, _ = self.fixture(stack, directory)

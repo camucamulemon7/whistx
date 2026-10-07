@@ -256,6 +256,12 @@ class MixedCoverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(language_coverage_lost(japanese + english, japanese))
         self.assertFalse(language_coverage_lost('APIを確認します。', 'APIを確認します。'))
         self.assertFalse(language_coverage_lost(japanese + english, japanese + english))
+        self.assertTrue(language_coverage_lost('Hello everyone.', '皆さんこんにちは。'))
+        self.assertTrue(language_coverage_lost(japanese + ' Hello everyone.', japanese))
+        self.assertTrue(language_coverage_lost('We will review the project next Friday.', '次の金曜日にWhistxを確認します。'))
+        self.assertFalse(language_coverage_lost('Hello everyone.', 'Hello, everyone!'))
+        self.assertFalse(language_coverage_lost('Hello everyone.', 'Hello, everyone. 確認します。'))
+        self.assertFalse(language_coverage_lost('API', 'APIを確認。'))
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)
             class Config:
