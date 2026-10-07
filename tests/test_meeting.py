@@ -194,6 +194,8 @@ class LiveJournalTests(unittest.IsolatedAsyncioTestCase):
 class RefinementTests(unittest.TestCase):
     def test_replay_is_atomic_on_failure_and_preserves_original_on_success(self):
         from server.services.meeting_refinement import refine_events
+        from tests.langfuse_fakes import recording_observer
+        observer, observations = recording_observer()
         from server.services.meeting_source import write_json_atomic
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -218,11 +220,18 @@ class RefinementTests(unittest.TestCase):
                     return SimpleNamespace(text='音声から再認識した文')
             with patch('server.services.meeting_refinement.resolve_debug_audio_path', return_value=audio):
                 with self.assertRaises(RuntimeError):
-                    list(refine_events(snapshot, cancelled=threading.Event(), transcriber_factory=Transcriber))
+                    list(refine_events(snapshot, cancelled=threading.Event(), transcriber_factory=Transcriber, observer=observer))
+                self.assertEqual(len(observations), 2)
+                self.assertTrue(observations[0]['updates'][0]['output']['succeeded'])
+                self.assertTrue(observations[1]['updates'][0]['output']['failed'])
                 self.assertEqual(path.read_text(), original)
                 self.assertFalse(path.with_suffix('.original.jsonl').exists())
                 Transcriber.transcribe_chunk = lambda *a, **kw: SimpleNamespace(text='音声から再認識した文')
-                events = list(refine_events(snapshot, cancelled=threading.Event(), transcriber_factory=Transcriber))
+                events = list(refine_events(snapshot, cancelled=threading.Event(), transcriber_factory=Transcriber, observer=observer))
+                self.assertEqual(len(observations), 4)
+                self.assertEqual([o['start']['input']['startMs'] for o in observations], [0, 1000, 0, 1000])
+                self.assertTrue(all(o['start']['metadata']['manual'] for o in observations))
+                self.assertEqual(len({o['start']['trace_context']['trace_id'] for o in observations}), 1)
                 self.assertEqual(events[-1]['type'], 'done')
                 self.assertEqual(path.with_suffix('.original.jsonl').read_text(), original)
                 updated = [json.loads(line) for line in path.read_text().splitlines()]

@@ -24,6 +24,7 @@ from server.services.runtime_artifact_service import _revision_jsonl_snapshot
 from server.transcript_store import read_jsonl_records
 from server.transcription.live import LiveMeeting, live_transcribe
 from server.transcription.whisper_live import WhisperLiveMeeting
+from tests.langfuse_fakes import recording_observer
 
 RATE = 16000
 PCM = b'\xff\x0f' * RATE
@@ -110,8 +111,10 @@ class WhisperDualLaneTests(unittest.IsolatedAsyncioTestCase):
         rt, hq = Model(), Model(text='高精度で会議の内容を確認しました。', started=started, release=release)
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             config, _, factories = self.fixture(stack, directory, models=(rt, hq))
+            observer, observations = recording_observer()
+            resources = SimpleNamespace(observer=observer, diarizer=None)
             ws = Socket()
-            live = WhisperLiveMeeting(ws, dict(tracks=['mic'], language='ja', sharedVocabulary='WhistX', prompt='議事録'))
+            live = WhisperLiveMeeting(ws, dict(tracks=['mic'], language='ja', sharedVocabulary='WhistX', prompt='議事録'), resources=resources)
             worker = asyncio.create_task(live.work())
             try:
                 await self.feed(live, 0, 30)
@@ -153,12 +156,21 @@ class WhisperDualLaneTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(live.store.jsonl_path.with_suffix('.revisions.jsonl').exists())
                 self.assertTrue(read_json(live.store.metadata_path)['finalized'])
                 session = live.session_id
+                self.assertEqual(len(observations), len(hq.requests))
+                self.assertEqual(len(observations), 2, 'RT calls must not create observations')
+                self.assertEqual([o['start']['input']['endMs'] for o in observations], [30000, 40000])
+                self.assertEqual(len({o['start']['trace_context']['trace_id'] for o in observations}), 1)
+                self.assertTrue(all(o['updates'][0]['output']['succeeded'] for o in observations))
+                self.assertNotIn(session, json.dumps(observations))
+                self.assertNotIn('高精度で', json.dumps(observations))
                 live.close()
-                resumed = WhisperLiveMeeting(Socket(), dict(resumeSessionId=session, language='en'))
+                resumed = WhisperLiveMeeting(Socket(), dict(resumeSessionId=session, language='en'), resources=resources)
                 try:
                     self.assertEqual(resumed.records, rows)
                     self.assertEqual(resumed.data['language'], 'ja')
                     self.assertEqual(resumed.data['tracks']['mic']['hqCommitted'], 40 * RATE)
+                    await resumed._hq_interval(None, 'mic', 0, 30 * RATE)
+                    self.assertEqual(len(observations), 2, 'committed replay must not trace or infer')
                 finally:
                     resumed.close()
             finally:

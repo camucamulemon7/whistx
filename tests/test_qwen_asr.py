@@ -133,6 +133,9 @@ class DualLaneTests(unittest.IsolatedAsyncioTestCase):
                 resumed.close()
 
     async def test_hq_during_capture_rt_continues_and_resume_replays_revision(self):
+        from tests.langfuse_fakes import recording_observer
+        observer, observations = recording_observer()
+        resources = SimpleNamespace(observer=observer, diarizer=None)
         class Socket:
             state = SimpleNamespace(authenticated_user_id=123, is_guest=False, rate_limit_subject='fixture')
             cookies = {}
@@ -198,7 +201,7 @@ class DualLaneTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(patch('server.transcription.qwen_live.httpx.AsyncClient', Client))
             stack.enter_context(patch.object(QwenLiveMeeting, '_request_budget', AsyncMock()))
             ws = Socket()
-            live = QwenLiveMeeting(ws, dict(tracks=['mic'], language='auto', sharedVocabulary='WhistX'))
+            live = QwenLiveMeeting(ws, dict(tracks=['mic'], language='auto', sharedVocabulary='WhistX'), resources=resources)
             worker = asyncio.create_task(live.work())
             async def feed(first, last):
                 for i in range(first, last):
@@ -231,13 +234,20 @@ class DualLaneTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(sum(r['type'] == 'revision' for r in raw), 2)
                 self.assertEqual(materialized[0]['originalText'].count('API'), 6)
                 session_id = live.session_id
+                self.assertEqual(len(observations), len(requests))
+                self.assertEqual(len(observations), 2, 'Qwen RT must not generate HQ observations')
+                self.assertEqual([o['start']['input']['endMs'] for o in observations], [30000, 40000])
+                self.assertEqual(len({o['start']['trace_context']['trace_id'] for o in observations}), 1)
+                self.assertTrue(all(o['updates'][0]['output']['succeeded'] for o in observations))
                 live.close()
                 stack.enter_context(patch('server.transcription.live.runtime_access_allowed', return_value=True))
-                resumed = QwenLiveMeeting(Socket(), dict(resumeSessionId=session_id))
+                resumed = QwenLiveMeeting(Socket(), dict(resumeSessionId=session_id), resources=resources)
                 try:
                     self.assertEqual(resumed.records, materialized)
                     self.assertEqual(resumed.data['tracks']['mic']['hqCommitted'], 40*16000)
                     self.assertIn('APIのreview', resumed.store.txt_path.read_text())
+                    await resumed._hq_interval(None, 'mic', 0, 30 * 16000)
+                    self.assertEqual(len(observations), 2)
                 finally:
                     resumed.close()
             finally:

@@ -86,6 +86,7 @@ async def meeting_refine(payload: MeetingSourceRequest, user: User = Depends(get
     except MeetingError as exc:
         return JSONResponse(status_code=exc.status_code, content={"error": exc.code})
     return StreamingResponse(stream_events(lambda cancelled: refine_events(snapshot, cancelled=cancelled,
+                             observer=runtime.resources.observer,
                              allow_request=lambda: _allow_costly_request("asr", user)), pool="asr"),
                              media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
