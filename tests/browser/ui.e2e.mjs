@@ -419,6 +419,24 @@ async function verifyAssistantPreference(client) {
   assert.equal(usableWithoutStorage, true, "assistant remains usable when preference storage fails");
 }
 
+async function waitForRecordingState(client, recording) {
+  let state;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    state = await evaluate(client, `(() => {
+      const button = document.querySelector("#startBtn");
+      return {
+        disabled: button.disabled,
+        busy: button.getAttribute("aria-busy"),
+        pressed: button.getAttribute("aria-pressed"),
+        label: button.querySelector(".record-label").textContent
+      };
+    })()`);
+    if (!state.disabled && state.busy === "false" && state.pressed === String(recording)) return;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.fail(`Recording did not reach ${recording ? "recording" : "idle"} state: ${JSON.stringify(state)}`);
+}
+
 const recordingMocks = String.raw`
   (() => {
     window.__recordingTest = {
@@ -625,7 +643,7 @@ const recordingMocks = String.raw`
               sessionId: this.sessionId
             });
             this.dispatchEvent(event);
-          }, 60);
+          }, window.__recordingTest.readyDelayMs ?? 60);
         } else if (message.type === "stop") {
           window.__recordingTest.stopMessages += 1;
           const stopping = new Event("message");
@@ -719,6 +737,7 @@ async function verifyRecordingStartIsSingleFlight(client) {
   await evaluate(
     client,
     `(() => {
+      window.__recordingTest.readyDelayMs = 350;
       const button = document.querySelector("#startBtn");
       button.click();
       button.click();
@@ -765,7 +784,7 @@ async function verifyRecordingStartIsSingleFlight(client) {
     "record button should expose and lock the starting state",
   );
 
-  await new Promise((resolve) => setTimeout(resolve, 180));
+  await waitForRecordingState(client, true);
   assert.deepEqual(
     await evaluate(client, `Array.from(document.querySelectorAll("#bannersContainer .notice-banner-body"), node => node.textContent)`),
     ["Updated announcement", "Required announcement"],
@@ -1264,7 +1283,7 @@ async function verifyGracefulStopIsSerialized(client) {
   assert.equal(finalizing.downloadDisabled, "true", "finalization exports should remain disabled");
   assert.equal(finalizing.settingsLocked, true, "session settings should remain locked during finalization");
 
-  await new Promise((resolve) => setTimeout(resolve, 120));
+  await waitForRecordingState(client, false);
   const completed = await evaluate(
     client,
     `({
@@ -1324,7 +1343,7 @@ async function startSecondRecordingAndRejectStaleMessages(client) {
       document.querySelector("#startBtn").click();
     })()`,
   );
-  await new Promise((resolve) => setTimeout(resolve, 180));
+  await waitForRecordingState(client, true);
   await evaluate(
     client,
     `(() => {
@@ -1701,7 +1720,7 @@ async function verifyEffectiveAudioSourceFallback(client) {
   assert.match(result.telemetry, /両方 → マイク/, "UI telemetry should distinguish requested and effective sources");
 
   await evaluate(client, `document.querySelector("#startBtn").click()`);
-  await new Promise((resolve) => setTimeout(resolve, 140));
+  await waitForRecordingState(client, false);
   await evaluate(
     client,
     `(() => {
