@@ -54,6 +54,8 @@ class RuntimeCompositionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(configured['activeConnections'], 2)
         self.assertFalse(empty['asrReady'])
         self.assertIsNone(empty['summaryModel'])
+        self.assertIsNone(empty['meetingTranslationModel'])
+        self.assertEqual(configured['meetingTranslationModel'], health_service.settings.meeting_translation_model or configured['summaryModel'])
 
     def test_resource_instances_do_not_share_socket_sets(self):
         first, second = RuntimeResources(), RuntimeResources()

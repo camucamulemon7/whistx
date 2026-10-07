@@ -43,6 +43,7 @@ export function createTranslation({ getSource, getAccess, setView }) {
   function reset() {
     version++;
     clearTimeout(timer);
+    timer = null;
     controller?.abort();
     controller = null;
     queued = false;
@@ -95,7 +96,10 @@ export function createTranslation({ getSource, getAccess, setView }) {
       }
     }
   }
-  function schedule() { clearTimeout(timer); timer = setTimeout(run, 400); }
+  function schedule() {
+    if (timer !== null) return;
+    timer = setTimeout(() => { timer = null; run(); }, 0);
+  }
   enabled.addEventListener('change', () => {
     reset();
     tab.hidden = !enabled.checked;

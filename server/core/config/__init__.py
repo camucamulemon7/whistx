@@ -28,6 +28,7 @@ class Settings:
     summary_api_key: str
     summary_base_url: str | None
     summary_model: str
+    meeting_translation_model: str
     summary_temperature: float
     summary_input_max_chars: int
     summary_system_prompt: str
@@ -77,6 +78,7 @@ def load_settings() -> Settings:
         summary_api_key=summary_api_key,
         summary_base_url=summary_base_url,
         summary_model=os.getenv("SUMMARY_MODEL", DEFAULT_GENERATION_MODEL).strip() or DEFAULT_GENERATION_MODEL,
+        meeting_translation_model=os.getenv("MEETING_TRANSLATION_MODEL", "").strip(),
         summary_temperature=to_float("SUMMARY_TEMPERATURE", 0.2),
         summary_input_max_chars=max(2_000, to_int("SUMMARY_INPUT_MAX_CHARS", 16_000)),
         summary_system_prompt=summary_system_prompt,

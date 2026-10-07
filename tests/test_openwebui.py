@@ -62,6 +62,45 @@ class OpenWebUIConfigTests(unittest.TestCase):
         self.assertEqual(json.loads(calls[0].content)['model'], DEFAULT_GENERATION_MODEL)
         self.assertEqual(calls[0].headers['authorization'], 'Bearer synthetic-generation')
 
+    def test_translation_uses_dedicated_model_and_keeps_recap_connection(self):
+        calls = []
+        source_text = 'The release date is not decided.'
+        def handle(request):
+            calls.append(request)
+            body = json.loads(request.content)
+            content = json.dumps({'translations': [{'id':'0', 'text':'公開日は未定です。'}]}) if body['model'] == 'synthetic-fast-translation' else 'synthetic recap'
+            return httpx.Response(200, json={'id':'synthetic', 'object':'chat.completion', 'created':0,
+                'model':body['model'], 'choices':[{'index':0, 'finish_reason':'stop',
+                'message':{'role':'assistant', 'content':content}}]})
+        model = OpenAISummarizer(api_key='synthetic-generation', base_url='https://openwebui.test/api',
+                                 model=DEFAULT_GENERATION_MODEL, temperature=0.2,
+                                 translation_model='synthetic-fast-translation')
+        model.client.close()
+        from openai import OpenAI
+        model.client = OpenAI(api_key='synthetic-generation', base_url='https://openwebui.test/api',
+                              http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+        self.addCleanup(model.client.close)
+        from server.services.meeting_translation import translation_events
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'synthetic.jsonl'
+            rows = [dict(id='hq-0', text=source_text, quality='high_accuracy', startMs=0, endMs=30000, speaker='')]
+            snapshot = MeetingSnapshot('runtime:synthetic', path, path.with_suffix('.meeting.json'), rows, [], 'r1', 30000, False)
+            events = list(translation_events(snapshot, model, 'ja', cancelled=threading.Event()))
+            translated = next(event for event in events if event['type'] == 'translation')
+            self.assertEqual(translated['sourceText'], source_text)
+            self.assertEqual(translated['text'], '公開日は未定です。')
+            self.assertEqual(rows[0]['text'], source_text)
+        self.assertEqual(model.complete_meeting([{'role':'user','content':'synthetic meeting'}]), 'synthetic recap')
+        self.assertEqual([json.loads(call.content)['model'] for call in calls], ['synthetic-fast-translation', DEFAULT_GENERATION_MODEL])
+        self.assertTrue(all(str(call.url) == 'https://openwebui.test/api/chat/completions' for call in calls))
+        self.assertTrue(all(call.headers['authorization'] == 'Bearer synthetic-generation' for call in calls))
+
+    def test_translation_defaults_to_the_existing_summary_model(self):
+        model = OpenAISummarizer(api_key='synthetic', base_url='https://openwebui.test/api',
+                                 model=DEFAULT_GENERATION_MODEL, temperature=0.2)
+        self.addCleanup(model.client.close)
+        self.assertEqual(model.translation_model, model.model)
+
 
 class NotesTests(unittest.TestCase):
     def setUp(self):

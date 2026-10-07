@@ -76,6 +76,7 @@ async def on_startup() -> None:
             api_key=settings.summary_api_key,
             base_url=settings.summary_base_url,
             model=settings.summary_model,
+            translation_model=settings.meeting_translation_model,
             temperature=settings.summary_temperature,
             summary_system_prompt=settings.summary_system_prompt,
             summary_prompt_template=settings.summary_prompt_template,

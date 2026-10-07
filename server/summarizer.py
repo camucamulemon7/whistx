@@ -38,6 +38,7 @@ class OpenAISummarizer:
         base_url: str | None,
         model: str,
         temperature: float,
+        translation_model: str = "",
         summary_system_prompt: str = "",
         summary_prompt_template: str = "",
         proofread_system_prompt: str = "",
@@ -54,6 +55,7 @@ class OpenAISummarizer:
 
         self.client = OpenAI(**kwargs)
         self.model = model
+        self.translation_model = translation_model.strip() or model
         self.temperature = temperature
         self.summary_system_prompt = summary_system_prompt.strip()
         self.summary_prompt_template = summary_prompt_template.strip()
@@ -63,8 +65,15 @@ class OpenAISummarizer:
 
     def complete_meeting(self, messages: list[dict[str, str]], *, json_output: bool = False) -> str:
         """Use the same configured model for structured, grounded meeting notes."""
+        return self._complete_meeting(messages, model=self.model, json_output=json_output)
+
+    def complete_translation(self, messages: list[dict[str, str]]) -> str:
+        """Allow a fast translation model without changing recap or QA models."""
+        return self._complete_meeting(messages, model=self.translation_model, json_output=True)
+
+    def _complete_meeting(self, messages: list[dict[str, str]], *, model: str, json_output: bool) -> str:
         payload: dict[str, Any] = {
-            "model": self.model, "messages": messages,
+            "model": model, "messages": messages,
             "temperature": self.temperature, "max_tokens": 6000,
         }
         if json_output:
