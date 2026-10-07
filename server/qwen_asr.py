@@ -152,7 +152,12 @@ def language_coverage_lost(original: str, candidate: str) -> bool:
     before_ja, before_en = script_counts(original)
     after_ja, after_en = script_counts(candidate)
     # Do not mistake a lone acronym or punctuation normalization for omission.
-    return (before_ja >= 8 and after_ja < 2) or (before_en >= 24 and after_en < 5)
+    # A short English utterance can become Japanese in a second ASR pass even
+    # when the provider is asked to transcribe. Retain it if the candidate
+    # changes script and loses most of its English, including residual names.
+    translated_english = before_ja < 2 and before_en >= 8 and after_ja >= 2 and after_en * 2 < before_en
+    return ((before_ja >= 8 and after_ja < 2) or (before_en >= 8 and after_en < 2)
+            or (before_en >= 24 and after_en < 5) or translated_english)
 
 
 def script_groups(records: list[dict]) -> list[list[dict]]:

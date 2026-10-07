@@ -419,6 +419,24 @@ async function verifyAssistantPreference(client) {
   assert.equal(usableWithoutStorage, true, "assistant remains usable when preference storage fails");
 }
 
+async function waitForRecordingState(client, recording) {
+  let state;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    state = await evaluate(client, `(() => {
+      const button = document.querySelector("#startBtn");
+      return {
+        disabled: button.disabled,
+        busy: button.getAttribute("aria-busy"),
+        pressed: button.getAttribute("aria-pressed"),
+        label: button.querySelector(".record-label").textContent
+      };
+    })()`);
+    if (!state.disabled && state.busy === "false" && state.pressed === String(recording)) return;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.fail(`Recording did not reach ${recording ? "recording" : "idle"} state: ${JSON.stringify(state)}`);
+}
+
 const recordingMocks = String.raw`
   (() => {
     window.__recordingTest = {
@@ -625,7 +643,7 @@ const recordingMocks = String.raw`
               sessionId: this.sessionId
             });
             this.dispatchEvent(event);
-          }, 60);
+          }, window.__recordingTest.readyDelayMs ?? 60);
         } else if (message.type === "stop") {
           window.__recordingTest.stopMessages += 1;
           const stopping = new Event("message");
@@ -719,6 +737,7 @@ async function verifyRecordingStartIsSingleFlight(client) {
   await evaluate(
     client,
     `(() => {
+      window.__recordingTest.readyDelayMs = 350;
       const button = document.querySelector("#startBtn");
       button.click();
       button.click();
@@ -765,7 +784,7 @@ async function verifyRecordingStartIsSingleFlight(client) {
     "record button should expose and lock the starting state",
   );
 
-  await new Promise((resolve) => setTimeout(resolve, 180));
+  await waitForRecordingState(client, true);
   assert.deepEqual(
     await evaluate(client, `Array.from(document.querySelectorAll("#bannersContainer .notice-banner-body"), node => node.textContent)`),
     ["Updated announcement", "Required announcement"],
@@ -1264,7 +1283,7 @@ async function verifyGracefulStopIsSerialized(client) {
   assert.equal(finalizing.downloadDisabled, "true", "finalization exports should remain disabled");
   assert.equal(finalizing.settingsLocked, true, "session settings should remain locked during finalization");
 
-  await new Promise((resolve) => setTimeout(resolve, 120));
+  await waitForRecordingState(client, false);
   const completed = await evaluate(
     client,
     `({
@@ -1324,7 +1343,7 @@ async function startSecondRecordingAndRejectStaleMessages(client) {
       document.querySelector("#startBtn").click();
     })()`,
   );
-  await new Promise((resolve) => setTimeout(resolve, 180));
+  await waitForRecordingState(client, true);
   await evaluate(
     client,
     `(() => {
@@ -1701,7 +1720,7 @@ async function verifyEffectiveAudioSourceFallback(client) {
   assert.match(result.telemetry, /両方 → マイク/, "UI telemetry should distinguish requested and effective sources");
 
   await evaluate(client, `document.querySelector("#startBtn").click()`);
-  await new Promise((resolve) => setTimeout(resolve, 140));
+  await waitForRecordingState(client, false);
   await evaluate(
     client,
     `(() => {
@@ -1814,7 +1833,9 @@ async function verifyMeetingInsights(client) {
         }
         if (url.includes("/api/meeting/translate")) {
           window.__translationRequest = JSON.parse(options.body);
-          const events = [{type:'sources',sources:[source],finalized:true}, {type:'translation',id:source.id,sourceText:source.text,text:'Release date is undecided. <script>unsafe</script>'}, {type:'done'}];
+          const original = { ...source, text: window.__translationEnglish ? 'The release date is not decided.' : source.text };
+          const text = window.__translationRequest.language === 'ja' ? '公開日は決まっていません。' : 'Release date is undecided. <script>unsafe</script>';
+          const events = [{type:'sources',sources:[original],finalized:true}, {type:'translation',id:original.id,sourceText:original.text,text}, {type:'done'}];
           return new Response(events.map(e => 'data: '+JSON.stringify(e)+'\n\n').join(''), {headers:{'Content-Type':'text/event-stream'}});
         }
         if (url.includes("/api/meeting/ask")) {
@@ -1873,6 +1894,17 @@ async function verifyMeetingInsights(client) {
   await evaluate(client, `(() => {const language=document.querySelector('#translationLanguage');language.value='ja';language.dispatchEvent(new Event('change'));})()`);
   await new Promise(resolve => setTimeout(resolve, 650));
   assert.equal(await evaluate(client, `window.__translationRequest.language`), 'ja');
+  await evaluate(client, `window.__translationEnglish = true; document.querySelector('#language').value = 'en'; document.querySelector('#translationRetry').click()`);
+  await waitCondition(client, `document.querySelector('#translationRows .translation-row > p')?.textContent === '公開日は決まっていません。' && document.querySelector('#translationRows .translation-row > div p')?.textContent === 'The release date is not decided.'`);
+  const sourceBefore = await evaluate(client, `document.querySelector('#log').textContent`);
+  assert.equal(await evaluate(client, `document.querySelector('#language').value`), 'en', 'translation must not change ASR input language');
+  await evaluate(client, `document.querySelector('#translationEnabled').click(); document.querySelector('#translationEnabled').click()`);
+  await waitCondition(client, `document.querySelector('#translationRows .translation-row > div p')?.textContent === 'The release date is not decided.' && document.querySelector('#translationRows .translation-row > p')?.textContent === '公開日は決まっていません。'`);
+  assert.equal(await evaluate(client, `document.querySelector('#translationRows .translation-row > p').textContent`), '公開日は決まっていません。');
+  assert.equal(await evaluate(client, `document.querySelector('#log').textContent`), sourceBefore, 'translation toggle must preserve the saved transcript');
+  await evaluate(client, `(() => {const language=document.querySelector('#translationLanguage');language.value='en';language.dispatchEvent(new Event('change'));})()`);
+  await waitCondition(client, `document.querySelector('#translationRows .translation-row > p')?.textContent.includes('Release date is undecided')`);
+  assert.equal(await evaluate(client, `document.querySelector('#translationRows .translation-row > div p').textContent`), 'The release date is not decided.', 'changing translation target must preserve original English');
   if (process.env.TRANSLATION_SCREENSHOT) {
     const shot = await client.send('Page.captureScreenshot', {format:'png'});
     await writeFile(process.env.TRANSLATION_SCREENSHOT, Buffer.from(shot.data, 'base64'));
@@ -2107,6 +2139,8 @@ async function verifyLiveRevision(client, backend) {
     const shot = await client.send("Page.captureScreenshot", { format: "png" });
     await writeFile(process.env.MEETING_READING_SCREENSHOT, Buffer.from(shot.data, "base64"));
   }
+  await evaluate(client, `document.querySelector('[data-meeting-tab="summary"]').click()`);
+  assert.equal(await evaluate(client, `getComputedStyle(document.querySelector('#meetingTranslationPanel')).display`), 'none');
   await evaluate(client, `(() => {
     const revision = { type: "transcript_revision", track: "mic", startSample: 0, endSample: 160000,
       replacesSegmentIds: ["rt-0", "rt-1"], record: { type: "final", track: "mic", segmentId: "hq-0", seq: 0,
@@ -2125,6 +2159,8 @@ async function verifyLiveRevision(client, backend) {
   assert.equal(await evaluate(client, `document.querySelector('#log .transcript-quality').textContent`), "高精度");
   await waitCondition(client, `document.querySelector('#translationRows').textContent.includes('Automatic HQ translation')`);
   assert.ok(await evaluate(client, `window.__hqTranslationRequests > 0 && !window.__hqFinalized`), 'HQ revisions must translate automatically while recording continues');
+  assert.equal(await evaluate(client, `document.querySelector('#workspacePanels').dataset.meetingView`), 'summary', `${backend} must translate without opening the translation tab`);
+  assert.equal(await evaluate(client, `getComputedStyle(document.querySelector('#meetingTranslationPanel')).display`), 'none', 'translation must complete while its panel stays hidden');
   await evaluate(client, `window.__qwenSocket.emit({ type: "info", message: "ready", asrBackend: ${JSON.stringify(backend)}, records: [
     { type: "final", track: "mic", segmentId: "hq-snapshot", seq: 0, text: "再接続で復元", tsStart: 0, tsEnd: 10000, startSample: 0, endSample: 160000, quality: "high_accuracy" }
   ], tracks: { mic: { seq: -1, samples: 0 } } })`);
@@ -2467,11 +2503,26 @@ try {
   const adminUrl = new URL('/admin.html', url).href;
   client = await connectPage(browserWebSocketUrl, 'about:blank');
   await client.send('Page.addScriptToEvaluateOnNewDocument', { source: String.raw`
-    window.__adminTest = { failNext: false, offsets: [] };
-    window.fetch = async (input) => {
+    window.__adminTest = { failNext: false, offsets: [], settingsSaves: 0, settingsFail: false, settingsDelay: 0,
+      settings: {HISTORY_RETENTION_DAYS:'0', ENABLE_SELF_SIGNUP:'0', ALLOW_GUEST_TRANSCRIPTION:'0', ASR_BACKEND:'whisper', ASR_BASE_URL:'http://openwebui.test/api/v1', ASR_MODEL:'whisper-1', OPENWEBUI_BASE_URL:'http://openwebui.test', SUMMARY_BASE_URL:'', SUMMARY_MODEL:'synthetic-model'},
+      secrets: {ASR_API_KEY:false, SUMMARY_API_KEY:false, OPENWEBUI_API_KEY:false} };
+    window.fetch = async (input, options = {}) => {
       const url = new URL(String(input), location.origin);
       const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-      if (url.pathname === '/api/admin/settings') return json({ values: {}, configuredSecrets: {} });
+      if (url.pathname === '/api/admin/settings') {
+        if (options.method === 'PUT') {
+          window.__adminTest.settingsSaves++;
+          const body = JSON.parse(options.body);
+          await new Promise(resolve => setTimeout(resolve, window.__adminTest.settingsDelay));
+          if (window.__adminTest.settingsFail) return json({error:'synthetic_save_failure'},503);
+          for (const [key,value] of Object.entries(body)) {
+            if (key in window.__adminTest.secrets) { if (value) window.__adminTest.secrets[key] = true; }
+            else window.__adminTest.settings[key] = value;
+          }
+          return json({ok:true,restartRequired:true});
+        }
+        return json({values:window.__adminTest.settings,configuredSecrets:window.__adminTest.secrets});
+      }
       if (window.__adminTest.failNext) {
         window.__adminTest.failNext = false;
         return json({ error: 'synthetic_page_failure' }, 503);
@@ -2498,6 +2549,24 @@ try {
     throw new Error('Admin paging condition failed: ' + expression);
   };
   await waitAdmin(`document.querySelector('#userCount')?.textContent === '105'`);
+  await waitAdmin(`document.querySelector('[name=OPENWEBUI_API_KEY]').placeholder === '未設定'`);
+  await evaluate(client, `(() => { const form=document.querySelector('#serverSettingsForm'); form.elements.ASR_API_KEY.value='synthetic-asr-key'; form.elements.OPENWEBUI_API_KEY.value='synthetic-openwebui-key'; form.requestSubmit(); })()`);
+  await waitAdmin(`document.querySelector('#serverSettingsStatus').textContent.includes('保存しました') && !document.querySelector('#serverSettingsForm button').disabled`);
+  assert.equal(await evaluate(client, `window.__adminTest.secrets.OPENWEBUI_API_KEY`), true, 'generation key must be sent to the settings API');
+  assert.equal(await evaluate(client, `document.querySelector('[name=OPENWEBUI_API_KEY]').value`), '', 'saved secrets must not be redisplayed');
+  assert.equal(await evaluate(client, `document.querySelector('[name=OPENWEBUI_API_KEY]').placeholder`), '設定済み（変更時のみ入力）', 'save acknowledgement must show the key is still stored');
+  await evaluate(client, `document.querySelector('#serverSettingsForm').requestSubmit()`);
+  await waitAdmin(`window.__adminTest.settingsSaves === 2 && !document.querySelector('#serverSettingsForm button').disabled`);
+  assert.equal(await evaluate(client, `window.__adminTest.secrets.OPENWEBUI_API_KEY`), true, 'saving a blank credential preserves the stored key');
+  await evaluate(client, `window.__adminTest.settingsDelay=150; document.querySelector('[name=OPENWEBUI_API_KEY]').value='synthetic-saved-first'; document.querySelector('#serverSettingsForm').requestSubmit()`);
+  await waitAdmin(`document.querySelector('#serverSettingsForm button').disabled`);
+  await evaluate(client, `document.querySelector('[name=OPENWEBUI_API_KEY]').value='synthetic-next-unsaved'`);
+  await waitAdmin(`!document.querySelector('#serverSettingsForm button').disabled`);
+  assert.equal(await evaluate(client, `document.querySelector('[name=OPENWEBUI_API_KEY]').value`), 'synthetic-next-unsaved', 'a save response must not erase a newer credential edit');
+  await evaluate(client, `window.__adminTest.settingsFail=true; document.querySelector('#serverSettingsForm').requestSubmit()`);
+  await waitAdmin(`document.querySelector('#serverSettingsStatus').textContent.includes('保存できませんでした') && !document.querySelector('#serverSettingsForm button').disabled`);
+  assert.equal(await evaluate(client, `document.querySelector('[name=OPENWEBUI_API_KEY]').value`), 'synthetic-next-unsaved', 'failed save preserves credential input');
+  await evaluate(client, `window.__adminTest.settingsFail=false; window.__adminTest.settingsDelay=0`);
   assert.equal(await evaluate(client, `document.querySelector('#userTableBody').children.length`), 50);
   assert.equal(await evaluate(client, `document.querySelector('#usersPrev').disabled`), true);
   await evaluate(client, `document.querySelector('#usersNext').click()`);

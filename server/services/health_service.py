@@ -22,6 +22,7 @@ async def health(*, resources: RuntimeResources) -> JSONResponse:
             "capturePacketMs": 250 if settings.asr_backend == "qwen3_vllm" else 1000,
             "highAccuracyWindowSeconds": settings.asr_high_accuracy_window_seconds if settings.asr_high_accuracy_enabled else None,
             "summaryModel": settings.summary_model if resources.summarizer else None,
+            "meetingTranslationModel": (settings.meeting_translation_model or settings.summary_model) if resources.summarizer else None,
             "proofreadModel": settings.proofread_model if resources.proofreader else None,
             "diarizationEnabled": resources.diarizer is not None,
             "diarizationModel": settings.diarization_model if resources.diarizer else None,

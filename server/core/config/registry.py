@@ -121,6 +121,7 @@ ENV_REGISTRY = (
     spec("OPENWEBUI_BASE_URL", "url", "", "OpenWebUI root URL; uses /api for generation"),
     spec("OPENWEBUI_API_KEY", "string", "", secret=True),
     spec("SUMMARY_MODEL", "string", "qwopus3.8-27b-flash-v2"),
+    spec("MEETING_TRANSLATION_MODEL", "string", "", "defaults to SUMMARY_MODEL; same provider connection"),
     spec("SUMMARY_TEMPERATURE", "float", "0.2"),
     spec("SUMMARY_INPUT_MAX_CHARS", "integer", "16000", ">=2000"),
     spec("SUMMARY_SYSTEM_PROMPT", "string", ""),
