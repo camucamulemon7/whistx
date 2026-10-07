@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import re
 from contextlib import contextmanager
@@ -7,6 +9,32 @@ from typing import Any, Iterator
 
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def high_accuracy_observation(observer, *, session_id: str, model: str,
+                              start_ms: int, end_ms: int, audio_bytes: int,
+                              language: str | None, track: str | None,
+                              manual: bool = False):
+    """One observation per actual HQ attempt; never pass media or exceptions.
+
+    An opaque, deterministic trace ID groups attempts across lanes, reconnects
+    and explicit refinement. Observation IDs remain SDK-generated so real
+    retries are visible rather than overwriting the failed attempt.
+    """
+    observer = observer or _NoopObserver()
+    trace_id = hashlib.sha256(('whistx:hq:' + session_id).encode()).hexdigest()[:32]
+    with observer.generation(name='asr.high_accuracy', model=model,
+            trace_context={'trace_id': trace_id},
+            input=dict(startMs=start_ms, endMs=end_ms, audioBytes=audio_bytes,
+                       language=language, audioSource='both' if track == 'mixed' else track),
+            metadata=dict(manual=manual), model_parameters={'temperature': 0.0}) as observation:
+        try:
+            yield observation
+        except BaseException as exc:
+            observation.update(output=dict(succeeded=False, failed=not isinstance(exc, asyncio.CancelledError),
+                                           cancelled=isinstance(exc, asyncio.CancelledError)))
+            raise
 
 
 class _NoopObservation:

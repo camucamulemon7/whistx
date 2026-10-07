@@ -11,6 +11,7 @@ import httpx
 
 from ..core.blocking import blocking_work_pool
 from ..core.public_errors import public_error
+from ..langfuse_observer import high_accuracy_observation
 from ..qwen_asr import language_coverage_lost, script_groups
 from ..services.meeting_refinement import _atomic_text
 from ..services.meeting_source import write_json_atomic
@@ -21,6 +22,15 @@ logger = logging.getLogger(__name__)
 
 
 class HighAccuracyMeetingMixin:
+    async def _recognize_hq_text(self, client, pcm, track, start, end):
+        with high_accuracy_observation(getattr(self.resources, 'observer', None),
+                session_id=self.session_id, model=self.data['asrModel'],
+                start_ms=start * 1000 // SAMPLE_RATE, end_ms=end * 1000 // SAMPLE_RATE,
+                audio_bytes=len(pcm), language=self.data['language'], track=track) as observation:
+            text = await self._batch_text(client, pcm)
+            observation.update(output=dict(text=text, chars=len(text), succeeded=True, empty=not bool(text.strip())))
+            return text
+
     async def _recover_commits(self):
         # A durable journal append can succeed even if TXT/checkpoint writing
         # fails. Reload it before retrying so the same interval is not appended
@@ -96,7 +106,7 @@ class HighAccuracyMeetingMixin:
             return
         await self.send(dict(type='hq_status', state='running', track=track, tsStart=start//16, tsEnd=end//16))
         pcm = await blocking_work_pool.run('artifact', self._read_audio, track, start, end)
-        text = await self._batch_text(client, pcm)
+        text = await self._recognize_hq_text(client, pcm, track, start, end)
         if not text.strip():
             await self._retain_hq(track, start, end, reason='empty_result',
                 message='高精度認識が空の区間は速報を保持し、次の区間へ進みました。')
@@ -125,7 +135,7 @@ class HighAccuracyMeetingMixin:
                     if self.disconnected:
                         return
                     group_pcm = pcm[(left-start)*2:(right-start)*2]
-                    candidate = await self._batch_text(client, group_pcm)
+                    candidate = await self._recognize_hq_text(client, group_pcm, track, left, right)
                     source = ' '.join(r['text'] for r in group)
                     if not candidate.strip() or language_coverage_lost(source, candidate):
                         candidate = source
