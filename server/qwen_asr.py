@@ -15,6 +15,7 @@ import httpx
 from websockets.asyncio.client import connect
 
 from .asr import ASRChunkResult
+from .pcm_gate import prepare_pcm_wav
 from .core.config import settings
 
 
@@ -91,6 +92,9 @@ class QwenBatchTranscriber:
 
     def transcribe_chunk(self, audio_bytes: bytes, *, mime_type: str, language: str | None, prompt: str | None,
                          temperature: float, **kwargs) -> ASRChunkResult:
+        audio_bytes, _, silent = prepare_pcm_wav(audio_bytes, mime_type)
+        if silent:
+            return ASRChunkResult(text='', start_ms=None, end_ms=None, silence_detected=True)
         endpoint, options = batch_request(audio_bytes, mime_type=mime_type, model=self.model, context=prompt or '',
                                           priority=settings.asr_high_accuracy_priority, language=language or 'auto')
         result = self.client.post(self.base_url + endpoint, **options)

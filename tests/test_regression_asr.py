@@ -214,7 +214,7 @@ class RegressionTests(unittest.TestCase):
     def test_openai_whisper_multi_pass_prefers_longer_retry_result(self) -> None:
         first_response = SimpleNamespace(
             text='短い候補',
-            segments=[{'start': 0.0, 'end': 0.6, 'no_speech_prob': 0.65, 'avg_logprob': -1.1, 'compression_ratio': 2.5}],
+            segments=[{'start': 0.0, 'end': 0.6, 'no_speech_prob': 0.4, 'avg_logprob': -1.1, 'compression_ratio': 2.5}],
             usage=SimpleNamespace(prompt_tokens=1, completion_tokens=0, total_tokens=1),
         )
         second_response = SimpleNamespace(

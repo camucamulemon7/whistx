@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import time
 from contextlib import contextmanager
 from typing import Any
@@ -12,6 +13,7 @@ from .asr import ASRChunkResult
 from .core.config import settings
 from .core.logging import emit_container_log
 from .langfuse_observer import LangfuseObserver
+from .whisper_audio import prepare_whisper_wav
 
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,9 @@ class OpenAIWhisperTranscriber:
         temperature: float,
         trace_context: dict[str, str] | None = None,
     ) -> ASRChunkResult:
+        audio_bytes, audio_offset_ms, silence_detected = prepare_whisper_wav(audio_bytes, mime_type)
+        if silence_detected:
+            return ASRChunkResult(text='', start_ms=None, end_ms=None, silence_detected=True)
         language = None if not language or language.strip().lower() == "auto" else language.strip().lower()
         suffix = _ext_from_mime(mime_type)
         response: Any | None = None
@@ -134,7 +139,8 @@ class OpenAIWhisperTranscriber:
             assert response is not None
             text = _extract_text(response).strip()
             metrics = _extract_confidence_metrics(response)
-            if self.multi_pass_enabled and _should_run_multi_pass(text, metrics):
+            if (self.multi_pass_enabled and not _should_drop_as_silence(response, text, metrics)
+                    and _should_run_multi_pass(text, metrics)):
                 retry_temperature = max(0.2, float(temperature))
                 retry_response, retry_attempts = _perform_request(retry_temperature)
                 attempt += retry_attempts
@@ -157,6 +163,7 @@ class OpenAIWhisperTranscriber:
                 else None
             )
             if _should_drop_as_silence(response, text, metrics):
+                silence_detected = bool(text)
                 text = ""
             emit_container_log(
                 __name__,
@@ -196,6 +203,10 @@ class OpenAIWhisperTranscriber:
                 )
 
         start_ms, end_ms = _extract_bounds_ms(response)
+        if start_ms is not None:
+            start_ms += audio_offset_ms
+        if end_ms is not None:
+            end_ms += audio_offset_ms
         return ASRChunkResult(
             text=text,
             start_ms=start_ms,
@@ -206,6 +217,7 @@ class OpenAIWhisperTranscriber:
             avg_logprob=metrics["avg_logprob"],
             compression_ratio=metrics["compression_ratio"],
             suspicious=bool(metrics["suspicious"]),
+            silence_detected=silence_detected,
         )
 
     def close(self) -> None:
@@ -402,26 +414,6 @@ def _ext_from_mime(mime_type: str) -> str:
     return ".webm"
 
 
-KNOWN_SILENCE_HALLUCINATIONS = {
-    "ご清聴ありがとうございました",
-    "ご視聴ありがとうございました",
-    "ありがとうございました",
-    "チャンネル登録よろしくお願いします",
-    "チャンネル登録お願いします",
-    "高評価とチャンネル登録お願いします",
-    "高評価よろしくお願いします",
-    "ご覧いただきありがとうございました",
-}
-
-SILENCE_HALLUCINATION_PATTERNS = (
-    "チャンネル登録",
-    "高評価",
-    "ご視聴ありがとうございました",
-    "ご清聴ありがとうございました",
-    "ご覧いただきありがとうございました",
-)
-
-
 def _normalize_for_match(text: str) -> str:
     normalized = (
         text.replace(" ", "")
@@ -444,31 +436,19 @@ def _should_drop_as_silence(response: Any, text: str, metrics: dict[str, Any] | 
     if not clean:
         return True
 
-    normalized = _normalize_for_match(clean)
-    if normalized in KNOWN_SILENCE_HALLUCINATIONS:
-        return True
-
     segments = _read_field(response, "segments")
     if not isinstance(segments, list) or not segments:
         return False
 
-    no_speech_probs: list[float] = []
+    # Match Whisper's confidence escape: high no_speech alone must not erase
+    # confident speech. One silent segment cannot erase another voiced one.
     for seg in segments:
-        value = _as_float(_read_field(seg, "no_speech_prob"))
-        if value is not None:
-            no_speech_probs.append(value)
-
-    if not no_speech_probs:
-        return False
-
-    if any(pattern in clean for pattern in SILENCE_HALLUCINATION_PATTERNS):
-        return max(no_speech_probs) >= 0.55 and len(normalized) <= 64
-
-    if metrics and metrics.get("suspicious") and (metrics.get("max_no_speech_prob") or 0.0) >= 0.7 and len(normalized) <= 24:
-        return True
-
-    # 無音寄り判定が高く、かつ短文なら無音ハルシネーションの可能性が高い。
-    return max(no_speech_probs) >= 0.85 and len(normalized) <= 32
+        no_speech = _as_float(_read_field(seg, "no_speech_prob"))
+        logprob = _as_float(_read_field(seg, "avg_logprob"))
+        if (no_speech is None or logprob is None or not math.isfinite(no_speech) or not math.isfinite(logprob)
+                or not 0.6 < no_speech <= 1.0 or logprob > -1.0):
+            return False
+    return True
 
 @contextmanager
 def _noop_generation():

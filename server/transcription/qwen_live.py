@@ -16,7 +16,8 @@ from ..services.meeting_refinement import _atomic_text
 from ..transcript_store import _render_txt_line
 from .high_accuracy import HighAccuracyMeetingMixin
 from .live import LiveMeeting, logger
-from .local_agreement import SAMPLE_RATE, pcm_wav, speech_bounds
+from .local_agreement import SAMPLE_RATE, pcm_wav
+from ..pcm_gate import pcm_speech_bounds as speech_bounds, prepare_pcm_wav
 
 
 class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
@@ -93,9 +94,10 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
                 sent = min(state['received'], limit)
                 pcm = await blocking_work_pool.run('artifact', self._read_audio, track, start, sent)
                 if await blocking_work_pool.run('media', speech_bounds, pcm) is not None:
+                    audio, _, _ = await blocking_work_pool.run('media', prepare_pcm_wav, pcm_wav(pcm), 'audio/wav')
                     async with httpx.AsyncClient(headers={'Authorization': 'Bearer ' + settings.openai_api_key},
                                                  timeout=settings.asr_api_timeout_seconds) as client:
-                        endpoint, options = batch_request(pcm_wav(pcm), mime_type='audio/wav', model=settings.asr_model,
+                        endpoint, options = batch_request(audio, mime_type='audio/wav', model=settings.asr_model,
                             context=(self.data['vocabulary'] + ' ' + self.data['prompt']).strip(), priority=0, language=self.data['language'])
                         response = await client.post(str(settings.openai_base_url).rstrip('/') + endpoint, **options)
                         response.raise_for_status()
@@ -109,6 +111,10 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
                             event = await stream.receive()
                             if event.get('type') == 'transcription.delta':
                                 text += event.get('delta', '')
+                                captured = await blocking_work_pool.run('artifact', self._read_audio, track, start, sent)
+                                if await blocking_work_pool.run('media', speech_bounds, captured) is None:
+                                    text = ''
+                                    continue
                                 await self.send(dict(type='partial', track=track, segmentId=f'{track}-rt-{start}',
                                     text=clean_qwen_text(text, final=False), stableText='', quality='realtime',
                                     tsStart=start * 1000 // SAMPLE_RATE, tsEnd=sent * 1000 // SAMPLE_RATE))
@@ -187,8 +193,11 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
                 await asyncio.sleep(min(10, failures * 2))
 
     async def _batch_text(self, client, pcm):
+        audio, _, silent = await blocking_work_pool.run('media', prepare_pcm_wav, pcm_wav(pcm), 'audio/wav')
+        if silent:
+            return ''
         await self._request_budget()
-        endpoint, options = batch_request(pcm_wav(pcm), mime_type='audio/wav', model=settings.asr_model,
+        endpoint, options = batch_request(audio, mime_type='audio/wav', model=settings.asr_model,
             context=(self.data['vocabulary'] + ' ' + self.data['prompt']).strip(), priority=settings.asr_high_accuracy_priority, language=self.data['language'])
         response = await client.post(str(settings.openai_base_url).rstrip('/') + endpoint, **options)
         response.raise_for_status()

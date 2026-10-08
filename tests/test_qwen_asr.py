@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault('APP_SESSION_SECRET', 'qwen-test-only-long-session-secret-value')
 
+from tests.whisper_audio_fixtures import pcm as synthetic_pcm
 from server.core.config import settings
 from server.qwen_asr import QwenRealtime, batch_payload, batch_request, clean_qwen_text, realtime_url, response_text
 from server.transcript_store import read_jsonl_records
@@ -75,6 +76,112 @@ class ProtocolTests(unittest.TestCase):
 
 
 class DualLaneTests(unittest.IsolatedAsyncioTestCase):
+    async def test_noise_then_quiet_stop_tail_and_hq_recover_without_hallucinations(self):
+        from server.transcription.local_agreement import SAMPLE_RATE
+        requests, events = [], []
+        class Socket:
+            state = SimpleNamespace(authenticated_user_id=123, is_guest=False, rate_limit_subject='synthetic')
+            cookies = {}
+            async def send_json(self, event):
+                events.append(event)
+        class Client:
+            def __init__(self, **kwargs):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+            async def post(self, url, **options):
+                requests.append(options)
+                return SimpleNamespace(raise_for_status=lambda: None, json=lambda: dict(text='はい'))
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            class Config:
+                transcripts_dir = Path(directory)/'transcripts'
+                debug_chunks_dir = Path(directory)/'audio'
+                asr_backend = 'qwen3_vllm'
+                asr_model = 'synthetic-qwen'
+                openai_base_url = 'http://synthetic.invalid/v1'
+                asr_realtime_window_seconds = 5
+                def __getattr__(self, key):
+                    return getattr(settings, key)
+            for module in ['server.transcription.live', 'server.transcription.qwen_live']:
+                stack.enter_context(patch(module+'.settings', Config()))
+            stack.enter_context(patch('server.transcription.qwen_live.httpx.AsyncClient', Client))
+            stack.enter_context(patch.object(QwenLiveMeeting, '_request_budget', AsyncMock()))
+            live = QwenLiveMeeting(Socket(), dict(tracks=['mic'], language='ja'))
+            try:
+                noise = synthetic_pcm(5, amplitude=240, noise=True)
+                for seq in range(5):
+                    await live.accept_audio(dict(track='mic', seq=seq, sampleStart=seq*SAMPLE_RATE,
+                        pcm=base64.b64encode(noise[seq*32000:(seq+1)*32000]).decode()))
+                await live._rt_window('mic')
+                self.assertEqual(requests, [])
+                self.assertEqual(live.records, [])
+                self.assertEqual(await live._batch_text(Client(), noise), '')
+                self.assertEqual(requests, [])
+                ack = synthetic_pcm(.12) + b'\0\0'*3200
+                await live.accept_audio(dict(track='mic', seq=5, sampleStart=5*SAMPLE_RATE, pcm=base64.b64encode(ack).decode()))
+                live.stopping = True
+                await live._rt_window('mic')
+                self.assertEqual(live.records[-1]['text'], 'はい')
+                self.assertEqual(live.records[-1]['endSample'], 5*SAMPLE_RATE + len(ack)//2)
+                self.assertEqual(await live._batch_text(Client(), ack), 'はい')
+                self.assertEqual(len(requests), 2)
+                self.assertFalse(any(e.get('text') for e in events if e.get('type') == 'partial'))
+            finally:
+                live.close()
+
+    async def test_native_stream_suppresses_silent_partials_and_preserves_short_speech(self):
+        class Socket:
+            state = SimpleNamespace(authenticated_user_id=123, is_guest=False, rate_limit_subject='synthetic')
+            cookies = {}
+            def __init__(self):
+                self.events = []
+            async def send_json(self, event):
+                self.events.append(event)
+        class Stream:
+            def __init__(self, **kwargs):
+                self.done = False
+                self.queue = asyncio.Queue()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                pass
+            async def append(self, pcm):
+                await self.queue.put(dict(type='transcription.delta', delta='はい'))
+            async def finish(self):
+                await self.queue.put(dict(type='transcription.done', text='はい'))
+            async def receive(self):
+                event = await self.queue.get()
+                self.done = event['type'] == 'transcription.done'
+                return event
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            class Config:
+                transcripts_dir = Path(directory)/'transcripts'
+                debug_chunks_dir = Path(directory)/'audio'
+                asr_backend = 'qwen3_vllm'
+                asr_model = 'synthetic-qwen'
+                openai_base_url = 'http://synthetic.invalid/v1'
+                def __getattr__(self, key):
+                    return getattr(settings, key)
+            for module in ['server.transcription.live', 'server.transcription.qwen_live']:
+                stack.enter_context(patch(module+'.settings', Config()))
+            stack.enter_context(patch('server.transcription.qwen_live.QwenRealtime', Stream))
+            stack.enter_context(patch.object(QwenLiveMeeting, '_request_budget', AsyncMock()))
+            for signal, silent in [(b'\0\0'*16000, True), (synthetic_pcm(1, amplitude=240, noise=True), True),
+                                   (synthetic_pcm(.12) + b'\0\0'*3200, False)]:
+                ws = Socket()
+                live = QwenLiveMeeting(ws, dict(tracks=['mic'], language='auto'))
+                try:
+                    await live.accept_audio(dict(track='mic', seq=0, sampleStart=0, pcm=base64.b64encode(signal).decode()))
+                    live.stopping = True
+                    await live._rt_window('mic')
+                    self.assertEqual([r['text'] for r in live.records], [] if silent else ['はい'])
+                    if silent:
+                        self.assertFalse(any(e.get('text') for e in ws.events if e.get('type') == 'partial'))
+                finally:
+                    live.close()
+
     async def test_selected_language_applies_to_short_and_high_accuracy_windows_and_resume(self):
         requests = []
         class Socket:
@@ -109,7 +216,7 @@ class DualLaneTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(patch.object(QwenLiveMeeting, '_request_budget', AsyncMock()))
             live = QwenLiveMeeting(Socket(), dict(tracks=['mic'], language='ja'))
             try:
-                pcm = b'\xff\x0f' * 80000
+                pcm = synthetic_pcm(5, amplitude=4000)
                 for seq in range(5):
                     await live.accept_audio(dict(track='mic', seq=seq, sampleStart=seq * 16000,
                                                  pcm=base64.b64encode(pcm[seq * 32000:(seq + 1) * 32000]).decode()))
@@ -206,7 +313,7 @@ class DualLaneTests(unittest.IsolatedAsyncioTestCase):
             async def feed(first, last):
                 for i in range(first, last):
                     await live.accept_audio(dict(track='mic', seq=i, sampleStart=i*16000,
-                        pcm=base64.b64encode(b'\xff\x0f'*16000).decode()))
+                        pcm=base64.b64encode(synthetic_pcm(1, amplitude=4000)).decode()))
                     await asyncio.sleep(.002)
             try:
                 await feed(0, 30)
@@ -286,7 +393,7 @@ class MixedCoverageTests(unittest.IsolatedAsyncioTestCase):
             ws = SimpleNamespace(state=SimpleNamespace(is_guest=False), send_json=AsyncMock())
             live = QwenLiveMeeting(ws, dict(tracks=['mic']))
             try:
-                live._write_audio('mic', 0, b'\xff\x0f' * 480000)
+                live._write_audio('mic', 0, synthetic_pcm(30, amplitude=4000))
                 live.data['tracks']['mic'].update(received=480000, windowStart=480000)
                 rows = [live._record('mic', i*160000, (i+1)*160000, text, quality='realtime', seq=i)
                         for i, text in enumerate([japanese, english, japanese])]
@@ -331,7 +438,7 @@ class MixedCoverageTests(unittest.IsolatedAsyncioTestCase):
             ws = SimpleNamespace(state=SimpleNamespace(is_guest=False), send_json=AsyncMock())
             live = QwenLiveMeeting(ws, dict(tracks=['mic']))
             try:
-                live._write_audio('mic', 0, b'\xff\x0f' * 160000)
+                live._write_audio('mic', 0, synthetic_pcm(10, amplitude=4000))
                 live.data['tracks']['mic'].update(received=160000, windowStart=160000)
                 row = live._record('mic', 0, 160000, '水をマレーシアから買わなくてはならないのです。', quality='realtime', seq=0)
                 live.store.append_record(row)
@@ -381,7 +488,7 @@ class EmptyHighAccuracyTests(unittest.IsolatedAsyncioTestCase):
             ws = SimpleNamespace(state=SimpleNamespace(is_guest=False), send_json=AsyncMock())
             live = QwenLiveMeeting(ws, dict(tracks=['mic']))
             try:
-                live._write_audio('mic', 0, b'\xff\x0f' * 240000)
+                live._write_audio('mic', 0, synthetic_pcm(15, amplitude=4000))
                 live.data['tracks']['mic'].update(received=240000, windowStart=240000)
                 rows = [live._record('mic', i*80000, (i+1)*80000, '速報を保持', quality='realtime', seq=i) for i in range(3)]
                 for row in rows:

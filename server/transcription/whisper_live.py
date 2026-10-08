@@ -7,6 +7,7 @@ from ..core.blocking import blocking_work_pool
 from ..core.config import settings
 from ..core.public_errors import public_error
 from ..openai_whisper import OpenAIWhisperTranscriber
+from ..whisper_audio import whisper_speech_bounds
 from ..services.meeting_refinement import _atomic_text
 from ..services.meeting_source import MeetingError, write_json_atomic
 from ..transcript_store import _render_txt_line
@@ -93,6 +94,9 @@ class WhisperLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
 
     def _silence_samples(self):
         return settings.asr_high_accuracy_silence_ms * SAMPLE_RATE // 1000
+
+    def _speech_bounds(self, pcm):
+        return whisper_speech_bounds(pcm)
 
     def _note_pause(self, track, end, quiet_samples):
         if quiet_samples >= self._silence_samples():

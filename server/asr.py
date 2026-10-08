@@ -15,6 +15,7 @@ class ASRChunkResult:
     avg_logprob: float | None = None
     compression_ratio: float | None = None
     suspicious: bool = False
+    silence_detected: bool = False
 
 
 class SessionTranscriber(Protocol):
