@@ -74,11 +74,13 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
 
   const divider = document.querySelector('#assistantResize');
   const clampWidth = width => Math.max(280, Math.min(width, Math.min(640, panels.clientWidth - 360)));
+  let preferredWidth = 338;
   function setWidth(width, persist = true) {
-    width = clampWidth(Number(width) || 338);
+    preferredWidth = Math.max(280, Math.min(Number(width) || 338, 640));
+    width = clampWidth(preferredWidth);
     panels.style.setProperty('--assistant-width', `${width}px`);
     divider.setAttribute('aria-valuenow', String(Math.round(width)));
-    if (persist) { try { localStorage.setItem('whistx_assistant_width', String(width)); } catch {} }
+    if (persist) { try { localStorage.setItem('whistx_assistant_width', String(preferredWidth)); } catch {} }
   }
   try { setWidth(localStorage.getItem('whistx_assistant_width'), false); } catch { setWidth(338, false); }
   divider.addEventListener('pointerdown', event => {
@@ -98,7 +100,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
     const width = Number(divider.getAttribute('aria-valuenow'));
     setWidth(event.key === 'Home' ? 280 : event.key === 'End' ? 640 : width + (event.key === 'ArrowLeft' ? 20 : -20));
   });
-  window.addEventListener('resize', () => setWidth(divider.getAttribute('aria-valuenow'), false));
+  window.addEventListener('resize', () => setWidth(preferredWidth, false));
 
   function setView(next) {
     next = ["transcript", "summary", "materials", "assistant", "translation"].includes(next) ? next : "transcript";

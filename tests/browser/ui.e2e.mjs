@@ -391,6 +391,44 @@ async function verifyDesktopPanelLayout(client) {
   await evaluate(client, `document.querySelector('[data-meeting-tab="transcript"]').click()`);
 }
 
+async function resizeAssistantDuringRecording(client) {
+  await client.send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await evaluate(client, `window.dispatchEvent(new Event('resize')); document.querySelector('#assistantResize').focus()`);
+  await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Home', code: 'Home' });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Home', code: 'Home' });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowLeft', code: 'ArrowLeft' });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowLeft', code: 'ArrowLeft' });
+  assert.equal(await evaluate(client, `Number(document.querySelector('#assistantResize').getAttribute('aria-valuenow'))`), 300,
+    'keyboard resizing must work during recording');
+  const handle = await evaluate(client, `(() => {
+    const divider = document.querySelector('#assistantResize');
+    const rect = divider.getBoundingClientRect();
+    const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+    return { x, y, height: rect.height, hit: document.elementFromPoint(x, y)?.id,
+      before: document.querySelector('#meetingAssistantPanel').getBoundingClientRect().width };
+  })()`);
+  assert.ok(handle.height > 100, 'recording divider must have a usable drag surface');
+  assert.equal(handle.hit, 'assistantResize', 'divider must receive physical pointer input');
+  await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: handle.x, y: handle.y });
+  await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: handle.x, y: handle.y, button: 'left', buttons: 1, clickCount: 1 });
+  await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: handle.x - 100, y: handle.y, button: 'left', buttons: 1 });
+  await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: handle.x - 100, y: handle.y, button: 'left', buttons: 0 });
+  const after = await evaluate(client, `document.querySelector('#meetingAssistantPanel').getBoundingClientRect().width`);
+  assert.ok(after > handle.before + 80, `physical recording drag should grow the assistant: ${JSON.stringify({handle,after})}`);
+  const touch = await evaluate(client, `(() => { const rect = document.querySelector('#assistantResize').getBoundingClientRect();
+    return {x:rect.left + rect.width/2, y:rect.top + rect.height/2}; })()`);
+  await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...touch, id: 7 }] });
+  await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: touch.x - 40, y: touch.y, id: 7 }] });
+  await client.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
+  const finalWidth = await evaluate(client, `document.querySelector('#meetingAssistantPanel').getBoundingClientRect().width`);
+  assert.ok(finalWidth > after + 30, 'touch dragging must also resize during recording');
+  await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: touch.x - 120, y: touch.y });
+  assert.equal(await evaluate(client, `document.querySelector('#meetingAssistantPanel').getBoundingClientRect().width`), finalWidth,
+    'cancelled touch drag must not keep resizing');
+  assert.equal(await evaluate(client, `document.querySelector('#startBtn').getAttribute('aria-pressed')`), 'true');
+  return finalWidth;
+}
+
 async function verifyAssistantPreference(client) {
   await client.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
   await evaluate(client, `document.querySelector("#assistantVisibilityToggle").click()`);
@@ -1989,6 +2027,7 @@ async function verifyLiveRecordingAndRefinement(client) {
           }
         }
       };
+      window.confirm = () => true; // Restart discards this synthetic transcript.
       localStorage.setItem("whistx_live_transcription", "0");
       localStorage.setItem("whistx_audio_source", "mic");
       localStorage.setItem("whistx_translation_enabled", "1");
@@ -2101,6 +2140,7 @@ async function verifyLiveRevision(client, backend) {
           else super.send(raw);
         }
       };
+      window.confirm = () => true; // Restart discards this synthetic transcript.
       localStorage.setItem("whistx_live_transcription", "0");
       localStorage.setItem('whistx_translation_enabled', '1');
       localStorage.setItem('whistx_translation_language', 'en');
@@ -2115,6 +2155,7 @@ async function verifyLiveRevision(client, backend) {
   assert.equal(await evaluate(client, `window.__liveStart?.language`), "ja", `${backend} must preserve the selected language`);
   assert.equal(await evaluate(client, `window.__qwenPacketSamples`), 4000);
   assert.equal(await evaluate(client, `document.querySelector('#audioLevelIndicator').hidden`), false);
+  const resizedWidth = await resizeAssistantDuringRecording(client);
   assert.ok(await evaluate(client, `document.querySelector('#audioLevelMatrix').getBoundingClientRect().height >= 26`), "Input meter must be visible at full height");
   await evaluate(client, `(() => {
     const row = (i, text) => ({ type: "final", track: "mic", segmentId: "rt-"+i, seq: i, text,
@@ -2167,6 +2208,22 @@ async function verifyLiveRevision(client, backend) {
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(await evaluate(client, `document.querySelectorAll("#log .log-row").length`), 1);
   assert.match(await evaluate(client, `document.querySelector("#log").textContent`), /再接続で復元/);
+  assert.ok(Math.abs(await evaluate(client, `document.querySelector('#meetingAssistantPanel').getBoundingClientRect().width`) - resizedWidth) < 1,
+    `${backend}: realtime/HQ/reconnect updates must preserve the resized width`);
+  await client.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await evaluate(client, `window.dispatchEvent(new Event('resize'))`);
+  await client.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await evaluate(client, `window.dispatchEvent(new Event('resize'))`);
+  assert.ok(Math.abs(await evaluate(client, `document.querySelector('#meetingAssistantPanel').getBoundingClientRect().width`) - resizedWidth) < 1,
+    `${backend}: returning from a narrow screen must restore the requested width`);
+  await evaluate(client, `document.querySelector("#startBtn").click()`);
+  await waitCondition(client, `!document.querySelector('#startBtn').disabled && document.querySelector('#startBtn').getAttribute('aria-pressed') === 'false'`);
+  assert.ok(Math.abs(await evaluate(client, `document.querySelector('#meetingAssistantPanel').getBoundingClientRect().width`) - resizedWidth) < 1,
+    `${backend}: stopping must preserve the requested width`);
+  await evaluate(client, `document.querySelector("#startBtn").click()`);
+  await waitCondition(client, `document.querySelector('#startBtn').getAttribute('aria-pressed') === 'true'`);
+  assert.ok(Math.abs(await evaluate(client, `document.querySelector('#meetingAssistantPanel').getBoundingClientRect().width`) - resizedWidth) < 1,
+    `${backend}: restarting must preserve the requested width`);
   await evaluate(client, `document.querySelector("#startBtn").click()`);
   await new Promise(resolve => setTimeout(resolve, 150));
 }
@@ -2323,6 +2380,11 @@ try {
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyDesktopPanelLayout\n');
   if (process.env.BANNER_REPRO_ONLY) {
     await verifyReportedAnnouncements(client);
+  } else if (process.env.DIVIDER_REPRO_ONLY) {
+    await client.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await verifyLiveRecordingAndRefinement(client);
+    await verifyLiveRevision(client, 'whisper');
+    await verifyLiveRevision(client, 'qwen3_vllm');
   } else {
   await verifyDesktopPanelLayout(client);
   await verifyAssistantPreference(client);
