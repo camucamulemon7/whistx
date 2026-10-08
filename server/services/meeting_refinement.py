@@ -78,15 +78,20 @@ def refine_events(snapshot, *, cancelled, transcriber_factory=None, allow_reques
                         language=row.get('language') or None,
                         prompt=str(metadata.get('prompt') or '')[:500] or None, temperature=0.0)
                     text = _sanitize_transcript_text(result.text, language=row.get('language')).strip()
-                    if not text:
+                    silence_detected = bool(getattr(result, 'silence_detected', False))
+                    if not text and not silence_detected:
                         raise MeetingError('refinement_empty_result', 502)
-                    if settings.asr_backend == 'qwen3_vllm':
+                    if settings.asr_backend == 'qwen3_vllm' and not silence_detected:
                         from ..qwen_asr import language_coverage_lost
                         if language_coverage_lost(row['text'], text):
                             raise MeetingError('refinement_language_loss', 502)
-                    observation.update(output=dict(text=text, chars=len(text), succeeded=True))
+                    observation.update(output=dict(text=text, chars=len(text), succeeded=True, silenceDetected=silence_detected))
                 row.setdefault('originalText', row['text'])
                 row['text'] = text
+                if silence_detected:
+                    row['silenceDetected'] = True
+                else:
+                    row.pop('silenceDetected', None)
                 row['refinedAt'] = datetime.now(timezone.utc).isoformat()
             if cancelled.is_set():
                 return

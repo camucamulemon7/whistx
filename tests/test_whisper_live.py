@@ -25,9 +25,10 @@ from server.transcript_store import read_jsonl_records
 from server.transcription.live import LiveMeeting, live_transcribe
 from server.transcription.whisper_live import WhisperLiveMeeting
 from tests.langfuse_fakes import recording_observer
+from tests.whisper_audio_fixtures import pcm, transcriber
 
 RATE = 16000
-PCM = b'\xff\x0f' * RATE
+PCM = pcm(1, amplitude=4000)
 
 
 class Socket:
@@ -68,6 +69,68 @@ class Model:
 
 
 class WhisperDualLaneTests(unittest.IsolatedAsyncioTestCase):
+    async def test_noise_advances_without_asr_then_quiet_ack_and_stop_tail_recover(self):
+        rt, rt_calls = transcriber('はい')
+        hq, hq_calls = transcriber('はい')
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            self.fixture(stack, directory, models=(rt, hq))
+            live = WhisperLiveMeeting(Socket(), dict(tracks=['mic'], language='ja'))
+            try:
+                noise = pcm(1, amplitude=240, noise=True)
+                for second in range(30):
+                    await live.accept_audio(dict(track='mic', seq=second, sampleStart=second*RATE,
+                        pcm=base64.b64encode(noise).decode()))
+                while await live._infer('mic', flush=False):
+                    pass
+                self.assertEqual(len(rt_calls), 0)
+                self.assertEqual(live.records, [])
+                self.assertEqual(live.data['tracks']['mic']['windowStart'], 30*RATE)
+                await live._hq_interval(None, 'mic', 0, 30*RATE)
+                self.assertEqual(hq_calls, [])
+                # 120 ms quiet acknowledgement, followed by silence, after a
+                # long noisy interval; original audio remains sample anchored.
+                ack = pcm(.12) + b'\0\0'*14080
+                for second in range(30, 33):
+                    packet = ack if second == 30 else b'\0\0'*RATE
+                    await live.accept_audio(dict(track='mic', seq=second, sampleStart=second*RATE,
+                        pcm=base64.b64encode(packet).decode()))
+                live.stopping = True
+                await asyncio.wait_for(live.work(), 10)
+                self.assertTrue(live.data['finalized'])
+                self.assertEqual([r['text'] for r in live.records], ['はい'])
+                self.assertEqual((live.records[0]['startSample'], live.records[0]['endSample']), (30*RATE, 33*RATE))
+                self.assertEqual((len(rt_calls), len(hq_calls)), (1, 1))
+                for audio in rt_calls+hq_calls:
+                    with wave.open(io.BytesIO(audio)) as wav:
+                        self.assertLessEqual(wav.getnframes(), RATE//2)
+            finally:
+                live.close()
+
+    async def test_long_hq_interval_does_not_send_silent_padding_or_erase_real_closing_words(self):
+        phrase = 'ご清聴ありがとうございました'
+        rt, rt_calls = transcriber(phrase)
+        hq, hq_calls = transcriber(phrase)
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            self.fixture(stack, directory, models=(rt, hq))
+            live = WhisperLiveMeeting(Socket(), dict(tracks=['mic'], language='ja'))
+            try:
+                for second in range(30):
+                    packet = pcm(1) if second == 0 else b'\0\0'*RATE
+                    await live.accept_audio(dict(track='mic', seq=second, sampleStart=second*RATE,
+                        pcm=base64.b64encode(packet).decode()))
+                while await live._infer('mic', flush=False):
+                    pass
+                await live._hq_interval(None, 'mic', 0, 30*RATE)
+                self.assertEqual(len(live.records), 1)
+                self.assertEqual(live.records[0]['text'], phrase)
+                self.assertEqual((len(rt_calls), len(hq_calls)), (1, 1))
+                for audio in rt_calls+hq_calls:
+                    with wave.open(io.BytesIO(audio)) as wav:
+                        self.assertLessEqual(wav.getnframes(), int(1.3*RATE))
+                self.assertEqual(live.data['tracks']['mic']['received'], 30*RATE)
+            finally:
+                live.close()
+
     def fixture(self, stack, directory, *, enabled=True, rt_seconds=5, models=None):
         root = Path(directory)
 

@@ -262,6 +262,9 @@ class LiveMeeting:
     def _note_pause(self, track, end, quiet_samples):
         pass
 
+    def _speech_bounds(self, pcm):
+        return speech_bounds(pcm)
+
     async def _request_budget(self):
         async with self.state_lock:
             if self.is_guest and self.data["asrRequests"] >= settings.guest_ws_max_asr_requests:
@@ -281,7 +284,7 @@ class LiveMeeting:
         if end <= start or (not flush and end < limit and end - state["lastDecode"] < UPDATE_SAMPLES):
             return False
         pcm = await blocking_work_pool.run("artifact", self._read_audio, track, start, end)
-        bounds = await blocking_work_pool.run("media", speech_bounds, pcm)
+        bounds = await blocking_work_pool.run("media", self._speech_bounds, pcm)
         if bounds is None:
             state.update(windowStart=end, lastDecode=end, hypothesis="", stable="")
             self._note_pause(track, end, len(pcm) // 2)
