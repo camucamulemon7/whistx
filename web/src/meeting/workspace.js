@@ -145,11 +145,19 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
     notesExport.sync();
     const access = getAccess();
     const message = access === "login" ? "会議アシスタントにはログインが必要です。ゲストでは文字起こしのみ利用できます。"
-      : access === "unavailable" ? "会議アシスタントを利用できません。サーバーの機能設定を確認してください。" : "";
+      : access === "unavailable" ? "会議アシスタントを利用できません。サーバーの機能設定を確認してください。"
+      : access === "importing" ? "ファイルの文字起こしが完了すると、議事録の作成や質問ができます。" : "";
     const notice = document.querySelector("#assistantAccessNotice");
     notice.hidden = !message;
     notice.textContent = message;
     question.disabled = Boolean(message);
+    if (access === "importing") {
+      if (!summaryButton.hasAttribute("data-media-import-lock")) summaryButton.dataset.mediaImportLock = String(summaryButton.disabled);
+      summaryButton.disabled = true;
+    } else if (summaryButton.hasAttribute("data-media-import-lock")) {
+      summaryButton.disabled = summaryButton.dataset.mediaImportLock === "true";
+      delete summaryButton.dataset.mediaImportLock;
+    }
     askButton.disabled = Boolean(message) && !answerController;
     document.querySelectorAll("[data-meeting-question]").forEach(button => { button.disabled = Boolean(message); });
   }

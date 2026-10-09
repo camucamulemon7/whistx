@@ -1,18 +1,18 @@
 /* Meeting application shell. Settings dialogs retain their separate stylesheet. */
 :root, :root[data-theme="light"] {
-  --accent-50:#edf2ff; --accent-100:#dce5ff; --accent-200:#bdccf5; --accent-300:#9bb3f2;
-  --accent-400:#7795e5; --accent-500:#4466c7; --accent-600:#3555af; --accent-700:#2c478e;
-  --accent-800:#233a75; --accent-900:#1d2e5b;
-  --surface-canvas:#f1f2f5; --surface-panel:#fff; --surface-muted:#f4f5f8;
-  --meeting-paper:#fff; --meeting-ink:#242938; --meeting-muted:#6a7182; --meeting-line:#e3e6ed;
-  --meeting-nav:#eceef3; --meeting-accent:#3555af;
+  --accent-50:#edf6f3; --accent-100:#d5ebe4; --accent-200:#b0d7cb; --accent-300:#87bfaf;
+  --accent-400:#519a86; --accent-500:#327e6e; --accent-600:#24665d; --accent-700:#1d544c;
+  --accent-800:#18443d; --accent-900:#12362f;
+  --surface-canvas:#f1f4f3; --surface-panel:#fff; --surface-muted:#f4f7f6;
+  --meeting-paper:#fff; --meeting-ink:#24332e; --meeting-muted:#64736d; --meeting-line:#e1e8e5;
+  --meeting-nav:#f2f5f4; --meeting-accent:#24665d; --meeting-action-ink:#fff;
 }
 :root[data-theme="dark"] {
-  --accent-50:#252f48; --accent-100:#334363; --accent-200:#455987; --accent-300:#718dcc;
-  --accent-400:#93acec; --accent-500:#9bb5ff; --accent-600:#abc0ff; --accent-700:#c4d2ff;
-  --surface-canvas:#171a21; --surface-panel:#1d212a; --surface-muted:#252b36;
-  --meeting-paper:#1d212a; --meeting-ink:#e5e9f3; --meeting-muted:#a2abbd; --meeting-line:#333b4b;
-  --meeting-nav:#191d25; --meeting-accent:#abc0ff;
+  --accent-50:#203731; --accent-100:#2c4940; --accent-200:#3a5e52; --accent-300:#68a591;
+  --accent-400:#8bc2ad; --accent-500:#a2d5c0; --accent-600:#a2d5c0; --accent-700:#c1e5d6;
+  --surface-canvas:#171e1c; --surface-panel:#1d2622; --surface-muted:#232e29;
+  --meeting-paper:#1d2622; --meeting-ink:#e4eeea; --meeting-muted:#a8bbb2; --meeting-line:#34433b;
+  --meeting-nav:#19211d; --meeting-accent:#a2d5c0; --meeting-action-ink:#153b2d;
 }
 body { background:var(--surface-canvas); }
 .app { max-width:none; padding:0; margin:0; gap:0; height:100dvh; overflow:hidden; }
@@ -103,6 +103,7 @@ body { background:var(--surface-canvas); }
 .meeting-layout .panel-badge { font-size:10px; border:0; background:var(--surface-muted); color:var(--meeting-muted); padding:2px 5px; }
 .live-status-bar { display:flex; flex:none; flex-wrap:wrap; align-items:center; gap:7px; min-height:45px; padding:7px 24px; font-size:10px; color:var(--meeting-muted); border-bottom:1px solid var(--meeting-line); }
 .live-status-bar::before { content:""; width:5px; height:5px; border-radius:50%; background:var(--meeting-accent); }
+#liveConnection { min-width:0; flex:1 1 140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 #hqStatus { font-size:12px; padding:5px 9px; border-radius:4px; background:var(--surface-muted); color:var(--meeting-ink); }
 #hqStatus[data-state="running"] { background:var(--accent-50); font-weight:650; }
 .transcript-quality { display:inline-block; margin:0 6px; padding:1px 6px; border:1px solid var(--meeting-line); border-radius:4px; font-size:11px; color:var(--meeting-muted); vertical-align:baseline; }
@@ -240,3 +241,97 @@ body { background:var(--surface-canvas); }
 .translation-row { border-bottom:1px solid var(--meeting-line); font-size:14px; line-height:1.9; }
 .translation-row p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
 .translation-row small, .translation-pending { color:var(--meeting-muted); }
+
+/* Input workflow and quieter, readable controls. Preserve the resizable grid. */
+.capture-workflow { display:flex; flex:none; align-items:center; justify-content:space-between; gap:16px; padding:18px 24px 8px; }
+.capture-heading h2 { margin:0; font-size:15px; font-weight:600; color:var(--meeting-ink); letter-spacing:.02em; }
+.capture-heading p { margin:4px 0 0; font-size:12px; color:var(--meeting-muted); }
+.capture-modes { display:flex; flex:none; gap:4px; padding:4px; border:1px solid var(--meeting-line); border-radius:9px; background:var(--surface-muted); }
+.capture-modes button { border:0; border-radius:6px; padding:8px 12px; font:inherit; font-size:12px; color:var(--meeting-muted); background:transparent; cursor:pointer; }
+.capture-modes button[aria-selected="true"] { color:var(--meeting-accent); background:var(--meeting-paper); box-shadow:0 1px 3px #0000000d; font-weight:600; }
+.capture-modes button:disabled { cursor:default; opacity:.65; }
+.capture-modes button:focus-visible, .media-dropzone:focus-visible, .media-import-actions :focus-visible { outline:2px solid var(--meeting-accent); outline-offset:3px; }
+#recordingInputPanel[hidden], #mediaImportPanel[hidden], #mediaImportCancel[hidden], #mediaImportProgress[hidden], #mediaLoginHint[hidden] { display:none !important; }
+.media-import-panel { flex:none; padding:12px 24px 16px; border-bottom:1px solid var(--meeting-line); }
+.media-dropzone { display:flex; align-items:center; gap:16px; width:100%; min-width:0; padding:20px; border:1px dashed var(--accent-300); border-radius:10px; background:var(--surface-muted); color:var(--meeting-ink); text-align:left; font:inherit; cursor:pointer; transition:background .15s, border-color .15s; }
+.media-dropzone:hover:not(:disabled), .media-dropzone.is-dragover { border-color:var(--meeting-accent); background:var(--accent-50); }
+.media-dropzone:disabled { cursor:default; opacity:.65; }
+.media-file-icon { display:grid; place-items:center; flex:none; width:44px; height:48px; color:var(--meeting-accent); background:var(--accent-50); border-radius:8px; }
+.media-file-copy { display:flex; flex-direction:column; gap:5px; min-width:0; flex:1; }
+.media-file-copy strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; font-weight:600; }
+.media-file-copy > span, .media-formats { font-size:12px; line-height:1.6; color:var(--meeting-muted); }
+.media-file-select { flex:none; padding:7px 12px; border:1px solid var(--meeting-line); border-radius:6px; background:var(--meeting-paper); color:var(--meeting-accent); font-size:12px; }
+.media-formats { margin:8px 0 14px; }
+.media-import-actions { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
+.media-language { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--meeting-muted); white-space:nowrap; }
+.media-language select { min-height:36px; padding:6px 30px 6px 10px; border:1px solid var(--meeting-line); border-radius:6px; background:var(--meeting-paper); color:var(--meeting-ink); font:inherit; }
+#mediaImportStart { min-height:36px; padding:7px 16px; border:0; border-radius:6px; background:var(--meeting-accent); color:var(--meeting-action-ink); font-size:12px; }
+#mediaImportStart:hover:not(:disabled) { background:var(--accent-700); color:var(--meeting-action-ink); }
+#mediaImportStart:disabled { background:var(--meeting-line); color:var(--meeting-muted); cursor:default; opacity:1; }
+#mediaImportCancel { min-height:36px; font-size:12px; }
+#mediaImportProgress { width:140px; height:6px; accent-color:var(--meeting-accent); }
+.media-import-status, .media-login-hint { margin:10px 0 0; font-size:12px; line-height:1.7; color:var(--meeting-muted); overflow-wrap:anywhere; }
+.media-login-hint { color:var(--meeting-accent); }
+.settings-panel .record-btn, .meeting-layout .assistant-form .btn-action { background:var(--meeting-accent); color:var(--meeting-action-ink); }
+.settings-panel .record-btn.is-recording { background:#ad3c4a; color:#fff; }
+html[data-theme="dark"] .settings-panel .record-btn { background:var(--meeting-accent); color:var(--meeting-action-ink); }
+html[data-theme="dark"] .settings-panel .record-btn.is-recording { background:#ad3c4a; color:#fff; }
+.meeting-layout .btn-action.btn-primary, .meeting-layout .assistant-form .btn-action { background:var(--meeting-accent); color:var(--meeting-action-ink); }
+.meeting-layout .btn-action.btn-primary:hover:not(:disabled), .meeting-layout .assistant-form .btn-action:hover:not(:disabled) { background:var(--accent-700); color:var(--meeting-action-ink); }
+.workspace-main:has(#mediaImportPanel:not([hidden])) .meeting-options label:has(#meetingCaptureEnabled) { display:none; }
+.settings-panel .setting-label { font-size:11px; }
+.settings-panel .select-wrapper select { min-height:36px; font-size:13px; border-radius:6px; }
+.settings-panel .settings-inline-detail-btn { min-height:34px; font-size:11px; }
+.meeting-tabs button { font-size:13px; }
+.meeting-layout .panel-title { font-size:13px; }
+.meeting-layout .btn-secondary, .meeting-layout .btn-action { min-height:32px; border-radius:6px; font-size:12px; }
+.meeting-layout .empty-state { padding:48px 24px; }
+.meeting-layout .empty-title { font-size:16px; }
+.meeting-layout .empty-description { font-size:13px; line-height:1.8; }
+.assistant-suggestions button { font-size:11px; padding:7px 9px; }
+.assistant-live-context, .assistant-status, .assistant-form label { font-size:11px; }
+.history-item-preview { font-size:12px; }
+.meeting-options { flex-wrap:wrap; gap:8px 20px; }
+@media (max-width:640px) {
+  .capture-workflow { flex-wrap:wrap; gap:10px; padding:14px 12px 6px; }
+  .capture-heading h2 { font-size:14px; }
+  .capture-heading p { display:none; }
+  .capture-modes { flex:1 1 100%; }
+  .capture-modes button { flex:1; min-height:36px; padding:7px 8px; }
+  .media-import-panel { padding:10px 12px 12px; }
+  .media-dropzone { padding:14px; gap:10px; }
+  .media-file-select { display:none; }
+  .media-file-icon { width:36px; height:40px; }
+  .media-file-copy strong { font-size:13px; }
+  .media-file-copy > span, .media-formats { font-size:11px; }
+  .media-import-actions { gap:8px; }
+  .media-language { flex:1 1 100%; }
+  .media-language select { flex:1; }
+  #mediaImportStart { flex:1; white-space:nowrap; }
+  #mediaImportProgress { flex:1; min-width:60px; }
+  .meeting-options { padding:8px 12px; font-size:11px; }
+  .meeting-tabs { gap:16px; }
+  .meeting-tabs button { font-size:12px; }
+  .meeting-layout .downloads-bar { flex-direction:row; align-items:center; gap:8px; padding:8px 12px; }
+  .meeting-layout .downloads-label { display:none; }
+  .meeting-layout .save-controls { flex-wrap:nowrap; gap:6px; }
+  .meeting-layout .save-title-input { flex:1; min-width:0; width:0; padding:8px; font-size:12px; }
+  .meeting-layout .save-state-badge { font-size:10px; padding:3px; white-space:nowrap; }
+  .meeting-layout #saveBtn { min-width:48px; padding:6px 8px; }
+  .meeting-layout .export-menu-trigger { padding:6px 8px; font-size:11px; }
+  .meeting-layout .live-status-bar { padding:6px 12px; }
+  .meeting-layout .panel-header { gap:6px; }
+  .meeting-layout .panel-actions { gap:4px; }
+  .meeting-layout .panel-actions .btn-secondary { padding:5px 7px; font-size:11px; }
+  .capture-heading { display:none; }
+}
+@media (max-height:620px) {
+  .capture-heading p, .media-formats { display:none; }
+  .capture-workflow { padding-top:8px; }
+  .media-dropzone { padding:10px 14px; }
+}
+.meeting-layout > .assistant-panel { container-type:size; container-name:meeting-assistant; }
+@container meeting-assistant (max-height:380px) {
+  .assistant-live-context, .assistant-suggestions { display:none; }
+  .assistant-form textarea { min-height:56px; height:56px; }
+}

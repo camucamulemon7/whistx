@@ -9,6 +9,7 @@ import { createScreenshotViewerController } from "./controllers/screenshot-viewe
 import { createTranscriptController } from "./controllers/transcript.js";
 import { createWorkspaceController } from "./controllers/workspace.js";
 import { createTranscriptionController } from "./controllers/transcription.js";
+import { createMediaImportController } from "./controllers/media-import.js";
 import { createRecordingController } from "./controllers/recording.js";
 import { createMediaCaptureController } from "./controllers/media-capture.js";
 import { createGlossaryController } from "./controllers/glossary.js";
@@ -61,6 +62,7 @@ import {
 const $ = (selector) => document.querySelector(selector);
 let meetingWorkspace = null;
 let refinementController = null;
+let mediaImportUi = null;
 
 const statusTextEl = $("#statusText");
 const connCountEl = $("#connCount");
@@ -403,6 +405,8 @@ const controllerContext = {
   get markProofreadStale() { return markProofreadStale; },
   get markWorkspaceClean() { return markWorkspaceClean; },
   get markWorkspaceDirty() { return markWorkspaceDirty; },
+  get mediaImportUi() { return mediaImportUi; },
+  get commitNewRecordingWorkspace() { return commitNewRecordingWorkspace; },
   get meetingWorkspace() { return meetingWorkspace; },
   set meetingWorkspace(value) { meetingWorkspace = value; },
   get openManagedModal() { return openManagedModal; },
@@ -903,6 +907,7 @@ window.addEventListener("resize", () => {
 });
 
 window.addEventListener("pagehide", () => {
+  state.mediaImportController?.abort("page_hidden");
   state.summaryController?.abort("page_hidden");
   state.proofreadController?.abort("page_hidden");
   state.historyListController?.abort("page_hidden");
@@ -1123,13 +1128,14 @@ if (logEl && !logEl.querySelector(".log-row")) {
 
 meetingWorkspace = createMeetingWorkspace({
   getSource: currentMeetingSource,
-  getAccess: () => !state.auth.authenticated ? "login" : !state.meetingInsights ? "unavailable" : "ready",
+  getAccess: () => !state.auth.authenticated ? "login" : state.mediaImportController ? "importing" : !state.meetingInsights ? "unavailable" : "ready",
   onNavigate: navigateMeetingSource,
   onRecap: (text, meta) => { setSummary(text, meta); markWorkspaceDirty(); },
   onImage: showScreenshotModal,
   onBusy: () => updateSaveControls(),
 });
 meetingWorkspace.syncSource();
+mediaImportUi = createMediaImportController(controllerContext);
 document.querySelector("#refineAudioBtn")?.addEventListener("click", refineMeetingAudio);
 document.querySelector("#retryLiveStop")?.addEventListener("click", finalizeLiveRecording);
 document.querySelector("#downloadPendingAudio")?.addEventListener("click", () => state.liveCapture?.downloadPending());

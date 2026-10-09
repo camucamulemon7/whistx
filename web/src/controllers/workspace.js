@@ -6,7 +6,7 @@ function setSaveBadge(label, saved = false) {
 }
 
 function isRecordingInteractionLocked() {
-  return appDependencies.state.recordingPhase !== "idle" || !!appDependencies.state.finalizingStop || Boolean(appDependencies.refinementController);
+  return appDependencies.state.recordingPhase !== "idle" || !!appDependencies.state.finalizingStop || Boolean(appDependencies.refinementController) || Boolean(appDependencies.state.mediaImportController);
 }
 
 function shouldProtectWorkspaceFromUnload() {
@@ -47,11 +47,16 @@ function confirmWorkspaceDiscard(action) {
 }
 
 function showRecordingInteractionBlocked(action) {
+  if (appDependencies.state.mediaImportController) {
+    appDependencies.showToast(`ファイルの文字起こし中は${action}できません`, "error");
+    return;
+  }
   const finalizing = appDependencies.state.recordingPhase === "stopping" || appDependencies.state.recordingPhase === "finalizing" || appDependencies.state.finalizingStop;
   appDependencies.showToast(finalizing ? `録音の停止処理中は${action}できません` : `録音中は${action}できません`, "error");
 }
 
 function updateSaveControls() {
+  appDependencies.mediaImportUi?.sync();
   const hasSegments = appDependencies.state.segments.length > 0;
   const authenticated = !!appDependencies.state.auth.authenticated;
   const isGuest = !!appDependencies.state.auth.isGuest;
@@ -69,7 +74,7 @@ function updateSaveControls() {
       !authenticated || isGuest || recordingLocked || !hasSegments || appDependencies.state.saveInFlight || saved || viewingHistory || Boolean(appDependencies.meetingWorkspace?.busy) || Boolean(appDependencies.state.liveCapture && !appDependencies.state.runtimeSessionFinalized);
     appDependencies.saveBtn.textContent = appDependencies.state.saveInFlight ? "保存中..." : "保存";
     appDependencies.saveBtn.title = recordingLocked
-      ? "録音中は保存できません"
+      ? appDependencies.state.mediaImportController ? "ファイルの文字起こし中は保存できません" : "録音中は保存できません"
       : isGuest
         ? "ゲストでは保存できません"
         : authenticated

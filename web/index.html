@@ -152,7 +152,17 @@
           </aside>
 
           <div class="workspace-main">
-            <section class="settings-panel glass-panel reveal" aria-label="入力設定">
+            <div class="capture-workflow">
+              <div class="capture-heading">
+                <h2>文字起こしをはじめる</h2>
+                <p>録音するか、動画・音声ファイルを取り込めます。</p>
+              </div>
+              <div class="capture-modes" role="tablist" aria-label="音声の入力方法">
+                <button id="captureRecordTab" type="button" role="tab" data-capture-mode="record" aria-controls="recordingInputPanel" aria-selected="true">録音する</button>
+                <button id="captureFileTab" type="button" role="tab" data-capture-mode="file" aria-controls="mediaImportPanel" aria-selected="false" tabindex="-1">ファイルを取り込む</button>
+              </div>
+            </div>
+            <section id="recordingInputPanel" class="settings-panel glass-panel reveal" role="tabpanel" aria-labelledby="captureRecordTab">
               <div class="settings-intro">
                 <div>
                   <h2 class="settings-intro-title">録音</h2>
@@ -315,6 +325,31 @@
               <p id="recordTelemetry" class="setting-hint setting-hint-telemetry" aria-live="polite" hidden></p>
             </section>
 
+            <section id="mediaImportPanel" class="media-import-panel" role="tabpanel" aria-labelledby="captureFileTab" hidden>
+              <input id="mediaFileInput" type="file" accept=".wav,.mp3,.m4a,.mp4,.mov,.webm,.mkv,.ogg,.opus,.flac,.aac,.aiff,.aif" hidden />
+              <button id="mediaDropzone" class="media-dropzone" type="button" aria-describedby="mediaFileFormats">
+                <span class="media-file-icon" aria-hidden="true">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 15l4-4 4 4M12 11v7"/></svg>
+                </span>
+                <span class="media-file-copy">
+                  <strong id="mediaFileName">動画・音声ファイルを選ぶ</strong>
+                  <span id="mediaFileDetail">ここにドロップ、またはクリックして選択</span>
+                </span>
+                <span class="media-file-select" aria-hidden="true">ファイルを選択</span>
+              </button>
+              <p id="mediaFileFormats" class="media-formats">WAV・MP3・M4A・MP4・MOV・WebM ほか · 最大256 MB / 2時間</p>
+              <div class="media-import-actions">
+                <label class="media-language" for="mediaLanguage">音声の言語
+                  <select id="mediaLanguage"><option value="ja">日本語</option><option value="en">英語</option><option value="auto">自動判定</option></select>
+                </label>
+                <button id="mediaImportStart" type="button" class="btn-action media-import-start" disabled>文字起こしを開始</button>
+                <button id="mediaImportCancel" type="button" class="btn-secondary" hidden>キャンセル</button>
+                <progress id="mediaImportProgress" max="100" aria-label="ファイルの文字起こし進捗" hidden></progress>
+              </div>
+              <p id="mediaImportStatus" class="media-import-status" role="status" aria-live="polite">動画は音声を取り出して文字起こしします。</p>
+              <p id="mediaLoginHint" class="media-login-hint">ファイルを取り込むには、右上からログインしてください。</p>
+            </section>
+
             <div class="meeting-options">
               <label><input id="translationEnabled" type="checkbox"> 翻訳</label>
               <label><input id="meetingCaptureEnabled" type="checkbox" checked> スクリーンショットを保存（画面共有時）</label>
@@ -386,7 +421,7 @@
                       </svg>
                     </div>
                     <p class="empty-title">文字起こしがありません</p>
-                    <p class="empty-description">録音を開始するとここに表示されます</p>
+                    <p class="empty-description">録音を開始するか、動画・音声ファイルを取り込んでください</p>
                   </div>
                 </div>
 

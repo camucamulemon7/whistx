@@ -14,7 +14,7 @@ function renderEmptyTranscriptState() {
         </svg>
       </div>
       <p class="empty-title">まだ文字起こしがありません</p>
-      <p class="empty-description">録音を開始すると、リアルタイムで文字起こしが表示されます</p>
+      <p class="empty-description">録音を開始するか、動画・音声ファイルを取り込んでください</p>
     </div>
   `;
 }
