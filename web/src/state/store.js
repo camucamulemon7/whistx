@@ -13,6 +13,7 @@ export function createAppState({ chunkDefaultSeconds, speakerMax, defaultPromptT
     finalizingStop: false,
     recording: false,
     recordingPhase: "idle",
+    mediaImportController: null,
     historyDrawerOpen: false,
     recordingAudioSource: "mic",
     recordingRequestedAudioSource: "mic",

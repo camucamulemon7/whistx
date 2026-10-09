@@ -70,6 +70,7 @@ export function formatStatusText(text) {
 }
 
 export function formatAudioSource(mode) {
+  if (mode === "file") return "ファイル";
   if (mode === "both") return "両方";
   if (mode === "display") return "画面共有";
   return "マイク";

@@ -566,7 +566,7 @@ async function refineMeetingAudio() {
 }
 
 async function startRecording() {
-  if (appDependencies.state.recordingPhase !== "idle" || appDependencies.state.finalizingStop || appDependencies.refinementController) return;
+  if (appDependencies.state.recordingPhase !== "idle" || appDependencies.state.finalizingStop || appDependencies.refinementController || appDependencies.state.mediaImportController) return;
   if (!appDependencies.canUseWorkspace()) {
     appDependencies.showToast("ログインが必要です", "error");
     appDependencies.setAppLocked(true);

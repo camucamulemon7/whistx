@@ -447,6 +447,7 @@ async function logout() {
   if (!appDependencies.confirmWorkspaceDiscard("破棄してログアウト")) {
     return;
   }
+  appDependencies.state.mediaImportController?.abort("logout");
   registrationMessage = "";
   registrationKind = "";
   await logoutRequest().catch(() => null);

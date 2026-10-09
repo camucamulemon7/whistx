@@ -1958,6 +1958,124 @@ async function verifyMeetingInsights(client) {
   assert.equal(await evaluate(client, `document.querySelector("#workspacePanels").dataset.meetingView`), "transcript");
 }
 
+async function verifyMediaImport(client) {
+  const base = await client.send('Page.addScriptToEvaluateOnNewDocument', { source: recordingMocks });
+  const mock = await client.send('Page.addScriptToEvaluateOnNewDocument', { source: String.raw`
+    (() => {
+      const oldFetch = window.fetch;
+      window.confirm = () => true;
+      window.__media = { requests: [], mode: 'hold', aborted: 0 };
+      localStorage.setItem('whistx_audio_source', 'mic');
+      const json = (body, status=200) => new Response(JSON.stringify(body), {status, headers:{'Content-Type':'application/json'}});
+      window.fetch = async (input, options={}) => {
+        const url = String(input);
+        if (url.includes('/api/health')) return json({asrReady:true,model:'synthetic',wsPath:'/ws/transcribe',meetingInsights:true,banners:[]});
+        if (url.includes('/api/meeting/insights')) return json({images:[],turns:[],recap:null});
+        if (url.includes('/api/media/transcribe')) {
+          window.__media.requests.push({url, name:options.body.name, size:options.body.size});
+          if (window.__media.mode === 'error') return json({error:'media_decode_failed'}, 422);
+          return new Response(new ReadableStream({ start(stream) {
+            const emit = event => stream.enqueue(new TextEncoder().encode('data: '+JSON.stringify(event)+'\n\n'));
+            emit({type:'status',phase:'recognizing',progress:40,message:'合成音声を文字起こし中 · 40%'});
+            window.__media.complete = () => {
+              emit({type:'done',sessionId:'file-browser',durationMs:1000,title:'合成テスト',records:[
+                {type:'final',segmentId:'file-0-16000',seq:0,text:'ファイルから取り込んだ合成発話です。',tsStart:0,tsEnd:1000,
+                 quality:'high_accuracy',rawAudioPath:'/api/transcripts/file-browser/audio/file-000000.wav'}]});
+              stream.close();
+            };
+            options.signal.addEventListener('abort', () => { window.__media.aborted++; stream.error(new DOMException('Aborted','AbortError')); });
+          }}), {headers:{'Content-Type':'text/event-stream'}});
+        }
+        return oldFetch(input, options);
+      };
+    })();
+  ` });
+  await evaluate(client, `delete document.documentElement.dataset.whistxReady`);
+  await client.send('Page.reload', { ignoreCache: true });
+  await waitForApp(client);
+  await waitCondition(client, `!document.querySelector('#startBtn').disabled`);
+  await client.send('Emulation.setDeviceMetricsOverride', { width:1440,height:1000,deviceScaleFactor:1,mobile:false });
+  await evaluate(client, `document.querySelector('#captureRecordTab').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}))`);
+  assert.equal(await evaluate(client, `!document.querySelector('#mediaImportPanel').hidden && document.querySelector('#recordingInputPanel').hidden`), true);
+  await evaluate(client, `(() => {
+    const transfer = new DataTransfer(); transfer.items.add(new File([new Uint8Array(128)], '<b>合成テスト.mp4', {type:'video/mp4'}));
+    document.querySelector('#mediaDropzone').dispatchEvent(new DragEvent('drop',{dataTransfer:transfer,bubbles:true,cancelable:true}));
+  })()`);
+  assert.equal(await evaluate(client, `document.querySelector('#mediaFileName').textContent`), '<b>合成テスト.mp4');
+  assert.equal(await evaluate(client, `document.querySelector('#mediaFileName b')`), null, 'file names are plain text');
+  await evaluate(client, `(() => {
+    const transfer=new DataTransfer();transfer.items.add(new File([new Uint8Array(128)],'合成テスト.mp4',{type:'video/mp4'}));
+    const input=document.querySelector('#mediaFileInput');input.files=transfer.files;input.dispatchEvent(new Event('change',{bubbles:true}));
+  })()`);
+  await evaluate(client, `document.querySelector('#mediaImportStart').click(); document.querySelector('#mediaImportStart').click()`);
+  await waitCondition(client, `document.querySelector('#mediaImportProgress').value === 40`);
+  assert.equal(await evaluate(client, `window.__media.requests.length`), 1, 'double clicks send one upload');
+  assert.equal(await evaluate(client, `document.querySelector('#startBtn').disabled && document.querySelector('#captureRecordTab').disabled && document.querySelector('#clearBtn').disabled && document.querySelector('#assistantQuestion').disabled`), true, 'import locks competing actions');
+  assert.equal(await evaluate(client, `(() => {
+    const transfer=new DataTransfer();transfer.items.add(new File(['synthetic'],'another.wav'));
+    const event=new DragEvent('drop',{dataTransfer:transfer,bubbles:true,cancelable:true});
+    document.querySelector('#log').dispatchEvent(event);return event.defaultPrevented;
+  })()`), true, 'dropping outside the target cannot navigate away during import');
+  assert.equal((await unloadProtectionState(client)).prevented, true, 'navigation is protected during upload/recognition');
+  await evaluate(client, `document.querySelector('#assistantResize').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true})); window.dispatchEvent(new Event('resize'))`);
+  assert.equal(await evaluate(client, `window.__media.requests.length`), 1, 'resizing during import keeps one active upload');
+  await evaluate(client, `window.__media.complete()`);
+  await waitCondition(client, `document.querySelector('#mediaImportStatus').textContent.startsWith('完了')`);
+  assert.match(await evaluate(client, `document.querySelector('#log').textContent`), /ファイルから取り込んだ合成発話/);
+  assert.equal(await evaluate(client, `document.querySelector('#log .log-row').dataset.quality`), 'high_accuracy');
+  assert.equal(await evaluate(client, `!document.querySelector('#saveBtn').disabled && !document.querySelector('#refineAudioBtn').disabled`), true, 'completed file result can be saved/refined');
+  assert.equal(await evaluate(client, `document.querySelector('#dlJsonl').getAttribute('href')`), '/api/transcript/file-browser.jsonl');
+  for (const [width,height,theme] of [[1440,1000,'light'],[1440,1000,'dark'],[390,844,'light'],[390,844,'dark']]) {
+    await client.send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:width===390});
+    await evaluate(client, `document.documentElement.dataset.theme = '${theme}'`);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(await evaluate(client, `document.querySelector('.workspace-main').scrollWidth <= document.querySelector('.workspace-main').clientWidth + 1`), true, 'file UI fits viewport');
+    assert.equal(await evaluate(client, `(() => {const r=document.querySelector('#mediaImportStart').getBoundingClientRect();return r.left>=0 && r.right<=innerWidth && r.bottom<innerHeight})()`), true);
+    assert.equal(await evaluate(client, `document.querySelector('#log').clientHeight >= 80`), true, 'imported transcript remains readable on mobile');
+    assert.equal(await evaluate(client, `document.querySelector('#saveBtn').getBoundingClientRect().bottom <= innerHeight`), true, 'save action stays on screen');
+    if (process.env.MEDIA_SCREENSHOT_DIR) {
+      await waitCondition(client, `!document.querySelector('#toastContainer').textContent.includes('ファイルの文字起こしが完了しました')`);
+      await mkdir(process.env.MEDIA_SCREENSHOT_DIR,{recursive:true});
+      const shot = await client.send('Page.captureScreenshot',{format:'png'});
+      await writeFile(path.join(process.env.MEDIA_SCREENSHOT_DIR,`media-${width}-${theme}.png`), Buffer.from(shot.data,'base64'));
+    }
+  }
+  await evaluate(client, `window.__media.mode = 'error'; document.querySelector('#mediaImportStart').click()`);
+  await waitCondition(client, `document.querySelector('#mediaImportStatus').textContent.includes('音声を読み取れません')`);
+  assert.match(await evaluate(client, `document.querySelector('#log').textContent`), /ファイルから取り込んだ合成発話/, 'failure preserves prior result');
+  await evaluate(client, `window.__media.mode = 'hold'; document.querySelector('#mediaImportStart').click()`);
+  await waitCondition(client, `!document.querySelector('#mediaImportCancel').hidden`);
+  await evaluate(client, `document.querySelector('#mediaImportCancel').click()`);
+  await waitCondition(client, `document.querySelector('#mediaImportStatus').textContent.includes('キャンセルしました')`);
+  assert.equal(await evaluate(client, `window.__media.aborted`), 1);
+  assert.match(await evaluate(client, `document.querySelector('#log').textContent`), /ファイルから取り込んだ合成発話/, 'cancellation preserves prior result');
+  await evaluate(client, `document.querySelector('#mediaImportStart').click()`);
+  await waitCondition(client, `document.querySelector('#mediaImportProgress').value === 40`);
+  await evaluate(client, `window.__media.complete()`);
+  await waitCondition(client, `document.querySelector('#mediaImportStatus').textContent.startsWith('完了')`);
+  await evaluate(client, `document.querySelector('#captureRecordTab').click(); document.querySelector('#startBtn').click()`);
+  await waitForRecordingState(client, true);
+  assert.equal(await evaluate(client, `document.querySelector('#captureFileTab').disabled`), true, 'recording excludes an import');
+  await evaluate(client, `document.querySelector('#startBtn').click()`);
+  await waitForRecordingState(client, false);
+  await waitCondition(client, `!document.querySelector('#captureFileTab').disabled`);
+  await evaluate(client, `document.querySelector('#captureFileTab').click()`);
+  assert.equal(await evaluate(client, `document.querySelector('#mediaImportPanel').hidden`), false, 'file mode resumes after recording stops');
+  await evaluate(client, `document.querySelector('#mediaImportStart').click()`);
+  await waitCondition(client, `!document.querySelector('#mediaImportCancel').hidden`);
+  await evaluate(client, `window.dispatchEvent(new Event('pagehide'))`);
+  await waitCondition(client, `document.querySelector('#mediaImportStatus').textContent.includes('キャンセルしました')`);
+  await evaluate(client, `document.querySelector('#mediaImportStart').click()`);
+  await waitCondition(client, `!document.querySelector('#mediaImportCancel').hidden`);
+  await evaluate(client, `document.querySelector('#logoutBtn').click()`);
+  await waitCondition(client, `document.querySelector('#mediaLoginHint').hidden === false`);
+  assert.equal(await evaluate(client, `document.querySelector('#mediaImportStart').disabled && document.querySelector('#mediaDropzone').disabled`), true, 'guests cannot import files');
+  assert.equal(await evaluate(client, `document.querySelector('#mediaFileName').textContent`), '動画・音声ファイルを選ぶ', 'logout clears the selected local file');
+  assert.equal(await evaluate(client, `window.__media.aborted`), 3, 'cancel, page navigation and logout abort active imports');
+  await client.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:mock.identifier});
+  await client.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:base.identifier});
+}
+
 async function verifyLiveRecordingAndRefinement(client) {
   await client.send("Page.addScriptToEvaluateOnNewDocument", { source: recordingMocks });
   await client.send("Page.addScriptToEvaluateOnNewDocument", { source: String.raw`
@@ -2380,6 +2498,8 @@ try {
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyDesktopPanelLayout\n');
   if (process.env.BANNER_REPRO_ONLY) {
     await verifyReportedAnnouncements(client);
+  } else if (process.env.MEDIA_IMPORT_ONLY) {
+    await verifyMediaImport(client);
   } else if (process.env.DIVIDER_REPRO_ONLY) {
     await client.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await verifyLiveRecordingAndRefinement(client);
@@ -2430,6 +2550,7 @@ try {
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyLiveRevision: whisper\n');
   await verifyLiveRevision(client, 'whisper');
   await verifyWhisperLegacyTranslation(browserWebSocketUrl, url);
+  await verifyMediaImport(client);
   await evaluate(client, `(() => {
     const language = document.querySelector('#language');
     language.value = '';

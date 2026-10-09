@@ -9,6 +9,7 @@ It records microphone audio, shared screen audio, or both, and provides live tra
 - Chapter summaries with decisions, actions, citations, and actual captured screen images
 - Streaming meeting questions grounded in the selected meeting
 - Post-recording audio re-recognition with original text retained
+- Audio/video file transcription with progress, cancellation, history saving and re-recognition ([usage and limits](docs/media-import.md))
 - Legacy chunk-based transcription over WebSocket
 - OpenAI-compatible Whisper ASR backend support
   - OpenAI `whisper-1`
