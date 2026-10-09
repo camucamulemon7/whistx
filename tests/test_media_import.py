@@ -205,6 +205,24 @@ class MediaImportTests(unittest.TestCase):
         self.assertFalse(any(event['type'] == 'done' for event in self.events))
         self.assert_no_artifacts()
 
+    def test_cancel_during_provider_close_cannot_commit_a_result(self):
+        self.run_import(pcm(.2), model=SimpleNamespace(
+            transcribe_chunk=lambda *a, **kw: SimpleNamespace(text='中断対象'),
+            close=self.cancelled.set))
+        self.assertFalse(any(event['type'] == 'done' for event in self.events))
+        self.assert_no_artifacts()
+
+    def test_cancel_during_final_metadata_write_cleans_up(self):
+        original = media_import.TranscriptStore.write_metadata
+        def write(store, metadata):
+            original(store, metadata)
+            if metadata.get('finalized'):
+                self.cancelled.set()
+        with patch.object(media_import.TranscriptStore, 'write_metadata', write):
+            self.run_import(pcm(.2))
+        self.assertFalse(any(event['type'] == 'done' for event in self.events))
+        self.assert_no_artifacts()
+
 
 @unittest.skipUnless(os.environ.get('FFMPEG_BIN') or shutil.which('ffmpeg'), 'FFmpeg required for actual decoder tests')
 class MediaDecoderTests(unittest.TestCase):
@@ -270,6 +288,12 @@ class MediaDecoderTests(unittest.TestCase):
         with self.assertRaises(MeetingError) as error:
             self.decode(self.source, filename='remote.m3u8')
         self.assertEqual(error.exception.code, 'media_unsupported_format')
+
+    def test_truncated_audio_is_not_silently_accepted(self):
+        self.source.write_bytes(self.source.read_bytes()[:-200])
+        with self.assertRaises(MeetingError) as error:
+            self.decode(self.source)
+        self.assertEqual(error.exception.code, 'media_decode_failed')
 
 
 class MediaRouteTests(unittest.TestCase):

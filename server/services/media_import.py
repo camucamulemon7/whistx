@@ -42,10 +42,10 @@ def decode_media(source: Path, destination: Path, *, filename: str, cancelled, f
     executable = ffmpeg_bin or settings.ffmpeg_bin
     if shutil.which(executable) is None:
         raise MeetingError('media_decoder_unavailable', 503)
-    command = [executable, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
-               '-protocol_whitelist', 'file,pipe', '-f', media_format(filename), '-i', str(source),
+    command = [executable, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-xerror',
+               '-protocol_whitelist', 'file,pipe', '-threads', '1', '-f', media_format(filename), '-i', str(source),
                '-map', '0:a:0', '-vn', '-sn', '-dn', '-ac', '1', '-ar', str(SAMPLE_RATE),
-               '-t', str(MAX_DURATION_SECONDS + 1), '-c:a', 'pcm_s16le', str(destination)]
+               '-t', str(MAX_DURATION_SECONDS + 1), '-c:a', 'pcm_s16le', '-threads', '1', str(destination)]
     # Discard decoder logs: embedded metadata/file paths are not public errors.
     process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + max(120, settings.ffmpeg_timeout_seconds)
@@ -152,7 +152,11 @@ def import_events(source: Path, *, filename: str, language: str, prompt: str, us
                 # a published success into a later stream error.
                 closed_model, model = model, None
                 closed_model.close()
+                if cancelled.is_set():
+                    return
                 store.write_metadata({**metadata, 'finalized': True})
+                if cancelled.is_set():
+                    return
                 completed = True
                 yield dict(type='done', sessionId=session_id, records=records, durationMs=duration_ms,
                            title=Path(filename).stem[:200], message='文字起こしが完了しました')
