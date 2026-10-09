@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .. import runtime
-from ..api.routes import admin, auth, glossary, health, history, notes, summary, transcript
+from ..api.routes import admin, auth, glossary, health, history, media, notes, summary, transcript
 from ..api.ws.transcribe import router as transcribe_router
 from .config import settings
 from .logging import configure_application_logging, emit_container_log
@@ -111,6 +111,7 @@ def create_app() -> FastAPI:
     app.include_router(summary.router)
     app.include_router(notes.router)
     app.include_router(transcript.router)
+    app.include_router(media.router)
     app.include_router(transcribe_router)
 
     web_dir = Path(__file__).resolve().parents[2] / "web"
