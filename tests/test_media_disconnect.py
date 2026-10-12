@@ -140,7 +140,7 @@ class MediaDisconnectTests(unittest.TestCase):
 
     def test_disconnect_before_worker_start_never_calls_the_provider(self):
         semaphore = asyncio.Semaphore(0)
-        self.pool._semaphores['asr'] = semaphore
+        self.pool._semaphores['media'] = semaphore
         factory = self.fixture.app.state.runtime_resources.transcriber_factory
         with patch.object(self.fixture.app.state.runtime_resources, 'transcriber_factory', side_effect=factory) as calls:
             with self.client.stream('POST', '/api/media/transcribe?filename=queued.wav', content=self.fixture.audio) as response:
@@ -152,6 +152,23 @@ class MediaDisconnectTests(unittest.TestCase):
             self.wait(lambda: semaphore._value == 1)
             self.clean()
             self.assertEqual(calls.call_count, 0)
+
+    def test_disconnect_while_asr_worker_is_queued_never_dispatches_late_audio(self):
+        semaphore = asyncio.Semaphore(0)
+        self.pool._semaphores['asr'] = semaphore
+        recognized = threading.Event()
+        self.fixture.app.state.runtime_resources.transcriber_factory = lambda: SimpleNamespace(
+            transcribe_chunk=lambda *a, **kw: (recognized.set() or SimpleNamespace(text='late')), close=lambda: None)
+        with self.client.stream('POST', '/api/media/transcribe?filename=queued.wav', content=self.fixture.audio) as response:
+            self.assertEqual(response.status_code, 200)
+            self.wait(lambda: semaphore._loop is not None)
+        # Wait for the server's disconnect signal, not just the client's close.
+        self.wait(lambda: bool(self.uploads) and all(not path.exists() for path in self.uploads))
+        self.assertFalse(recognized.is_set())
+        semaphore._loop.call_soon_threadsafe(semaphore.release)
+        self.clean()
+        self.wait(lambda: semaphore._value == 1)
+        self.assertFalse(recognized.is_set())
 
 
 if __name__ == '__main__':

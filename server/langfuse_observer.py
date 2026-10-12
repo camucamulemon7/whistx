@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def high_accuracy_observation(observer, *, session_id: str, model: str,
                               start_ms: int, end_ms: int, audio_bytes: int,
                               language: str | None, track: str | None,
-                              manual: bool = False):
+                              manual: bool = False, kind: str = 'high_accuracy'):
     """One observation per actual HQ attempt; never pass media or exceptions.
 
     An opaque, deterministic trace ID groups attempts across lanes, reconnects
@@ -23,8 +23,9 @@ def high_accuracy_observation(observer, *, session_id: str, model: str,
     retries are visible rather than overwriting the failed attempt.
     """
     observer = observer or _NoopObserver()
-    trace_id = hashlib.sha256(('whistx:hq:' + session_id).encode()).hexdigest()[:32]
-    with observer.generation(name='asr.high_accuracy', model=model,
+    lane = 'hq' if kind == 'high_accuracy' else kind
+    trace_id = hashlib.sha256(('whistx:' + lane + ':' + session_id).encode()).hexdigest()[:32]
+    with observer.generation(name='asr.' + kind, model=model,
             trace_context={'trace_id': trace_id},
             input=dict(startMs=start_ms, endMs=end_ms, audioBytes=audio_bytes,
                        language=language, audioSource='both' if track == 'mixed' else track),

@@ -19,7 +19,7 @@ async def health(*, resources: RuntimeResources) -> JSONResponse:
             "model": settings.asr_model,
             "asrReady": resources.transcriber_factory is not None,
             "asrBackend": settings.asr_backend,
-            "capturePacketMs": 250 if settings.asr_backend == "qwen3_vllm" else 1000,
+            "capturePacketMs": 250 if settings.asr_backend in {"qwen3_vllm", "speech_cpp"} else 1000,
             "highAccuracyWindowSeconds": settings.asr_high_accuracy_window_seconds if settings.asr_high_accuracy_enabled else None,
             "summaryModel": settings.summary_model if resources.summarizer else None,
             "meetingTranslationModel": (settings.meeting_translation_model or settings.summary_model) if resources.summarizer else None,

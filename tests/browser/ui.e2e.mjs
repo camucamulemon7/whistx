@@ -44,7 +44,8 @@ async function startStaticServer() {
       response.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64'));
       return;
     }
-    const relativePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+    const assetPath = pathname.replace(/^\/assets\/asr-v1\//, '/');
+    const relativePath = assetPath === "/" ? "index.html" : assetPath.replace(/^\/+/, "");
     const filePath = path.resolve(webRoot, relativePath);
     if (!filePath.startsWith(`${webRoot}${path.sep}`) && filePath !== path.join(webRoot, "index.html")) {
       response.writeHead(403).end();
@@ -1977,10 +1978,11 @@ async function verifyMediaImport(client) {
           return new Response(new ReadableStream({ start(stream) {
             const emit = event => stream.enqueue(new TextEncoder().encode('data: '+JSON.stringify(event)+'\n\n'));
             emit({type:'status',phase:'recognizing',progress:40,message:'合成音声を文字起こし中 · 40%'});
+            emit({type:'segment',seq:0,text:'取込中の合成プレビューです。',tsStart:0,tsEnd:1000});
             window.__media.complete = () => {
               emit({type:'done',sessionId:'file-browser',durationMs:1000,title:'合成テスト',records:[
                 {type:'final',segmentId:'file-0-16000',seq:0,text:'ファイルから取り込んだ合成発話です。',tsStart:0,tsEnd:1000,
-                 quality:'high_accuracy',rawAudioPath:'/api/transcripts/file-browser/audio/file-000000.wav'}]});
+                 quality:'file_import',track:'file',rawAudioPath:'/api/transcripts/file-browser/audio/file-000000.wav'}]});
               stream.close();
             };
             options.signal.addEventListener('abort', () => { window.__media.aborted++; stream.error(new DOMException('Aborted','AbortError')); });
@@ -2009,6 +2011,9 @@ async function verifyMediaImport(client) {
   })()`);
   await evaluate(client, `document.querySelector('#mediaImportStart').click(); document.querySelector('#mediaImportStart').click()`);
   await waitCondition(client, `document.querySelector('#mediaImportProgress').value === 40`);
+  assert.equal(await evaluate(client, `document.querySelector('#mediaImportPreview').hidden`), false);
+  assert.match(await evaluate(client, `document.querySelector('#mediaImportPreview').textContent`), /合成プレビュー/);
+  assert.doesNotMatch(await evaluate(client, `document.querySelector('#log').textContent`), /合成プレビュー/);
   assert.equal(await evaluate(client, `window.__media.requests.length`), 1, 'double clicks send one upload');
   assert.equal(await evaluate(client, `document.querySelector('#startBtn').disabled && document.querySelector('#captureRecordTab').disabled && document.querySelector('#clearBtn').disabled && document.querySelector('#assistantQuestion').disabled`), true, 'import locks competing actions');
   assert.equal(await evaluate(client, `(() => {
@@ -2022,7 +2027,9 @@ async function verifyMediaImport(client) {
   await evaluate(client, `window.__media.complete()`);
   await waitCondition(client, `document.querySelector('#mediaImportStatus').textContent.startsWith('完了')`);
   assert.match(await evaluate(client, `document.querySelector('#log').textContent`), /ファイルから取り込んだ合成発話/);
-  assert.equal(await evaluate(client, `document.querySelector('#log .log-row').dataset.quality`), 'high_accuracy');
+  assert.equal(await evaluate(client, `document.querySelector('#log .log-row').dataset.quality`), 'file_import');
+  assert.equal(await evaluate(client, `document.querySelector('#log .transcript-quality').textContent`), 'ファイル認識');
+  assert.equal(await evaluate(client, `document.querySelector('#mediaImportPreview').hidden`), true);
   assert.equal(await evaluate(client, `!document.querySelector('#saveBtn').disabled && !document.querySelector('#refineAudioBtn').disabled`), true, 'completed file result can be saved/refined');
   assert.equal(await evaluate(client, `document.querySelector('#dlJsonl').getAttribute('href')`), '/api/transcript/file-browser.jsonl');
   for (const [width,height,theme] of [[1440,1000,'light'],[1440,1000,'dark'],[390,844,'light'],[390,844,'dark']]) {
@@ -2164,8 +2171,7 @@ async function verifyLiveRecordingAndRefinement(client) {
   assert.equal(await evaluate(client, `document.querySelectorAll('#bannersContainer .notice-banner').length`), 0, 'starting always-live Whisper must not revive dismissed warning/info notices');
   await evaluate(client, `window.__liveNode.port.onmessage({ data: { type: "pcm", sampleStart: 0, pcm: new Int16Array(16000).buffer } })`);
   await new Promise(resolve => setTimeout(resolve, 50));
-  assert.equal(await evaluate(client, `document.querySelector("#liveTranscript").hidden`), false, 'Whisper hypotheses must be visible before recording stops');
-  assert.equal(await evaluate(client, `document.querySelector('#liveTranscript .live-transcript-stable').textContent`), 'ライブ');
+  assert.equal(await evaluate(client, `document.querySelector('#liveTranscript')`), null, 'partial events must not create a separate interim card');
   assert.equal(await evaluate(client, `document.querySelectorAll('#log .log-row').length`), 0, 'hypotheses must not become saved transcript records');
   await evaluate(client, `document.querySelector("#assistantQuestion").value = "ここまでの要点は？"`);
   for (const [width, height] of [[1440, 1000], [1280, 720], [390, 844]]) {
@@ -2208,7 +2214,7 @@ async function verifyLiveRecordingAndRefinement(client) {
   assert.match(await evaluate(client, `document.querySelector("#log").textContent`), /ライブ録音の結果/);
   await waitCondition(client, `document.querySelector('#translationRows').textContent.includes('Live synthetic translation')`);
   assert.equal(await evaluate(client, `window.__liveTranslationRequest.runtimeSessionId`), 'live-browser');
-  assert.equal(await evaluate(client, `document.querySelector('#liveTranscript').hidden`), true, 'finalization clears the temporary hypothesis');
+  assert.equal(await evaluate(client, `document.querySelector('#liveTranscript')`), null, 'finalization retains the transcript without an interim card');
   assert.equal(await evaluate(client, `document.querySelector("#refineAudioBtn").disabled`), false);
   await evaluate(client, `document.querySelector("#refineAudioBtn").click()`);
   await new Promise(resolve => setTimeout(resolve, 150));
@@ -2312,7 +2318,7 @@ async function verifyLiveRevision(client, backend) {
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(await evaluate(client, `document.querySelectorAll("#log .log-row").length`), 1);
   assert.match(await evaluate(client, `document.querySelector("#log").textContent`), /APIのreview/);
-  assert.equal(await evaluate(client, `document.querySelector("#liveTranscript").hidden`), false, 'an HQ revision for older speech must preserve the current hypothesis');
+  assert.equal(await evaluate(client, `document.querySelector('#liveTranscript')`), null, 'HQ revisions update the main transcript without an interim card');
   assert.equal(await evaluate(client, `document.querySelector("#log .log-row").dataset.quality`), "high_accuracy");
   assert.match(await evaluate(client, `document.querySelector("#hqStatus").textContent`), /高精度認識を反映/);
   assert.equal(await evaluate(client, `document.querySelector('#log .transcript-quality').textContent`), "高精度");
@@ -2454,13 +2460,110 @@ async function verifyWhisperLegacyTranslation(browserWebSocketUrl, url) {
     await waitCondition(page, `document.querySelector('#translationRows').textContent.includes('Synthetic translated source')`);
     assert.equal(await evaluate(page, `window.__whisperTranslation.requests.at(-1).runtimeSessionId`), 'browser-test-1');
     assert.equal(await evaluate(page, `window.__whisperTranslation.requests.at(-1).language`), 'en');
-    assert.equal(await evaluate(page, `document.querySelector('#liveTranscript').hidden`), true);
+    assert.equal(await evaluate(page, `document.querySelector('#liveTranscript')`), null);
     await evaluate(page, `(() => {const language=document.querySelector('#translationLanguage');language.value='ja';language.dispatchEvent(new Event('change'));})()`);
     await waitCondition(page, `document.querySelector('#translationRows').textContent.includes('日本語の合成訳')`);
     await evaluate(page, `window.__whisperTranslation.failure='summary_not_configured'; document.querySelector('#translationRetry').click()`);
     await waitCondition(page, `document.querySelector('#translationStatus').textContent.includes('要約モデルが未設定')`);
     assert.match(await evaluate(page, `document.querySelector('#translationRows').textContent`), /日本語の合成訳/, 'model errors retain existing translations');
   } finally { page.close(); }
+}
+
+async function verifyCssInteractions(client) {
+  await client.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  const hover = await evaluate(client, `(() => {
+    const result = { count: 0, unguarded: [] };
+    function visit(rules, guarded = false) {
+      for (const rule of rules) {
+        if (rule.styleSheet) visit(rule.styleSheet.cssRules, guarded);
+        if (rule.cssRules) {
+          const query = (rule.conditionText || '').replace(/\\s/g, '');
+          visit(rule.cssRules, guarded || (query.includes('(hover:hover)') && query.includes('(pointer:fine)')));
+        }
+        if (rule.selectorText?.includes(':hover')) {
+          result.count += 1;
+          if (!guarded) result.unguarded.push(rule.selectorText);
+        }
+      }
+    }
+    for (const sheet of document.styleSheets) visit(sheet.cssRules);
+    return result;
+  })()`);
+  assert.ok(hover.count > 0, 'loaded CSS should include desktop hover effects');
+  assert.deepEqual(hover.unguarded, [], 'touch devices must not receive hover-only effects');
+
+  await evaluate(client, `document.querySelector('[data-meeting-tab="summary"]').click()`);
+  assert.equal(await evaluate(client, `document.querySelector('#summaryPromptEditor').tagName`), 'DETAILS');
+  assert.equal(await evaluate(client, `document.querySelector('#summaryPromptEditor').open`), false);
+  assert.equal(await evaluate(client, `document.querySelector('#summaryPrompt').checkVisibility()`), false, 'closed native disclosure hides its textarea');
+  await evaluate(client, `document.querySelector('#summaryPromptEditor > summary').focus()`);
+  await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+  assert.equal(await evaluate(client, `document.querySelector('#summaryPromptEditor').open`), true, 'keyboard opens the native disclosure');
+  await evaluate(client, `document.querySelector('#summaryPrompt').value = '合成の作成方針'; document.querySelector('#summaryPromptEditor > summary').focus()`);
+  await client.send('Emulation.setScriptExecutionDisabled', { value: true });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+  await client.send('Emulation.setScriptExecutionDisabled', { value: false });
+  assert.equal(await evaluate(client, `document.querySelector('#summaryPromptEditor').open`), false, 'native close works with JavaScript disabled');
+  assert.equal(await evaluate(client, `document.querySelector('#summaryPrompt').value`), '合成の作成方針', 'closing retains the generation prompt');
+  await evaluate(client, `document.querySelector('#summaryPrompt').value = ''; document.querySelector('[data-meeting-tab="transcript"]').click()`);
+
+  await evaluate(client, `(() => {
+    const fixture = document.createElement('div');
+    fixture.id = 'cssInteractionFixture';
+    fixture.style.cssText = 'position:fixed;left:0;top:0;z-index:10000;background:white';
+    fixture.innerHTML = '<button class="history-item-delete">削除</button><a class="log-audio-link">音声</a><button class="chapter-index-link">章</button><button class="meeting-citation">参照</button><div class="select-wrapper"><select><option>言語</option></select></div><input class="chunk-input"><div class="history-search"><input class="history-search-input"></div><label class="toggle-control"><input type="checkbox"><span class="toggle-track"></span></label>';
+    document.body.append(fixture);
+  })()`);
+  for (const width of [320, 390, 768, 1440]) {
+    await client.send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: width < 640 });
+    await client.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+    await evaluate(client, `new Promise(resolve => setTimeout(resolve, 250))`);
+    const result = await evaluate(client, `(() => {
+      const selectors = ['.header-action-btn', '.theme-toggle-btn', '.icon-btn', '.meeting-layout .btn-secondary', '.meeting-layout .btn-action', '.capture-modes button', '.media-language select', '#mediaImportStart', '#mediaImportCancel', '.settings-panel .select-wrapper select', '.toggle-control', '.meeting-options label', '.history-item-delete', '.log-audio-link', '.assistant-suggestions button', '.chapter-index-link', '.meeting-citation', '.meeting-tabs button'];
+      const undersized = selectors.flatMap(selector => [...document.querySelectorAll(selector)].filter(el => {
+        const style = getComputedStyle(el);
+        return parseFloat(style.minBlockSize) < 44 || parseFloat(style.minInlineSize) < 44;
+      }).map(el => ({ selector, id: el.id, block: getComputedStyle(el).minBlockSize, inline: getComputedStyle(el).minInlineSize })));
+      const bar = document.querySelector('.downloads-bar');
+      const input = document.querySelector('#saveTitleInput').getBoundingClientRect();
+      const bounds = bar.getBoundingClientRect();
+      return { coarse: matchMedia('(any-pointer: coarse)').matches, undersized,
+        overflow: bar.scrollWidth - bar.clientWidth, inputWidth: input.width,
+        contained: [...bar.querySelectorAll('input, button, summary')].every(el => { const r=el.getBoundingClientRect(); return r.left >= bounds.left && r.right <= bounds.right + 1; }) };
+    })()`);
+    assert.equal(result.coarse, true, 'the browser must actually emulate a coarse pointer');
+    assert.deepEqual(result.undersized, [], `${width}px: touch targets have a real 44px minimum`);
+    assert.ok(result.overflow <= 1 && result.contained && result.inputWidth >= 120, `${width}px: save/export controls must fit and keep a readable title: ${JSON.stringify(result)}`);
+  }
+
+  await client.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await client.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await client.send('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }] });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+  await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+  for (const selector of ['.select-wrapper select', '.chunk-input', '.history-search-input', '.toggle-control input']) {
+    const result = await evaluate(client, `(() => {
+      const input = document.querySelector('#cssInteractionFixture ${selector}'); input.focus();
+      const visible = input.matches('.toggle-control input') ? input.nextElementSibling : input;
+      const style = getComputedStyle(visible);
+      const alpha = style.outlineColor.startsWith('rgba') ? parseFloat(style.outlineColor.split(',').at(-1)) : 1;
+      return { forced: matchMedia('(forced-colors: active)').matches, focused: document.activeElement === input, width: parseFloat(style.outlineWidth), color: style.outlineColor, alpha, outline: style.outlineStyle };
+    })()`);
+    assert.ok(result.forced && result.focused && result.width >= 2 && result.outline === 'solid' && result.alpha > 0, `forced colors must retain the visible focus indicator for ${selector}: ${JSON.stringify(result)}`);
+  }
+  await client.send('Emulation.setEmulatedMedia', { features: [] });
+  const counts = await evaluate(client, `(() => {
+    const badge = document.querySelector('#historyCountBadge'); const original = badge.textContent;
+    badge.textContent = '9件'; const before = badge.getBoundingClientRect().width;
+    badge.textContent = '100件'; const after = badge.getBoundingClientRect().width;
+    badge.textContent = original;
+    document.querySelector('#cssInteractionFixture').remove();
+    return {before, after};
+  })()`);
+  assert.equal(counts.before, counts.after, 'common digit changes must not move the history controls');
+  process.stdout.write('CSS hover, coarse-pointer targets, intrinsic save layout, native disclosure and forced-color focus checks passed.\n');
 }
 
 const chrome = await findChrome();
@@ -2498,6 +2601,8 @@ try {
   if (process.env.BROWSER_DEBUG) process.stdout.write('verifyDesktopPanelLayout\n');
   if (process.env.BANNER_REPRO_ONLY) {
     await verifyReportedAnnouncements(client);
+  } else if (process.env.CSS_REVIEW_ONLY) {
+    await verifyCssInteractions(client);
   } else if (process.env.MEDIA_IMPORT_ONLY) {
     await verifyMediaImport(client);
   } else if (process.env.DIVIDER_REPRO_ONLY) {
@@ -2506,6 +2611,7 @@ try {
     await verifyLiveRevision(client, 'whisper');
     await verifyLiveRevision(client, 'qwen3_vllm');
   } else {
+  await verifyCssInteractions(client);
   await verifyDesktopPanelLayout(client);
   await verifyAssistantPreference(client);
   for (const width of [390, 640, 768, 1100]) {

@@ -183,3 +183,21 @@ class ConfigRegistryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class SpeechCppConfigTests(unittest.TestCase):
+    def test_http_gateway_uses_one_endpoint_and_model_and_ignores_retired_env(self):
+        with patch.dict(os.environ, {'ASR_BACKEND':'speech_cpp','ASR_BASE_URL':'http://localhost:4000/v1/',
+                         'ASR_MODEL':'Qwen3-ASR-1.7B-native','ASR_REALTIME_BASE_URL':'invalid-retired-url',
+                         'ASR_REALTIME_MODEL':'retired-model','ASR_REALTIME_API_KEY':'retired-secret'}):
+            config = load_asr_config()
+            self.assertEqual(config.openai_base_url, 'http://localhost:4000/v1')
+            self.assertEqual(config.asr_model, 'Qwen3-ASR-1.7B-native')
+            self.assertFalse(hasattr(config, 'asr_realtime_base_url'))
+        for key in ('ASR_REALTIME_BASE_URL','ASR_REALTIME_MODEL','ASR_REALTIME_API_KEY'):
+            self.assertNotIn(key, ENV_BY_NAME)
+
+    def test_invalid_common_url_fails_without_exposing_value(self):
+        with patch.dict(os.environ, {'ASR_BACKEND':'speech_cpp','ASR_BASE_URL':'http://secret:secret@example.test/v1'}):
+            with self.assertRaisesRegex(ValueError, 'ASR_BASE_URL') as error:
+                load_asr_config()
+            self.assertNotIn('secret:secret', str(error.exception))

@@ -50,6 +50,10 @@ async function ensureSocket() {
       return;
     }
 
+    if (data.type === "partial") {
+      appDependencies.applyTranscriptProgress?.(data);
+      return;
+    }
     if (data.type === "info") {
       if (data.message) appDependencies.setStatus(String(data.message));
       if (data.sessionId) {
@@ -62,11 +66,13 @@ async function ensureSocket() {
         appDependencies.state.runtimeSessionFinalized = true;
       }
       appDependencies.meetingWorkspace.liveEvent(data);
+      appDependencies.applyTranscriptProgress?.(data);
       appDependencies.updateDownloadLinks();
       return;
     }
 
     if (data.type === "final") {
+      appDependencies.applyTranscriptProgress?.(data);
       appDependencies.addLogLine(
         String(data.text || ""),
         Number(data.tsStart || 0),

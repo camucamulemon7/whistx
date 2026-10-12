@@ -117,7 +117,6 @@ export function createAppState({ chunkDefaultSeconds, speakerMax, defaultPromptT
       proofread: false,
       summary: false,
     },
-    summaryPromptEditorOpen: false,
     promptTemplates: [
       {
         id: "soc-design",

@@ -114,8 +114,6 @@ const sharedVocabularyEl = $("#sharedVocabulary");
 const sharedVocabularySaveBtn = $("#sharedVocabularySaveBtn");
 const sharedVocabularyMetaEl = $("#sharedVocabularyMeta");
 const summaryPromptEl = $("#summaryPrompt");
-const summaryPromptEditorEl = $("#summaryPromptEditor");
-const summaryPromptToggleBtn = $("#summaryPromptToggleBtn");
 const promptTemplateButtonsEl = $("#promptTemplateButtons");
 const workspacePanelsEl = $("#workspacePanels");
 const panelResizerEls = Array.from(document.querySelectorAll("[data-resizer]"));
@@ -438,6 +436,7 @@ const controllerContext = {
   get renderHistoryList() { return renderHistoryList; },
   get renderPromptTemplateButtons() { return renderPromptTemplateButtons; },
   get renderTranscriptParagraphs() { return renderTranscriptParagraphs; },
+  get applyTranscriptProgress() { return applyTranscriptProgress; },
   get resetRuntimeSessionState() { return resetRuntimeSessionState; },
   get resolveDiarizationStartOptions() { return resolveDiarizationStartOptions; },
   get runtimeUi() { return runtimeUi; },
@@ -481,9 +480,7 @@ const controllerContext = {
   get summaryBtnLabelEl() { return summaryBtnLabelEl; },
   get summaryMetaEl() { return summaryMetaEl; },
   get summaryPanelEl() { return summaryPanelEl; },
-  get summaryPromptEditorEl() { return summaryPromptEditorEl; },
   get summaryPromptEl() { return summaryPromptEl; },
-  get summaryPromptToggleBtn() { return summaryPromptToggleBtn; },
   get summaryTextEl() { return summaryTextEl; },
   get syncUnloadProtection() { return syncUnloadProtection; },
   get updateBackpressureState() { return updateBackpressureState; },
@@ -500,12 +497,12 @@ const controllerContext = {
 };
 const { canUseWorkspace, setAppLocked, renderAuthState, syncAuthScreen, syncAuthProfileEditor, setAuthProfileEditorOpen, handleAuthErrorFromLocation, loadAuthState, login, bootstrapAdmin, registerAccount, saveDisplayName, logout, loginAsGuest } = createAuthController(controllerContext);
 const { selectedLanguage, setStatus, applyBranding, applyCaptureScreenshotsEnabled, applyScreenshotDiffSkipEnabled, applyShowTranscriptAudioEnabled, applyAutoGainEnabled, applyDiarizationEnabled, clampSpeakerCount, updateDiarizationSpeakerUi, applyDiarizationSpeakerSettings, resolveDiarizationStartOptions, normalizeChunkSeconds, updateChunkHint, updatePresetActive, applyChunkSeconds, audioSourceHintText, applyAudioSource, buildAutoSaveTitle } = createSettingsController(controllerContext);
-const { setProofreadButtonBusy, proofreadActionLabel, applyProofreadMode, applySummaryPromptEditorOpen, setSummary, copySummaryText, setProofread, markProofreadStale, copyProofread, proofreadAll, summarizeAll } = createAiController(controllerContext);
+const { setProofreadButtonBusy, proofreadActionLabel, applyProofreadMode, setSummary, copySummaryText, setProofread, markProofreadStale, copyProofread, proofreadAll, summarizeAll } = createAiController(controllerContext);
 const { applyHistoryDrawerOpen, applyHistoryCollapsed, updateHistoryControls, applyAdvancedSettingsOpen, syncAiResponsiveState, applyActiveAiPanel, applyWorkspaceRatios, updateWorkspaceGridTemplate, applyPanelCollapseState, setupWorkspaceResizers, setupPanelToggles, applyTheme, initTheme, updateThemeColorMeta, toggleTheme } = createLayoutController(controllerContext);
 const { setHistorySearchQuery, formatHistoryMeta, formatHistoryDaysRemaining, updateHistoryEmptyState, renderHistoryList, loadHistoryList, renderHistoryDetail, openHistoryDetail, deleteHistory, saveCurrentHistory } = createHistoryController(controllerContext);
 const { updateRecordingTelemetry, logWsEvent, logClientEvent, sendWsTelemetry, bucketizeBacklog, emitScreenshotSkipTelemetry, updateBackpressureState } = createTelemetryController(controllerContext);
 const { clampScreenshotZoom, updateScreenshotZoomUi, recalculateScreenshotBaseSize, centerScreenshotViewport, setScreenshotZoom, setScreenshotZoomAt, zoomScreenshot, stopScreenshotDrag, beginScreenshotDrag, handleScreenshotDrag, resetScreenshotZoom, showScreenshotModal, hideScreenshotModal } = createScreenshotViewerController(controllerContext);
-const { renderEmptyTranscriptState, updateSegmentCount, extractTranscriptText, updateDownloadLinks, renderTranscriptText, isLogNearBottom, scrollLogToBottom, updateTranscriptLatestButton, renderTranscriptParagraphs, addLogLine, applySpeakerPatch, copyAll } = createTranscriptController(controllerContext);
+const { applyTranscriptProgress, renderEmptyTranscriptState, updateSegmentCount, extractTranscriptText, updateDownloadLinks, renderTranscriptText, isLogNearBottom, scrollLogToBottom, updateTranscriptLatestButton, renderTranscriptParagraphs, addLogLine, applySpeakerPatch, copyAll } = createTranscriptController(controllerContext);
 const { setSaveBadge, isRecordingInteractionLocked, shouldProtectWorkspaceFromUnload, handleBeforeUnload, syncUnloadProtection, markWorkspaceDirty, markWorkspaceClean, confirmWorkspaceDiscard, showRecordingInteractionBlocked, updateSaveControls, setSessionSettingsLocked, hasDiscardableWorkspaceData, clearView } = createWorkspaceController(controllerContext);
 const { wsUrl, ensureSocket } = createTranscriptionController(controllerContext);
 const { selectMimeType, generateSessionSeed, setUiRecording, setUiRecordingStarting, setUiRecordingStopping, resetRuntimeSessionState, commitNewRecordingWorkspace, sendChunk, clearChunkTimer, chunkHardMaxMs, shouldCutChunkOnSilence, requestChunkFlush, scheduleChunkStop, startRecorderCycle, finalizeStop, currentMeetingSource, navigateMeetingSource, startLiveRecording, finalizeLiveRecording, refineMeetingAudio, startRecording, stopRecording, abortRecordingAfterSocketLoss } = createRecordingController(controllerContext);
@@ -891,12 +888,6 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-if (summaryPromptToggleBtn) {
-  summaryPromptToggleBtn.addEventListener("click", () => {
-    applySummaryPromptEditorOpen(!state.summaryPromptEditorOpen);
-  });
-}
-
 window.addEventListener("resize", () => {
   updateWorkspaceGridTemplate();
   if (window.innerWidth > 1100) {
@@ -1034,7 +1025,6 @@ if (summaryBtnLabelEl) {
   summaryBtnLabelEl.textContent = "要約する";
 }
 applyAdvancedSettingsOpen(false);
-applySummaryPromptEditorOpen(false);
 applyActiveAiPanel(state.activeAiPanel);
 applyHistoryDrawerOpen(false);
 setStatus("idle");

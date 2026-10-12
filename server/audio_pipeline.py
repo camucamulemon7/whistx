@@ -79,9 +79,15 @@ class AudioPreprocessor:
             audio_metrics=metrics,
         )
 
-    def _decode_to_pcm(self, *, audio_bytes: bytes, mime_type: str, source_mode: str) -> bytes:
+    def convert_to_wav(self, *, audio_bytes: bytes, mime_type: str) -> bytes:
+        """Decode compressed input without applying optional signal processing."""
+        return self._encode_wav(self._decode_to_pcm(audio_bytes=audio_bytes,
+            mime_type=mime_type, source_mode="mic", filter_audio=False))
+
+    def _decode_to_pcm(self, *, audio_bytes: bytes, mime_type: str, source_mode: str,
+                       filter_audio: bool = True) -> bytes:
         suffix = _ext_from_mime(mime_type)
-        filters = self._build_filters(source_mode)
+        filters = self._build_filters(source_mode) if filter_audio else []
 
         cmd = [
             self.ffmpeg_bin,
@@ -97,12 +103,10 @@ class AudioPreprocessor:
             "1",
             "-ar",
             str(self.sample_rate),
-            "-af",
-            ",".join(filters),
-            "-f",
-            "s16le",
-            "pipe:1",
         ]
+        if filters:
+            cmd.extend(["-af", ",".join(filters)])
+        cmd.extend(["-f", "s16le", "pipe:1"])
         try:
             proc = subprocess.run(
                 cmd,

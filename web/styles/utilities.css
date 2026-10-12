@@ -124,18 +124,22 @@
   background-clip: padding-box;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--gray-400);
-  border: 2px solid transparent;
-  background-clip: padding-box;
+@media (hover: hover) and (pointer: fine) {
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--gray-400);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
 }
 
 html[data-theme="dark"] ::-webkit-scrollbar-thumb {
   background: var(--gray-700);
 }
 
-html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
-  background: var(--gray-600);
+@media (hover: hover) and (pointer: fine) {
+  html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+    background: var(--gray-600);
+}
 }
 
 /* Smooth Image Rendering */
@@ -174,8 +178,10 @@ html[data-theme="dark"] .toast {
               transform var(--duration-150) var(--ease-out-quart);
 }
 
-.log-row:hover {
-  background: var(--bg-secondary);
+@media (hover: hover) and (pointer: fine) {
+  .log-row:hover {
+    background: var(--bg-secondary);
+}
 }
 
 /* Speaker Badge Enhancement */

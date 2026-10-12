@@ -64,7 +64,7 @@ async def on_startup() -> None:
     if settings.langfuse_enabled and settings.langfuse_capture_content:
         logger.warning("Langfuse content capture is enabled: transcription, prompts, glossary, and model output may be sent to the configured telemetry provider; see docs/privacy.md")
 
-    resources.transcriber_factory = _build_transcriber_factory() if settings.openai_api_key else None
+    resources.transcriber_factory = _build_transcriber_factory() if (settings.openai_api_key or settings.asr_backend == "speech_cpp") else None
     resources.audio_preprocessor = AudioPreprocessor(
         ffmpeg_bin=settings.ffmpeg_bin,
         sample_rate=settings.asr_preprocess_sample_rate,
@@ -193,6 +193,9 @@ def _validate_runtime_configuration() -> None:
 
 
 def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
+    if settings.asr_backend == "speech_cpp":
+        from .speech_cpp_asr import SpeechCppBatchTranscriber
+        return lambda: SpeechCppBatchTranscriber(api_key=settings.openai_api_key, base_url=settings.openai_base_url, model=settings.asr_model)
     if settings.asr_backend == "qwen3_vllm":
         from .qwen_asr import QwenBatchTranscriber
         return lambda: QwenBatchTranscriber(api_key=settings.openai_api_key, base_url=settings.openai_base_url, model=settings.asr_model)

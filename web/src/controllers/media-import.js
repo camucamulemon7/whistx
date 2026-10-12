@@ -1,4 +1,5 @@
 import { readSseJsonStream } from '../api/sse.js';
+import { createMediaImportPreview } from '../meeting/media-import-preview.js';
 
 export const MEDIA_MAX_BYTES = 256 * 1024 * 1024;
 export const MEDIA_EXTENSIONS = ['wav', 'mp3', 'm4a', 'mp4', 'mov', 'webm', 'mkv', 'ogg', 'opus', 'flac', 'aac', 'aiff', 'aif'];
@@ -19,6 +20,8 @@ const messages = {
   media_decoder_unavailable: 'ファイル取り込みの準備ができていません。管理者に確認してください。',
   media_decode_timeout: '音声の読み取りに時間がかかりました。短いファイルで再試行してください。',
   media_upload_timeout: '送信に時間がかかりました。接続を確認して再試行してください。',
+  media_recognition_timeout: '音声認識が時間切れになりました。表示中の結果はそのままです。再試行してください。',
+  media_model_limit: '短い区間でもモデルの出力上限に達しました。完了扱いにせず中断しました。',
   asr_not_ready: '文字起こしに接続できません。少し待って再試行してください。',
   rate_limit_exceeded: '処理の上限に達しました。少し待って再試行してください。',
   login_required: 'ファイルを取り込むにはログインしてください。',
@@ -31,6 +34,7 @@ export function createMediaImportController(deps) {
   const status = $('#mediaImportStatus'), progress = $('#mediaImportProgress');
   const button = $('#mediaImportStart'), cancel = $('#mediaImportCancel'), language = $('#mediaLanguage');
   const tabs = [...document.querySelectorAll('[data-capture-mode]')];
+  const preview = createMediaImportPreview({ root: $('#mediaImportPreview') });
   let file = null, mode = 'record';
   function resetSelection() {
     file = null; $('#mediaFileName').textContent = '動画・音声ファイルを選ぶ';
@@ -59,7 +63,7 @@ export function createMediaImportController(deps) {
   function setMode(next) {
     if (deps.isRecordingInteractionLocked()) return;
     mode = next; recordingPanel.hidden = mode !== 'record'; panel.hidden = mode !== 'file';
-    if (mode === 'file') language.value = deps.languageEl.value;
+    if (mode === 'file') language.value = deps.languageEl.value || 'auto';
     sync();
   }
   tabs.forEach(tab => {
@@ -102,21 +106,31 @@ export function createMediaImportController(deps) {
     if (button.disabled || !file || deps.isRecordingInteractionLocked() || deps.state.summaryInFlight || deps.state.proofreadInFlight) return;
     if (!deps.confirmWorkspaceDiscard('ファイルの文字起こし結果に置き換え')) return;
     const controller = new AbortController(); deps.state.mediaImportController = controller;
+    preview.reset();
     deps.updateSaveControls(); deps.setSessionSettingsLocked(); deps.updateDownloadLinks(); deps.renderHistoryList(); deps.syncUnloadProtection();
     status.textContent = 'ファイルを送信しています…'; progress.hidden = false; progress.removeAttribute('value');
+    const uploadBegan = Date.now();
+    const uploadTimer = setInterval(() => {
+      status.textContent = `ファイルを送信しています… · ${Math.floor((Date.now() - uploadBegan) / 1000)}秒経過`;
+    }, 1000);
     let result = null;
     try {
       const params = new URLSearchParams({ filename: file.name, language: language.value,
         prompt: (deps.sharedVocabularyEl.value.slice(0, 250) + ' ' + deps.promptEl.value.slice(0, 500)).trim().slice(0, 750) });
       const response = await fetch('/api/media/transcribe?' + params, { method: 'POST', body: file,
         headers: { 'Content-Type': 'application/octet-stream' }, signal: controller.signal });
+      clearInterval(uploadTimer);
       if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error || error.detail || 'import_failed'); }
       await readSseJsonStream(response, event => {
+        if (controller.signal.aborted) return;
         if (event.type === 'error') throw new Error(event.error);
         if (event.type === 'status') {
           status.textContent = event.message;
           if (event.phase === 'decoding') progress.removeAttribute('value');
           else progress.value = Math.min(100, Math.max(0, Number(event.progress) || 0));
+        }
+        if (event.type === 'segment') {
+          preview.event(event); deps.meetingWorkspace.setView('transcript');
         }
         if (event.type === 'done') result = event;
       });
@@ -135,6 +149,7 @@ export function createMediaImportController(deps) {
       result = null; controller.abort();
       progress.hidden = true;
     } finally {
+      clearInterval(uploadTimer); preview.reset();
       deps.state.mediaImportController = null; deps.startBtn.disabled = deps.runtimeUi.appLocked || !deps.state.asrAvailable;
       deps.updateSaveControls(); deps.setSessionSettingsLocked(); deps.updateDownloadLinks(); deps.renderHistoryList(); deps.syncUnloadProtection();
       if (result && !controller.signal.aborted) deps.meetingWorkspace.refresh({ transcriptChanged: true });

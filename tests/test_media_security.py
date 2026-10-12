@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -68,6 +68,9 @@ class MediaSecurityTests(unittest.TestCase):
         def database():
             with Session(self.engine) as db:
                 yield db
+        # Background snapshot reads use db_session, not the HTTP dependency.
+        # Keep the complete ownership check on this fixture's isolated DB.
+        self.stack.enter_context(patch.object(meeting_source, 'db_session', contextmanager(database)))
         self.app = create_app()
         self.app.dependency_overrides[get_db] = database
         self.app.state.runtime_resources = SimpleNamespace(observer=None, transcriber_factory=lambda: SimpleNamespace(

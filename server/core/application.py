@@ -23,6 +23,13 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 
+class RevalidatingStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers['Cache-Control'] = 'no-cache'
+        return response
+
+
 def create_app() -> FastAPI:
     configure_application_logging(settings.app_log_level)
     app = FastAPI(title="whistx", version="2.0.0", lifespan=_app_lifespan)
@@ -116,7 +123,9 @@ def create_app() -> FastAPI:
 
     web_dir = Path(__file__).resolve().parents[2] / "web"
     if web_dir.exists():
-        app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="static")
+        # A new namespace also replaces assets already cached by older releases.
+        app.mount("/assets/asr-v1", RevalidatingStaticFiles(directory=str(web_dir)), name="versioned-static")
+        app.mount("/", RevalidatingStaticFiles(directory=str(web_dir), html=True), name="static")
     return app
 
 

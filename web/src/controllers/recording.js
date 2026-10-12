@@ -407,7 +407,6 @@ async function startLiveRecording(health, selectedAudioSource) {
       if (node) {
         node.dataset.quality = row.quality || "";
         node.title = row.retainedRealtimeSegmentIds?.length ? "再認識済み・一部の区間は言語の脱落を避けるため速報を維持" : row.quality === "high_accuracy" ? "長区間の音声から再認識済み" : "リアルタイム認識";
-        appDependencies.logEl.append(node);
       }
     }
     appDependencies.renderTranscriptParagraphs();
@@ -431,7 +430,10 @@ async function startLiveRecording(health, selectedAudioSource) {
         appDependencies.state.runtimeSessionId = data.sessionId || appDependencies.state.runtimeSessionId;
         if (data.message === "ready") appDependencies.state.runtimeSessionFinalized = !!data.finalized;
         if (data.message === "finalized") appDependencies.state.runtimeSessionFinalized = true;
+        appDependencies.applyTranscriptProgress(data);
         appDependencies.updateDownloadLinks();
+      } else if (data.type === "partial") {
+        appDependencies.applyTranscriptProgress(data);
       } else if (data.type === "transcript_snapshot") {
         for (const row of data.records) {
           for (const original of row.realtimeSegments || []) superseded.add(original.segmentId);
@@ -503,8 +505,6 @@ async function finalizeLiveRecording() {
     await capture.stop();
     appDependencies.state.runtimeSessionFinalized = true;
     appDependencies.state.liveCapture = null;
-    document.querySelector("#liveTranscript").replaceChildren();
-    document.querySelector("#liveTranscript").hidden = true;
     document.querySelector("#liveConnection").textContent = "録音完了 · 発話の音声を再生できます";
     appDependencies.setStatus("completed");
     appDependencies.meetingWorkspace.refresh();

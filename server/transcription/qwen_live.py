@@ -22,6 +22,18 @@ from ..pcm_gate import pcm_speech_bounds as speech_bounds, prepare_pcm_wav
 
 class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
     hq_lock_name = '.qwen-hq.lock'
+    backend_name = 'qwen3_vllm'
+    realtime_failure_detail = '音声は保存されています。vLLMの音声対応・Realtime設定と接続を確認してください。'
+
+    def _batch_request(self, audio, **kwargs):
+        return batch_request(audio, **kwargs)
+
+    def _response_text(self, response, **kwargs):
+        return response_text(response.json(), **kwargs)
+
+    def _realtime(self):
+        return QwenRealtime(base_url=settings.openai_base_url, api_key=settings.openai_api_key,
+                            model=settings.asr_model, timeout=settings.asr_api_timeout_seconds)
 
     @property
     def lane_settings(self):
@@ -34,13 +46,13 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
         super().__init__(ws, payload, resources=resources)
         try:
             backend = self.data.get('asrBackend')
-            if payload.get('resumeSessionId') and backend != 'qwen3_vllm':
+            if payload.get('resumeSessionId') and backend != self.backend_name:
                 raise MeetingError('meeting_backend_mismatch')
             if backend and self.data.get('asrModel') != settings.asr_model:
                 raise MeetingError('meeting_model_mismatch')
             if not payload.get('resumeSessionId'):
                 self.data['language'] = payload.get('language') if payload.get('language') in {'ja', 'en'} else 'auto'
-            self.data.update(asrBackend='qwen3_vllm', asrModel=settings.asr_model)
+            self.data.update(asrBackend=self.backend_name, asrModel=settings.asr_model)
             self.data.setdefault('hqWindowSamples', settings.asr_high_accuracy_window_seconds * SAMPLE_RATE)
             self.data.setdefault('rtWindowSamples', settings.asr_realtime_window_seconds * SAMPLE_RATE)
             self.data.setdefault('highAccuracyEnabled', settings.asr_high_accuracy_enabled)
@@ -54,7 +66,7 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
             _atomic_text(self.store.txt_path, ''.join(_render_txt_line(r) + '\n' for r in self.records if r.get('type') == 'final'))
             write_json_atomic(self.state_path, self.data)
             metadata = self.store.read_metadata()
-            metadata.update(asrBackend='qwen3_vllm', asrModel=settings.asr_model, language=self.data['language'])
+            metadata.update(asrBackend=self.backend_name, asrModel=settings.asr_model, language=self.data['language'])
             self.store.write_metadata(metadata)
         except BaseException:
             self.close()
@@ -84,7 +96,7 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
         await self._request_budget()
         self.pending_rt.add(track)
         try:
-            if self.data['language'] in {'ja', 'en'}:
+            if self.backend_name == 'qwen3_vllm' and self.data['language'] in {'ja', 'en'}:
                 # vLLM Realtime has no language parameter. Use the same model's
                 # transcription endpoint for each short capture window.
                 while state['received'] < limit and not self.stopping and not self.disconnected:
@@ -97,14 +109,13 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
                     audio, _, _ = await blocking_work_pool.run('media', prepare_pcm_wav, pcm_wav(pcm), 'audio/wav')
                     async with httpx.AsyncClient(headers={'Authorization': 'Bearer ' + settings.openai_api_key},
                                                  timeout=settings.asr_api_timeout_seconds) as client:
-                        endpoint, options = batch_request(audio, mime_type='audio/wav', model=settings.asr_model,
+                        endpoint, options = self._batch_request(audio, mime_type='audio/wav', model=settings.asr_model,
                             context=(self.data['vocabulary'] + ' ' + self.data['prompt']).strip(), priority=0, language=self.data['language'])
                         response = await client.post(str(settings.openai_base_url).rstrip('/') + endpoint, **options)
                         response.raise_for_status()
-                        text = response_text(response.json())
+                        text = self._response_text(response)
             else:
-                async with QwenRealtime(base_url=settings.openai_base_url, api_key=settings.openai_api_key,
-                                        model=settings.asr_model, timeout=settings.asr_api_timeout_seconds) as stream:
+                async with self._realtime() as stream:
                     async def receive():
                         nonlocal text
                         while not stream.done:
@@ -183,10 +194,10 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
             except Exception as exc:
                 failures += 1
                 await self._recover_commits()
-                logger.warning('Qwen RT failed: session=%s error=%s', self.session_id, type(exc).__name__)
+                logger.warning('%s RT failed: session=%s error=%s', self.backend_name, self.session_id, type(exc).__name__)
                 await self.send(dict(type='error', message='transcription_failed', buffered=True,
                     **public_error('transcription_failed', exc, logger),
-                    detail='音声は保存されています。vLLMの音声対応・Realtime設定と接続を確認してください。'))
+                    detail=self.realtime_failure_detail))
                 if self.stopping:
                     self.rt_failed = True
                     return
@@ -197,8 +208,8 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
         if silent:
             return ''
         await self._request_budget()
-        endpoint, options = batch_request(audio, mime_type='audio/wav', model=settings.asr_model,
+        endpoint, options = self._batch_request(audio, mime_type='audio/wav', model=settings.asr_model,
             context=(self.data['vocabulary'] + ' ' + self.data['prompt']).strip(), priority=settings.asr_high_accuracy_priority, language=self.data['language'])
         response = await client.post(str(settings.openai_base_url).rstrip('/') + endpoint, **options)
         response.raise_for_status()
-        return response_text(response.json(), allow_empty=True)
+        return self._response_text(response, allow_empty=True)

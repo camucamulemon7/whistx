@@ -84,8 +84,8 @@ def admin_page(user: User = Depends(get_current_admin)) -> Response:
 @router.get("/api/admin/settings")
 def admin_settings(user: User = Depends(get_current_admin)) -> JSONResponse:
     from ...core.config import settings
-    from ...core.config.overrides import SECRETS, read_overrides
-    saved = read_overrides()
+    from ...core.config.overrides import FIELDS, SECRETS, read_overrides
+    saved = {key: value for key, value in read_overrides().items() if key in FIELDS}
     active = {
         'HISTORY_RETENTION_DAYS': str(settings.history_retention_days),
         'ENABLE_SELF_SIGNUP': str(int(settings.enable_self_signup)),

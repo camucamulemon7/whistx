@@ -52,7 +52,7 @@ def get_txt(
 def _revision_jsonl_snapshot(path: Path) -> str | None:
     from .meeting_source import read_json
     metadata = read_json(path.with_suffix(".meta.json"))
-    if metadata.get("asrBackend") != "qwen3_vllm" and not (
+    if metadata.get("asrBackend") not in {"qwen3_vllm", "speech_cpp"} and not (
         metadata.get("asrBackend") == "whisper" and metadata.get("highAccuracyEnabled")
     ):
         return None

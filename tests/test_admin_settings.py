@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -83,3 +84,23 @@ class AdminSettingsTests(unittest.TestCase):
         with patch.dict(os.environ, {'APP_CONTAINER_HOST_GATEWAY': ''}):
             load_overrides()
             self.assertEqual(os.environ['ASR_BASE_URL'], 'http://localhost:4000/v1')
+
+    def test_retired_realtime_settings_are_preserved_but_never_loaded_or_exposed(self):
+        legacy = {'ASR_REALTIME_BASE_URL':'http://localhost:8080/v1',
+                  'ASR_REALTIME_MODEL':'old-model','ASR_REALTIME_API_KEY':'synthetic-retired-secret'}
+        from server.core.config.overrides import overrides_path
+        overrides_path().write_text(json.dumps(legacy))
+        save_overrides({'ASR_BACKEND':'speech_cpp','ASR_BASE_URL':'http://localhost:4000/v1',
+                        'ASR_MODEL':'native-alias'})
+        with patch.dict(os.environ, {'APP_CONTAINER_HOST_GATEWAY':'host.docker.internal'}, clear=False):
+            before = os.environ.get('ASR_REALTIME_BASE_URL')
+            load_overrides()
+            self.assertEqual(os.environ.get('ASR_REALTIME_BASE_URL'), before)
+            self.assertEqual(os.environ['ASR_BASE_URL'], 'http://host.docker.internal:4000/v1')
+        with patch.object(deps, 'get_optional_user', return_value=SimpleNamespace(is_admin=True)):
+            result = self.client.get('/api/admin/settings')
+            self.assertNotIn('synthetic-retired-secret', result.text)
+            self.assertNotIn('ASR_REALTIME_', result.text)
+            self.assertEqual(result.json()['values']['ASR_MODEL'], 'native-alias')
+            self.assertEqual(self.client.put('/api/admin/settings', json=legacy).status_code,400)
+        self.assertEqual(read_overrides()['ASR_REALTIME_API_KEY'], 'synthetic-retired-secret')

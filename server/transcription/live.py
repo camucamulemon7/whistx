@@ -39,6 +39,8 @@ MAX_MEETING_SAMPLES = 4 * 60 * 60 * SAMPLE_RATE
 
 
 class LiveMeeting:
+    update_samples = UPDATE_SAMPLES
+
     def __init__(self, ws: WebSocket, payload: dict, *, resources=None):
         self.resources = resources
         self.ws = ws
@@ -281,7 +283,7 @@ class LiveMeeting:
         start = state["windowStart"]
         limit = self._window_end(start)
         end = min(state["received"], limit)
-        if end <= start or (not flush and end < limit and end - state["lastDecode"] < UPDATE_SAMPLES):
+        if end <= start or (not flush and end < limit and end - state["lastDecode"] < self.update_samples):
             return False
         pcm = await blocking_work_pool.run("artifact", self._read_audio, track, start, end)
         bounds = await blocking_work_pool.run("media", self._speech_bounds, pcm)
@@ -399,7 +401,7 @@ class LiveMeeting:
                 if self.disconnected:
                     return
                 # Audio may have arrived while inference was in flight.
-                if any(s["received"] - s["lastDecode"] >= UPDATE_SAMPLES for s in self.data["tracks"].values()):
+                if any(s["received"] - s["lastDecode"] >= self.update_samples for s in self.data["tracks"].values()):
                     self.wake.set()
             except Exception as exc:
                 self.failures += 1
@@ -420,6 +422,8 @@ def vars_record(record):
 
 async def live_transcribe(ws: WebSocket, *, resources=None):
     await ws.accept()
+    if resources is not None:
+        resources.active_sockets.add(ws)
     meeting = None
     worker = None
     try:
@@ -431,7 +435,11 @@ async def live_transcribe(ws: WebSocket, *, resources=None):
             raise MeetingError(error)
         from .qwen_live import QwenLiveMeeting
         from .whisper_live import WhisperLiveMeeting
-        meeting_class = QwenLiveMeeting if settings.asr_backend == "qwen3_vllm" else WhisperLiveMeeting
+        if settings.asr_backend == "speech_cpp":
+            from .speech_cpp_live import SpeechCppLiveMeeting
+            meeting_class = SpeechCppLiveMeeting
+        else:
+            meeting_class = QwenLiveMeeting if settings.asr_backend == "qwen3_vllm" else WhisperLiveMeeting
         meeting = await blocking_work_pool.run("artifact", meeting_class, ws, initial, resources=resources)
         await meeting.send({"type": "info", "message": "ready", "protocolVersion": 2, "asrBackend": settings.asr_backend,
                             "tracks": {key: {"seq": value["seq"], "samples": value["received"]} for key, value in meeting.data["tracks"].items()},
@@ -477,15 +485,19 @@ async def live_transcribe(ws: WebSocket, *, resources=None):
     except MeetingError as exc:
         await ws.send_json({"type": "error", "message": exc.code})
     finally:
-        if meeting:
-            meeting.disconnected = True
-            meeting.wake.set()
-            # Keep the file lock and worker slot until in-flight inference ends.
-            # No forced cancellation of a thread that may still write artifacts.
-            if worker:
-                await asyncio.shield(worker)
-            await asyncio.to_thread(meeting.close)
         try:
-            await ws.close()
-        except RuntimeError:
-            pass
+            if meeting:
+                meeting.disconnected = True
+                meeting.wake.set()
+                # Keep the file lock and worker slot until in-flight inference ends.
+                # No forced cancellation of a thread that may still write artifacts.
+                if worker:
+                    await asyncio.shield(worker)
+                await asyncio.to_thread(meeting.close)
+            try:
+                await ws.close()
+            except RuntimeError:
+                pass
+        finally:
+            if resources is not None:
+                resources.active_sockets.discard(ws)

@@ -40,13 +40,15 @@ html[data-theme="dark"] .panel-badge {
   border-color: var(--border-secondary);
 }
 
-html[data-theme="dark"] .record-btn:hover,
-html[data-theme="dark"] .chunk-chip:hover,
-html[data-theme="dark"] .prompt-template-btn:hover,
-html[data-theme="dark"] .btn-action:hover,
-html[data-theme="dark"] .icon-btn:hover,
-html[data-theme="dark"] .theme-toggle-btn:hover {
-  background: var(--bg-secondary);
+@media (hover: hover) and (pointer: fine) {
+  html[data-theme="dark"] .record-btn:hover,
+  html[data-theme="dark"] .chunk-chip:hover,
+  html[data-theme="dark"] .prompt-template-btn:hover,
+  html[data-theme="dark"] .btn-action:hover,
+  html[data-theme="dark"] .icon-btn:hover,
+  html[data-theme="dark"] .theme-toggle-btn:hover {
+    background: var(--bg-secondary);
+}
 }
 
 html[data-theme="dark"] .record-btn.is-recording {
@@ -104,8 +106,10 @@ html[data-theme="dark"] .download-link.is-downloaded {
   opacity: 0.5;
 }
 
-.header-action-btn:hover:not(:disabled) {
-  background: var(--bg-secondary);
+@media (hover: hover) and (pointer: fine) {
+  .header-action-btn:hover:not(:disabled) {
+    background: var(--bg-secondary);
+}
 }
 
 .save-controls {
@@ -128,7 +132,9 @@ html[data-theme="dark"] .download-link.is-downloaded {
 }
 
 .save-title-input {
-  width: min(320px, 100%);
+  flex: 1 1 12rem;
+  min-inline-size: 0;
+  inline-size: 0;
 }
 
 .save-state-badge {
@@ -237,20 +243,24 @@ html[data-theme="dark"] .download-link.is-downloaded {
   width: 100%;
 }
 
-.history-item:hover {
-  transform: translateY(-1px);
-  border-color: var(--accent-200);
-  box-shadow: var(--shadow-md);
+@media (hover: hover) and (pointer: fine) {
+  .history-item:hover {
+    transform: translateY(-1px);
+    border-color: var(--accent-200);
+    box-shadow: var(--shadow-md);
+}
 }
 
 .history-item.is-disabled {
   opacity: 0.58;
 }
 
-.history-item.is-disabled:hover {
-  transform: none;
-  border-color: transparent;
-  box-shadow: var(--shadow-xs);
+@media (hover: hover) and (pointer: fine) {
+  .history-item.is-disabled:hover {
+    transform: none;
+    border-color: transparent;
+    box-shadow: var(--shadow-xs);
+}
 }
 
 .history-item.is-disabled .history-item-main,
@@ -344,10 +354,12 @@ html[data-theme="dark"] .download-link.is-downloaded {
     background var(--duration-150) var(--ease-out-quart);
 }
 
-.history-item-delete:hover {
-  color: var(--danger-600, #b63a36);
-  border-color: color-mix(in srgb, var(--danger-500, #d9534f) 46%, var(--border-secondary));
-  background: color-mix(in srgb, var(--danger-50, #fbe9e8) 45%, var(--bg-primary));
+@media (hover: hover) and (pointer: fine) {
+  .history-item-delete:hover {
+    color: var(--danger-600, #b63a36);
+    border-color: color-mix(in srgb, var(--danger-500, #d9534f) 46%, var(--border-secondary));
+    background: color-mix(in srgb, var(--danger-50, #fbe9e8) 45%, var(--bg-primary));
+}
 }
 
 .header-user-chip {
@@ -810,11 +822,13 @@ body.is-modal-open {
   box-shadow: 0 12px 24px rgba(15, 95, 89, 0.18);
 }
 
-.record-btn:hover:not(:disabled) {
-  border-color: transparent;
-  background: linear-gradient(145deg, var(--brand-bright), var(--brand-strong));
-  color: #fff;
-  transform: translateY(-2px);
+@media (hover: hover) and (pointer: fine) {
+  .record-btn:hover:not(:disabled) {
+    border-color: transparent;
+    background: linear-gradient(145deg, var(--brand-bright), var(--brand-strong));
+    color: #fff;
+    transform: translateY(-2px);
+}
 }
 
 .record-btn-inner {
@@ -1113,6 +1127,7 @@ body.is-modal-open {
 
 .downloads-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
   justify-content: space-between;
   gap: var(--space-4);
@@ -1126,7 +1141,7 @@ body.is-modal-open {
 }
 
 .save-group {
-  flex: 1 1 auto;
+  flex: 1 1 22rem;
 }
 
 .export-group {
@@ -1148,9 +1163,11 @@ body.is-modal-open {
   color: var(--white);
 }
 
-.btn-primary:hover:not(:disabled) {
-  background: var(--accent-500);
-  color: var(--white);
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary:hover:not(:disabled) {
+    background: var(--accent-500);
+    color: var(--white);
+}
 }
 
 .export-menu {
@@ -1215,14 +1232,3 @@ body.is-modal-open {
 body.is-history-drawer-open {
   overflow: hidden;
 }
-
-.live-transcript {
-  margin: var(--space-3);
-  padding: var(--space-3);
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-md);
-}
-.live-transcript-row + .live-transcript-row { margin-top: var(--space-3); }
-.live-transcript-row small { color: var(--text-secondary); }
-.live-transcript-row p { margin: var(--space-1) 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-.live-transcript-hypothesis { opacity: .7; text-decoration: underline dotted; text-underline-offset: .2em; }

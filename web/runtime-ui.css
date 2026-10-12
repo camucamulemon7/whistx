@@ -146,10 +146,12 @@ body.whistx-auth-locked .app {
   transition: transform 150ms var(--ease-out-quart), border-color 150ms var(--ease-out-quart), box-shadow 150ms var(--ease-out-quart);
 }
 
-.whistx-history-item:hover {
-  transform: translateY(-1px);
-  border-color: var(--accent-300);
-  box-shadow: var(--shadow-md);
+@media (hover: hover) and (pointer: fine) {
+  .whistx-history-item:hover {
+    transform: translateY(-1px);
+    border-color: var(--accent-300);
+    box-shadow: var(--shadow-md);
+}
 }
 
 .whistx-history-item.is-active {
@@ -242,8 +244,10 @@ body.whistx-auth-locked .app {
   cursor: pointer;
 }
 
-.whistx-image-modal-close:hover {
-  background: var(--bg-secondary);
+@media (hover: hover) and (pointer: fine) {
+  .whistx-image-modal-close:hover {
+    background: var(--bg-secondary);
+}
 }
 
 .whistx-auth-hidden,

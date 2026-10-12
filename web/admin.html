@@ -21,9 +21,9 @@
       })();
     </script>
     <title>whistx 管理画面</title>
-    <link rel="stylesheet" href="/style.css?v=20261004" />
-    <link rel="stylesheet" href="/admin.css?v=20260322b" />
-    <script type="module" src="/admin.js?v=20261004"></script>
+    <link rel="stylesheet" href="/assets/asr-v1/style.css" />
+    <link rel="stylesheet" href="/assets/asr-v1/admin.css" />
+    <script type="module" src="/assets/asr-v1/admin.js"></script>
   </head>
   <body>
     <div class="admin-app">
@@ -49,10 +49,11 @@
           <label>保存期間（日）<input name="HISTORY_RETENTION_DAYS" type="number" min="0" max="36500" required /></label>
           <label>新規登録申請<select name="ENABLE_SELF_SIGNUP"><option value="0">無効</option><option value="1">有効</option></select></label>
           <label>ゲスト文字起こし<select name="ALLOW_GUEST_TRANSCRIPTION"><option value="0">無効</option><option value="1">有効</option></select></label>
-          <label>ASR方式<select name="ASR_BACKEND"><option value="qwen3_vllm">Qwen Realtime</option><option value="whisper">Whisper</option></select></label>
-          <label>ASR 接続先<input name="ASR_BASE_URL" type="url" required /></label>
+          <label>ASR方式<select name="ASR_BACKEND"><option value="speech_cpp">speech.cpp / Qwen3-ASR</option><option value="qwen3_vllm">Qwen3-ASR / vLLM</option><option value="whisper">Whisper</option></select></label>
+          <label>ASR バッチ接続先<input name="ASR_BASE_URL" type="url" required /></label>
           <label>ASR モデル<input name="ASR_MODEL" required /></label>
-          <label>ASR APIキー<input name="ASR_API_KEY" type="password" autocomplete="new-password" /></label>
+          <label>ASR バッチAPIキー<input name="ASR_API_KEY" type="password" autocomplete="new-password" /></label>
+          <p class="settings-help">録音・ファイル取込・音声からの再認識は、同じASR接続先・モデル・APIキーを使います。LiteLLMを使う場合は、その文字起こしモデルを指定してください。保存後は再起動が必要です。</p>
           <label>OpenWebUI URL<input name="OPENWEBUI_BASE_URL" type="url" placeholder="http://localhost:3000" /></label>
           <label>OpenWebUI 生成用APIキー<input name="OPENWEBUI_API_KEY" type="password" autocomplete="new-password" /></label>
           <p>OpenWebUI URLを設定すると生成処理はそのAPIを使用します。Notes保存には各利用者自身のOpenWebUI認証を使用します。</p>

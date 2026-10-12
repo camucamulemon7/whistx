@@ -1,5 +1,4 @@
 import { createTranslation } from "./translation.js";
-import { createLiveTranscript } from "./live-transcript.js";
 import { createNotesExport } from "./notes.js";
 import { fetchJson } from "../api/client.js";
 import { readSseJsonStream } from "../api/sse.js";
@@ -128,7 +127,6 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   panels.classList.add("meeting-layout");
   setView(view);
   const translation = createTranslation({ getSource, getAccess, setView });
-  const liveTranscript = createLiveTranscript({ root: document.querySelector('#liveTranscript') });
   const notesExport = createNotesExport({ getSource, getAccess });
 
   function busy() {
@@ -270,7 +268,7 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   }
 
   async function refresh({ transcriptChanged = false } = {}) {
-    if (transcriptChanged) { liveTranscript.reset(); translation.sync(); }
+    if (transcriptChanged) translation.sync();
     const source = getSource();
     updateAccess();
     if (!source) return;
@@ -305,7 +303,6 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
     sourceKey = key;
     notesExport.reset();
     generation += 1;
-    liveTranscript.reset();
     translation.sync();
     loadController?.abort();
     recapController?.abort();
@@ -416,7 +413,6 @@ export function createMeetingWorkspace({ getSource, getAccess = () => "ready", o
   }));
 
   function liveEvent(event) {
-    liveTranscript.event(event);
     translation.event(event);
     if (["final", "transcript_revision", "transcript_snapshot"].includes(event.type)) {
       const through = event.tsEnd || event.record?.tsEnd || event.records?.at(-1)?.tsEnd;
