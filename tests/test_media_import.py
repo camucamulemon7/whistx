@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import concurrent.futures
 import os
 import shutil
 import subprocess
@@ -222,6 +223,80 @@ class MediaImportTests(unittest.TestCase):
             self.run_import(pcm(.2))
         self.assertFalse(any(event['type'] == 'done' for event in self.events))
         self.assert_no_artifacts()
+
+    def test_native_file_policy_is_independent_of_recording_and_previews_before_commit(self):
+        self.config.asr_backend = 'speech_cpp'
+        self.config.asr_high_accuracy_enabled = False
+        self.config.asr_high_accuracy_window_seconds = 30
+        result = self.run_import(pcm(87))
+        self.assertEqual(len(self.calls), 1)
+        previews = [event for event in self.events if event['type'] == 'segment']
+        self.assertEqual(len(previews), 1)
+        self.assertNotIn('sessionId', previews[0])
+        self.assertNotIn('rawAudioPath', previews[0])
+        self.assertLess(self.events.index(previews[0]), self.events.index(result))
+        self.assertEqual(result['records'][0]['quality'], 'file_import')
+        self.assertEqual(result['records'][0]['tsEnd'], 87000)
+
+    def test_truncated_attempt_is_never_previewed_and_retries_only_smaller_source_intervals(self):
+        self.config.asr_backend = 'speech_cpp'
+        calls = []
+        def recognize(audio, **kwargs):
+            with wave.open(__import__('io').BytesIO(audio)) as wav:
+                seconds = wav.getnframes() / 16000
+            calls.append(seconds)
+            if seconds > 30:
+                raise ValueError('speech_cpp_batch_model_limit')
+            return SimpleNamespace(text=f'安全な区間{len(calls)}')
+        result = self.run_import(pcm(40), model=SimpleNamespace(transcribe_chunk=recognize, close=lambda: None))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(result['records']), 2)
+        self.assertEqual(len([e for e in self.events if e['type'] == 'segment']), 2)
+        self.assertTrue(any(e.get('phase') == 'splitting' for e in self.events))
+        self.assertEqual(result['records'][-1]['tsEnd'], 40000)
+
+    def test_short_persistent_model_limit_fails_without_committing(self):
+        def recognize(*args, **kwargs):
+            raise ValueError('speech_cpp_batch_model_limit')
+        with self.assertRaises(MeetingError) as error:
+            self.run_import(pcm(.3), model=SimpleNamespace(transcribe_chunk=recognize, close=lambda: None))
+        self.assertEqual(error.exception.code, 'media_model_limit')
+        self.assertFalse(any(e['type'] in ('segment', 'done') for e in self.events))
+        self.assert_no_artifacts()
+
+    def test_file_client_timeout_is_separate_from_high_accuracy_timeout(self):
+        self.config.asr_high_accuracy_timeout_seconds = 1
+        self.config.media_asr_timeout_seconds = 123
+        client = SimpleNamespace(timeout=1)
+        self.run_import(pcm(.3), model=SimpleNamespace(client=client,
+            transcribe_chunk=lambda *a, **kw: SimpleNamespace(text='合成テスト'), close=lambda: None))
+        self.assertEqual(client.timeout, 123)
+
+    def test_two_file_jobs_share_one_provider_slot_and_keep_separate_owners(self):
+        self.config.transcripts_dir.mkdir(parents=True)
+        active = maximum = 0
+        guard = threading.Lock()
+        def job(owner):
+            source = self.root / f'owner-{owner}.wav'
+            source.write_bytes(pcm_wav(pcm(.3)))
+            def recognize(*a, **kw):
+                nonlocal active, maximum
+                with guard:
+                    active += 1
+                    maximum = max(maximum, active)
+                threading.Event().wait(.1)
+                with guard:
+                    active -= 1
+                return SimpleNamespace(text='合成テスト')
+            return list(import_events(source, filename='synthetic.wav', language='ja', prompt='', user_id=owner,
+                cancelled=threading.Event(), transcriber_factory=lambda: SimpleNamespace(transcribe_chunk=recognize, close=lambda: None),
+                allow_request=lambda: True, decoder=lambda source, destination, **kw: shutil.copyfile(source, destination)))[-1]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
+            first, second = workers.map(job, (71, 72))
+        self.assertEqual(maximum, 1)
+        self.assertNotEqual(first['sessionId'], second['sessionId'])
+        self.assertTrue(runtime_access_allowed(transcripts_dir=self.config.transcripts_dir, session_id=first['sessionId'], user_id=71, guest_grant_id=None))
+        self.assertFalse(runtime_access_allowed(transcripts_dir=self.config.transcripts_dir, session_id=first['sessionId'], user_id=72, guest_grant_id=None))
 
 
 @unittest.skipUnless(os.environ.get('FFMPEG_BIN') or shutil.which('ffmpeg'), 'FFmpeg required for actual decoder tests')

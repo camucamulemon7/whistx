@@ -46,7 +46,7 @@ def pcm_speech_bounds(pcm: bytes) -> tuple[int, int] | None:
     return bounds
 
 
-def prepare_pcm_wav(audio: bytes, mime_type: str) -> tuple[bytes, int, bool]:
+def prepare_pcm_wav(audio: bytes, mime_type: str, *, bounds_hint=None) -> tuple[bytes, int, bool]:
     """Gate/trim supported WAV; leave unknown formats unchanged, never guess.
 
     Offset is relative to the original audio, for provider timestamp remapping.
@@ -61,7 +61,12 @@ def prepare_pcm_wav(audio: bytes, mime_type: str) -> tuple[bytes, int, bool]:
             pcm = wav.readframes(wav.getnframes())
     except (wave.Error, EOFError, ValueError):
         return audio, 0, False
-    bounds = pcm_speech_bounds(pcm)
+    # An already computed file gate may be reused only for this exact PCM
+    # format and valid sample bounds. Normal recording/refinement still gates.
+    valid_hint = (isinstance(bounds_hint, tuple) and len(bounds_hint) == 2
+                  and all(isinstance(value, int) for value in bounds_hint)
+                  and 0 <= bounds_hint[0] < bounds_hint[1] <= len(pcm) // 2)
+    bounds = bounds_hint if valid_hint else pcm_speech_bounds(pcm)
     if bounds is None:
         return audio, 0, True
     start, end = bounds

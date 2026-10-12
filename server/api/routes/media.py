@@ -71,11 +71,22 @@ async def transcribe_media(request: Request, filename: str = Query(max_length=24
         temporary.close()
 
     async def events():
+        loop = asyncio.get_running_loop()
+        def factory(cancelled):
+            def run_inference(call, state):
+                state.update(phase='waiting', waitReason='asr_worker')
+                # Preserve the underlying ASR worker until HTTP returns even
+                # when its browser disconnects; call checks cancellation before
+                # dispatch, including after a worker-queue wait.
+                future = asyncio.run_coroutine_threadsafe(blocking_work_pool.run('asr', call), loop)
+                return future.result()
+            return import_events(path, filename=filename, language=language, prompt=prompt,
+                user_id=user_id, cancelled=cancelled, transcriber_factory=resources.transcriber_factory,
+                observer=resources.observer, allow_request=lambda: _allow('asr', user_id),
+                run_inference=run_inference)
         try:
-            async for event in stream_events(lambda cancelled: import_events(path,
-                    filename=filename, language=language, prompt=prompt, user_id=user_id,
-                    cancelled=cancelled, transcriber_factory=resources.transcriber_factory,
-                    observer=resources.observer, allow_request=lambda: _allow('asr', user_id)), pool='asr'):
+            yield 'data: {"type":"status","phase":"waiting","waitReason":"media_worker","message":"ファイル処理の開始を待っています"}\n\n'
+            async for event in stream_events(factory, pool='media'):
                 yield event
         finally:
             # Also clean uploads when the worker queue times out before starting.

@@ -108,8 +108,10 @@
   line-height: var(--leading-relaxed);
 }
 
-.side-panel-textarea:hover {
-  border-color: var(--accent-300);
+@media (hover: hover) and (pointer: fine) {
+  .side-panel-textarea:hover {
+    border-color: var(--accent-300);
+}
 }
 
 .side-panel-textarea:focus {
@@ -192,6 +194,9 @@
 .history-count-badge {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  min-inline-size: calc(4ch + 1em + 20px);
+  font-variant-numeric: tabular-nums;
   min-height: 30px;
   padding: 0 10px;
   border-radius: var(--radius-full);
@@ -217,10 +222,6 @@
   background: transparent;
   padding-left: 0;
   padding-right: 0;
-}
-
-.history-search-input:focus {
-  outline: none;
 }
 
 .history-search:focus-within {

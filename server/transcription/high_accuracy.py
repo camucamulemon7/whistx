@@ -171,7 +171,8 @@ class HighAccuracyMeetingMixin:
         # File lock bounds HQ concurrency across meetings and app workers.
         lock_path = self.lane_settings.transcripts_dir / self.hq_lock_name
         failures = 0
-        async with httpx.AsyncClient(headers={'Authorization': 'Bearer ' + self.lane_settings.openai_api_key},
+        headers = {'Authorization': 'Bearer ' + self.lane_settings.openai_api_key} if self.lane_settings.openai_api_key else {}
+        async with httpx.AsyncClient(headers=headers,
                                      timeout=self.lane_settings.asr_high_accuracy_timeout_seconds) as client:
             while not self.disconnected:
                 job = self._next_hq()

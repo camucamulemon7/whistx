@@ -10,12 +10,18 @@ async function readStyles() {
   return (await Promise.all(imports.map(match => readFile(new URL("web/" + match[1], root), "utf8")))).join("\n");
 }
 
-test("workspace exposes a keyboard skip target and labelled live transcript", async () => {
+test("workspace exposes one accessible transcript without an interim card or its styles", async () => {
   const html = await readFile(new URL("web/index.html", root), "utf8");
+  const css = await readStyles() + await readFile(new URL("web/meeting.css", root), "utf8");
   assert.match(html, /class="skip-link" href="#workspaceMain"/);
   assert.match(html, /<main id="workspaceMain"[^>]*tabindex="-1"/);
   assert.match(html, /id="log"[^>]*role="log"[^>]*tabindex="0"/);
   assert.match(html, /aria-labelledby="transcriptPanelTitle"/);
+  assert.doesNotMatch(html, /id="liveTranscript"|class="live-transcript/);
+  assert.doesNotMatch(css, /\.live-transcript/);
+  for (const id of ['liveConnection', 'hqStatus', 'retryLiveStop', 'downloadPendingAudio', 'mediaImportPreview']) {
+    assert.match(html, new RegExp(`id="${id}"`), `${id} must remain available`);
+  }
 });
 
 test("mobile history drawer has an accessible trigger and backdrop", async () => {
@@ -42,7 +48,7 @@ test("runtime UI styles do not override the static history rail layout", async (
 
   assert.match(css, /\.history-rail\s*\{[^}]*position:\s*sticky/s);
   assert.doesNotMatch(runtimeCss, /(?:\.history-rail|#history(?:SearchInput|List|Empty))/);
-  assert.match(html, /runtime-ui\.css\?v=20260728/);
+  assert.match(html, /\/assets\/asr-v1\/runtime-ui\.css/);
 });
 
 test("workspace uses a direct task hierarchy and responsive design tokens", async () => {

@@ -35,18 +35,6 @@ function applyProofreadMode(value) {
   }
 }
 
-function applySummaryPromptEditorOpen(value) {
-  appDependencies.state.summaryPromptEditorOpen = !!value;
-  if (appDependencies.summaryPromptEditorEl) {
-    appDependencies.summaryPromptEditorEl.hidden = !appDependencies.state.summaryPromptEditorOpen;
-    appDependencies.summaryPromptEditorEl.classList.toggle("is-open", appDependencies.state.summaryPromptEditorOpen);
-  }
-  if (appDependencies.summaryPromptToggleBtn) {
-    appDependencies.summaryPromptToggleBtn.setAttribute("aria-expanded", appDependencies.state.summaryPromptEditorOpen ? "true" : "false");
-    appDependencies.summaryPromptToggleBtn.textContent = appDependencies.state.summaryPromptEditorOpen ? "議事録の作成方針を閉じる" : "議事録の作成方針";
-  }
-}
-
 function setSummary(text, meta) {
   appDependencies.state.summary = text || "";
 
@@ -407,5 +395,5 @@ async function summarizeAll() {
   }
 }
 
-  return { setProofreadButtonBusy, proofreadActionLabel, applyProofreadMode, applySummaryPromptEditorOpen, setSummary, copySummaryText, setProofread, markProofreadStale, copyProofread, proofreadAll, summarizeAll };
+  return { setProofreadButtonBusy, proofreadActionLabel, applyProofreadMode, setSummary, copySummaryText, setProofread, markProofreadStale, copyProofread, proofreadAll, summarizeAll };
 }

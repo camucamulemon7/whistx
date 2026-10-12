@@ -1,9 +1,28 @@
-import { transcriptParagraphs } from "../meeting/paragraphs.js";
+import { transcriptParagraphs, transcriptSpeakerLabel } from "../meeting/paragraphs.js";
 import { formatTimestamp as formatMs } from "../ui/format.js";
 import { transcriptJoiner } from "../meeting/paragraphs.js";
+import { createTranscriptProgress } from "../meeting/transcript-progress.js";
+
+export function transcriptQualityLabel(metadata) {
+  if (metadata.track === "file" || metadata.quality === "file_import") return "ファイル認識";
+  return metadata.quality === "high_accuracy"
+    ? (metadata.retainedRealtimeSegmentIds?.length ? "高精度・一部速報を保持" : "高精度") : "リアルタイム";
+}
 
 export function createTranscriptController(appDependencies) {
+let progress;
+function applyTranscriptProgress(event) {
+  if (!progress && event.type === "partial" && event.stableText && event.segmentId) {
+    progress = createTranscriptProgress({ root: appDependencies.logEl,
+      getRecords: () => appDependencies.state.segments,
+      getSourceTracks: () => Object.keys(appDependencies.state.liveCapture?.streams || {}),
+      isFollowing: () => appDependencies.state.logAutoScrollEnabled || isLogNearBottom(),
+      onChange: ({ follow }) => { if (follow) scrollLogToBottom(); else updateTranscriptLatestButton(); } });
+  }
+  progress?.event(event);
+}
 function renderEmptyTranscriptState() {
+  progress?.reset();
   appDependencies.logEl.innerHTML = `
     <div class="empty-state">
       <div class="empty-icon">
@@ -111,7 +130,9 @@ function updateTranscriptLatestButton() {
 
 function renderTranscriptParagraphs() {
   const nodes = new Map([...appDependencies.logEl.querySelectorAll(".log-row")].map(node => [node.dataset.segmentId, node]));
-  const oldGroups = new Map([...appDependencies.logEl.querySelectorAll(".transcript-paragraph")].map(node => [node.dataset.firstSegment, node]));
+  const oldGroups = new Map([...appDependencies.logEl.querySelectorAll(".transcript-paragraph")].filter(node => node.dataset.firstSegment !== undefined).map(node => [node.dataset.firstSegment, node]));
+  const sourceTracks = new Set([...Object.keys(appDependencies.state.liveCapture?.streams || {}), ...appDependencies.state.segments.map(segment => segment.track)].filter(track => track === "mic" || track === "display"));
+  let groupIndex = 0;
   for (const segments of transcriptParagraphs(appDependencies.state.segments)) {
     const first = segments[0];
     const key = String(first.segmentId || first.seq);
@@ -121,21 +142,27 @@ function renderTranscriptParagraphs() {
     paragraph.dataset.firstSegment = key;
     let heading = paragraph.querySelector(".transcript-paragraph-heading");
     if (!heading) { heading = document.createElement("div"); heading.className = "transcript-paragraph-heading"; paragraph.prepend(heading); }
-    heading.textContent = `${formatMs(first.tsStart)}${first.speaker ? ` · ${first.speaker}` : first.track === "display" ? " · 共有音声" : ""}`;
+    const speaker = transcriptSpeakerLabel(first, sourceTracks.size > 1);
+    const title = `${formatMs(first.tsStart)}${speaker ? ` · ${speaker}` : ""}`;
+    if (heading.textContent !== title) heading.textContent = title;
     for (let index = 0; index < segments.length; index += 1) {
       const segment = segments[index];
       const row = nodes.get(String(segment.segmentId || segment.seq));
       if (!row) continue;
       const text = row.querySelector(".text");
-      text.textContent = (index ? transcriptJoiner(segments[index - 1].text, segment.text) : "") + segment.text;
-      paragraph.append(row);
+      const content = (index ? transcriptJoiner(segments[index - 1].text, segment.text) : "") + segment.text;
+      if (text.textContent !== content) text.textContent = content;
+      if (paragraph.children[index + 1] !== row) paragraph.insertBefore(row, paragraph.children[index + 1] || null);
     }
-    appDependencies.logEl.append(paragraph);
+    if (appDependencies.logEl.children[groupIndex] !== paragraph) appDependencies.logEl.insertBefore(paragraph, appDependencies.logEl.children[groupIndex] || null);
+    groupIndex++;
   }
   for (const paragraph of oldGroups.values()) paragraph.remove();
+  progress?.reconcile();
 }
 
 function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", rawAudioPath = "", audioPath = "", segmentId = "", metadata = {}) {
+  progress?.event({ type: "final", track: metadata.track, segmentId });
   if (segmentId && appDependencies.state.segments.some((item) => item.segmentId === segmentId)) return;
   const shouldAutoScroll = appDependencies.state.logAutoScrollEnabled || isLogNearBottom();
 
@@ -153,8 +180,7 @@ function addLogLine(text, tsStart, tsEnd, seq, speaker, screenshotPath = "", raw
     const quality = document.createElement("span");
     quality.className = "transcript-quality";
     quality.dataset.quality = metadata.quality;
-    quality.textContent = metadata.quality === "high_accuracy"
-      ? (metadata.retainedRealtimeSegmentIds?.length ? "高精度・一部速報を保持" : "高精度") : "リアルタイム";
+    quality.textContent = transcriptQualityLabel(metadata);
     row.append(quality);
   }
   row.tabIndex = -1;
@@ -348,5 +374,5 @@ async function copyAll() {
   }
 }
 
-  return { renderEmptyTranscriptState, updateSegmentCount, extractTranscriptText, updateDownloadLinks, renderTranscriptText, isLogNearBottom, scrollLogToBottom, updateTranscriptLatestButton, renderTranscriptParagraphs, addLogLine, applySpeakerPatch, copyAll };
+  return { applyTranscriptProgress, renderEmptyTranscriptState, updateSegmentCount, extractTranscriptText, updateDownloadLinks, renderTranscriptText, isLogNearBottom, scrollLogToBottom, updateTranscriptLatestButton, renderTranscriptParagraphs, addLogLine, applySpeakerPatch, copyAll };
 }

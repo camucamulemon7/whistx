@@ -92,10 +92,12 @@ body {
   color: white;
 }
 
-.admin-link-btn:hover,
-.admin-primary-btn:hover,
-.admin-approve-btn:hover {
-  transform: translateY(-1px);
+@media (hover: hover) and (pointer: fine) {
+  .admin-link-btn:hover,
+  .admin-primary-btn:hover,
+  .admin-approve-btn:hover {
+    transform: translateY(-1px);
+}
 }
 
 .admin-layout {
@@ -164,7 +166,8 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 32px;
+  min-inline-size: calc(4ch + 20px);
+  font-variant-numeric: tabular-nums;
   min-height: 28px;
   padding: 0 10px;
   border-radius: 999px;
@@ -311,7 +314,7 @@ body {
 }
 
 .admin-role-select {
-  min-height: 38px;
+  min-height: 44px;
   min-width: 120px;
   padding: 0 12px;
   border-radius: 999px;

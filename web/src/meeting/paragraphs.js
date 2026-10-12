@@ -19,3 +19,18 @@ export function transcriptParagraphs(segments) {
 export function transcriptJoiner(previous, next) {
   return /[\p{Script=Latin}\d][,;:.!?]?$/u.test(previous || "") && /^[\p{Script=Latin}\d]/u.test(next || "") ? " " : "";
 }
+
+// Default capture-source names are useful only when the transcript contains both inputs.
+// Keep speaker identity and the stored metadata intact for history, copies and exports.
+export function transcriptSpeakerLabel(segment, multipleSources) {
+  const speaker = String(segment.speaker || "").trim();
+  if (!multipleSources) {
+    if (segment.track === "display") {
+      if (speaker === "共有音声") return "";
+      if (speaker.startsWith("共有音声 · ")) return speaker.slice("共有音声 · ".length);
+    }
+    if (segment.track === "mic" && speaker === "自分（マイク）") return "";
+    return speaker;
+  }
+  return speaker || (segment.track === "display" ? "共有音声" : segment.track === "mic" ? "マイク" : "");
+}

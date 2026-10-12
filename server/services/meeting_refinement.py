@@ -35,7 +35,11 @@ def _atomic_text(path: Path, text: str):
 def refine_events(snapshot, *, cancelled, transcriber_factory=None, allow_request=None, observer=None):
     if transcriber_factory is None:
         from ..qwen_asr import QwenBatchTranscriber
-        transcriber_factory = QwenBatchTranscriber if settings.asr_backend == "qwen3_vllm" else OpenAIWhisperTranscriber
+        if settings.asr_backend == "speech_cpp":
+            from ..speech_cpp_asr import SpeechCppBatchTranscriber
+            transcriber_factory = SpeechCppBatchTranscriber
+        else:
+            transcriber_factory = QwenBatchTranscriber if settings.asr_backend == "qwen3_vllm" else OpenAIWhisperTranscriber
     if not snapshot.key.startswith('runtime:') or not snapshot.finalized:
         raise MeetingError('refinement_requires_completed_runtime', 409)
     session_id = snapshot.key.split(':', 1)[1]
@@ -81,7 +85,7 @@ def refine_events(snapshot, *, cancelled, transcriber_factory=None, allow_reques
                     silence_detected = bool(getattr(result, 'silence_detected', False))
                     if not text and not silence_detected:
                         raise MeetingError('refinement_empty_result', 502)
-                    if settings.asr_backend == 'qwen3_vllm' and not silence_detected:
+                    if settings.asr_backend in {'qwen3_vllm', 'speech_cpp'} and not silence_detected:
                         from ..qwen_asr import language_coverage_lost
                         if language_coverage_lost(row['text'], text):
                             raise MeetingError('refinement_language_loss', 502)

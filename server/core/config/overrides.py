@@ -14,6 +14,8 @@ FIELDS = {
     'OPENWEBUI_BASE_URL', 'OPENWEBUI_API_KEY',
 }
 SECRETS = {'ASR_API_KEY', 'SUMMARY_API_KEY', 'OPENWEBUI_API_KEY'}
+# Retain retired values on disk for rollback, but never load or expose them.
+RETIRED_FIELDS = {'ASR_REALTIME_BASE_URL', 'ASR_REALTIME_MODEL', 'ASR_REALTIME_API_KEY'}
 
 
 def overrides_path() -> Path:
@@ -37,7 +39,7 @@ def validate(values: dict) -> dict:
             raise ValueError('invalid_retention')
         if key in {'ENABLE_SELF_SIGNUP', 'ALLOW_GUEST_TRANSCRIPTION'} and value not in {'0', '1'}:
             raise ValueError('invalid_boolean')
-        if key == 'ASR_BACKEND' and value not in {'whisper', 'qwen3_vllm'}:
+        if key == 'ASR_BACKEND' and value not in {'whisper', 'qwen3_vllm', 'speech_cpp'}:
             raise ValueError('invalid_backend')
         if key.endswith('_BASE_URL'):
             if not value and key in {'OPENWEBUI_BASE_URL', 'SUMMARY_BASE_URL'}:
@@ -55,7 +57,7 @@ def validate(values: dict) -> dict:
 
 
 def load_overrides() -> None:
-    os.environ.update(validate(read_overrides()))
+    os.environ.update(validate({key: value for key, value in read_overrides().items() if key not in RETIRED_FIELDS}))
     gateway = os.getenv('APP_CONTAINER_HOST_GATEWAY', '').strip()
     if gateway:
         for key in ('ASR_BASE_URL', 'SUMMARY_BASE_URL', 'PROOFREAD_BASE_URL', 'OPENWEBUI_BASE_URL'):

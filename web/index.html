@@ -23,10 +23,10 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="/style.css?v=20261004" />
-    <link rel="stylesheet" href="/runtime-ui.css?v=20260728" />
-    <link rel="stylesheet" href="/meeting.css?v=20260909" />
-    <script type="module" src="/main.js?v=20260724"></script>
+    <link rel="stylesheet" href="/assets/asr-v1/style.css" />
+    <link rel="stylesheet" href="/assets/asr-v1/runtime-ui.css" />
+    <link rel="stylesheet" href="/assets/asr-v1/meeting.css" />
+    <script type="module" src="/assets/asr-v1/main.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#workspaceMain">文字起こし画面へ移動</a>
@@ -337,7 +337,7 @@
                 </span>
                 <span class="media-file-select" aria-hidden="true">ファイルを選択</span>
               </button>
-              <p id="mediaFileFormats" class="media-formats">WAV・MP3・M4A・MP4・MOV・WebM ほか · 最大256 MB / 2時間</p>
+              <p id="mediaFileFormats" class="media-formats">WAV・MP3・M4A・MP4・MOV・WebM ほか · 最大256 MB / 2時間 · 日英混在は「自動判定」</p>
               <div class="media-import-actions">
                 <label class="media-language" for="mediaLanguage">音声の言語
                   <select id="mediaLanguage"><option value="ja">日本語</option><option value="en">英語</option><option value="auto">自動判定</option></select>
@@ -410,8 +410,8 @@
                   <button id="retryLiveStop" type="button" class="btn-secondary" hidden>最終処理を再試行</button>
                   <button id="downloadPendingAudio" type="button" class="btn-secondary" hidden>未送信音声を保存</button>
                 </div>
-                <div id="liveTranscript" class="live-transcript" role="status" aria-live="polite" aria-label="認識途中の文字起こし" hidden></div>
-                <div id="log" class="log-container" role="log" aria-live="polite" aria-relevant="additions" tabindex="0" aria-label="文字起こし本文">
+                <div id="mediaImportPreview" class="media-import-preview" role="log" aria-live="polite" aria-relevant="additions" aria-label="ファイル認識の途中結果" hidden></div>
+                <div id="log" class="log-container" role="log" aria-live="polite" aria-relevant="additions text" tabindex="0" aria-label="文字起こし本文">
                   <div class="empty-state">
                     <div class="empty-icon">
                       <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -510,9 +510,6 @@
                     <button type="button" class="ai-result-tab is-active" data-ai-tab="summary" aria-pressed="true">要約</button>
                   </div>
                   <div class="panel-actions">
-                    <button id="summaryPromptToggleBtn" type="button" class="btn-secondary" aria-controls="summaryPromptEditor" aria-expanded="false">
-                      議事録の作成方針
-                    </button>
                     <button type="button" class="icon-btn panel-collapse-btn" data-panel-toggle="summary" aria-label="要約をたたむ" title="たたむ">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="15 18 9 12 15 6"/>
@@ -537,20 +534,16 @@
                   <button id="notesSave" type="button" class="btn-secondary">Notesに保存 / 確認・再試行</button>
                   <p id="notesStatus" role="status" aria-live="polite"></p>
                 </details>
-                <div id="summaryPromptEditor" class="summary-prompt-editor" hidden>
-                  <div class="summary-prompt-editor-header">
-                    <div>
-                      <strong>議事録の作成方針</strong>
-                      <p class="setting-hint">空欄の場合も、議論の経緯・決定事項・次のアクションを詳しく記録します。</p>
-                    </div>
-                  </div>
+                <details id="summaryPromptEditor" class="summary-prompt-editor">
+                  <summary>議事録の作成方針</summary>
+                  <p class="setting-hint">空欄の場合も、議論の経緯・決定事項・次のアクションを詳しく記録します。</p>
                   <textarea
                     id="summaryPrompt"
                     rows="6"
                     class="side-panel-textarea summary-prompt-textarea"
                     placeholder="例: 決定事項・宿題・期限を箇条書きで整理してください。{text}, {language} が使えます。"
                   ></textarea>
-                </div>
+                </details>
                 <div id="summaryText" class="summary-content">
                   <div class="empty-state small">
                     <p class="empty-description">文字起こしから、議論の経緯・決定事項・次のアクションを画像付きの議事録として表示します。</p>

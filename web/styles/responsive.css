@@ -270,14 +270,6 @@
     margin-right: 0;
   }
 
-  .save-controls {
-    width: 100%;
-  }
-
-  .save-title-input {
-    width: 100%;
-  }
-
   .workspace-shell {
     grid-template-columns: 1fr;
   }
@@ -299,24 +291,6 @@
   .settings-basic-header {
     flex-direction: column;
     align-items: stretch;
-  }
-
-  .save-controls,
-  .save-title-input {
-    width: 100%;
-  }
-
-  .downloads-bar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .export-group {
-    align-items: stretch;
-  }
-
-  .export-menu-trigger {
-    width: 100%;
   }
 
   .export-menu-list {
@@ -426,10 +400,6 @@
     width: auto;
   }
 
-  .downloads-bar {
-    flex-wrap: wrap;
-  }
-
   .header-user-chip {
     width: 100%;
     border-radius: var(--radius-lg);
@@ -454,15 +424,6 @@
 
   .history-rail-actions {
     justify-content: space-between;
-  }
-
-  .downloads-bar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .save-controls {
-    width: 100%;
   }
 
   .download-link {

@@ -86,7 +86,7 @@ Current backend layout after the refactor:
 5. Finalized text is normalized and stored
 6. UI updates immediately with final segments
 
-Qwen3-ASR realtime is supported through `ASR_BACKEND=qwen3_vllm` (see below). Voxtral realtime remains unsupported. `ASR_BACKEND=whisper` retains the Whisper-compatible HTTP backend.
+Qwen3-ASR recording is supported through `ASR_BACKEND=qwen3_vllm` (see below) or [`ASR_BACKEND=speech_cpp`](docs/speech-cpp-asr.md). The speech.cpp backend uses rolling HTTP recognition through the same ASR URL, model and key as import and refinement; it does not require an upstream Realtime socket. Voxtral realtime remains unsupported. `ASR_BACKEND=whisper` retains the Whisper-compatible HTTP backend.
 
 ## Meeting workspace
 
@@ -96,7 +96,7 @@ Qwen3-ASR realtime is supported through `ASR_BACKEND=qwen3_vllm` (see below). Vo
 4. Select **会議の要約** and **要約する**. Chapter cards contain cited key points, decisions, actions, open questions, and time-matched captured screens. **共有資料** shows the captured images. **画像付きで保存** exports a self-contained HTML recap with embedded images.
 5. Save the meeting to history. The chapter recap, assistant turns, audio, and screenshots travel with the history artifacts. Its ZIP includes `meeting.json` and, after re-recognition, `transcript.original.jsonl`. New transcript revisions mark an existing recap as stale; regenerate it to update the sources.
 
-Both live adapters use the existing `.env` `ASR_BASE_URL`, `ASR_MODEL`, and API key. The Whisper adapter implements rolling HTTP inference and LocalAgreement-2; the Qwen adapter uses vLLM realtime WebSockets. Both automatically re-recognize longer intervals concurrently with realtime capture. Neither is a SimulStreaming decoder. `SUMMARY_*` configures both chapter summaries and meeting QA. If `PROOFREAD_MODEL` is unset, it falls back to `SUMMARY_MODEL`. No new model server or schema migration is required for meeting insights; the application's existing database migrations are still required.
+Whisper and vLLM adapters use the existing `.env` `ASR_BASE_URL`, `ASR_MODEL`, and API key. The Whisper adapter implements rolling HTTP inference and LocalAgreement-2; the Qwen adapter uses vLLM realtime WebSockets. All three backends automatically re-recognize longer intervals concurrently with realtime capture. Neither is a SimulStreaming decoder. `SUMMARY_*` configures both chapter summaries and meeting QA. If `PROOFREAD_MODEL` is unset, it falls back to `SUMMARY_MODEL`. No new model server or schema migration is required for meeting insights; the application's existing database migrations are still required.
 
 Whisper and Qwen gate supported PCM WAV before sending realtime, high-accuracy and manual recognition requests, reducing hallucinations during silence and quiet stationary noise. Real acknowledgements and closing words are not rejected by a text blacklist. Original audio is retained; see [silence suppression and limits](docs/whisper-silence.md).
 

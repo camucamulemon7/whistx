@@ -93,8 +93,10 @@ html[data-theme="dark"] .glass-panel {
   border: 1px solid var(--panel-border);
 }
 
-.status-item:hover {
-  background: var(--surface-muted);
+@media (hover: hover) and (pointer: fine) {
+  .status-item:hover {
+    background: var(--surface-muted);
+}
 }
 
 .header-action-btn,
@@ -113,10 +115,12 @@ html[data-theme="dark"] .glass-panel {
   background: transparent;
 }
 
-.header-action-btn:hover:not(:disabled) {
-  background: var(--surface-muted);
-  border-color: transparent;
-  transform: none;
+@media (hover: hover) and (pointer: fine) {
+  .header-action-btn:hover:not(:disabled) {
+    background: var(--surface-muted);
+    border-color: transparent;
+    transform: none;
+}
 }
 
 .theme-toggle-btn,
@@ -207,11 +211,13 @@ html[data-theme="dark"] .glass-panel {
   box-shadow: none;
 }
 
-.history-item:hover,
-.whistx-history-item:hover {
-  transform: none;
-  border-color: var(--accent-300);
-  box-shadow: none;
+@media (hover: hover) and (pointer: fine) {
+  .history-item:hover,
+  .whistx-history-item:hover {
+    transform: none;
+    border-color: var(--accent-300);
+    box-shadow: none;
+}
 }
 
 .history-item.is-active,
@@ -281,10 +287,12 @@ html[data-theme="dark"] .glass-panel {
   box-shadow: none;
 }
 
-.record-btn:hover:not(:disabled) {
-  background: var(--accent-600);
-  border-color: var(--accent-600);
-  transform: none;
+@media (hover: hover) and (pointer: fine) {
+  .record-btn:hover:not(:disabled) {
+    background: var(--accent-600);
+    border-color: var(--accent-600);
+    transform: none;
+}
 }
 
 .record-btn:active {
@@ -394,9 +402,11 @@ html[data-theme="dark"] .glass-panel {
   padding: 8px 12px;
 }
 
-.btn-action:hover,
-.btn-secondary:hover:not(:disabled) {
-  transform: none;
+@media (hover: hover) and (pointer: fine) {
+  .btn-action:hover,
+  .btn-secondary:hover:not(:disabled) {
+    transform: none;
+}
 }
 
 .log-container {
@@ -443,6 +453,22 @@ html[data-theme="dark"] .glass-panel {
 .downloads-bar {
   padding: 10px 12px;
   background: var(--surface-muted);
+}
+
+@media (any-pointer: coarse) {
+  .theme-toggle-btn,
+  .icon-btn,
+  .btn-action,
+  .btn-secondary,
+  .toggle-control,
+  .summary-prompt-editor > summary {
+    min-block-size: 44px;
+    min-inline-size: 44px;
+  }
+
+  .summary-prompt-editor > summary {
+    padding-block: 10px;
+  }
 }
 
 .side-panel {

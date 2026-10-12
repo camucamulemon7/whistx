@@ -108,7 +108,6 @@ body { background:var(--surface-canvas); }
 #hqStatus[data-state="running"] { background:var(--accent-50); font-weight:650; }
 .transcript-quality { display:inline-block; margin:0 6px; padding:1px 6px; border:1px solid var(--meeting-line); border-radius:4px; font-size:11px; color:var(--meeting-muted); vertical-align:baseline; }
 .transcript-quality[data-quality="high_accuracy"] { background:var(--accent-50); color:var(--meeting-accent); }
-.live-transcript { padding:10px 28px; background:var(--accent-50); flex:none; }
 .live-utterance { display:flex; gap:12px; font-size:14px; line-height:1.8; }
 .live-speaker { font-size:10px; color:var(--meeting-muted); flex:none; }
 .live-hypothesis { color:var(--meeting-muted); overflow-wrap:anywhere; }
@@ -120,6 +119,7 @@ body { background:var(--surface-canvas); }
 .transcript-paragraph-heading { margin-bottom:8px; color:var(--meeting-muted); font-size:10px; font-variant-numeric:tabular-nums; }
 .meeting-layout .transcript-paragraph .log-row, .meeting-layout .transcript-paragraph .log-body { display:inline; padding:0; margin:0; border:0; background:none; animation:none; }
 .meeting-layout .transcript-paragraph .log-row .text { color:var(--meeting-ink); font-size:15px; line-height:2; white-space:pre-wrap; overflow-wrap:anywhere; }
+.transcript-progress { color:var(--meeting-muted); font-size:15px; line-height:2; white-space:pre-wrap; overflow-wrap:anywhere; }
 .meeting-layout .transcript-paragraph .log-row > .time, .meeting-layout .transcript-paragraph .log-media-group { display:none; }
 .meeting-layout #log.show-transcript-details .log-row { display:block; padding:10px 0; }
 .meeting-layout #log.show-transcript-details .log-row > .time { display:block; width:auto; font-size:10px; }
@@ -211,8 +211,7 @@ body { background:var(--surface-canvas); }
   .meeting-tabs button { font-size:11px; }
   .meeting-layout .panel-header { padding:10px 14px; }
   .meeting-layout #log { padding:4px 18px 24px; }
-  .meeting-layout .transcript-paragraph .log-row .text { font-size:14px; }
-  .live-transcript { padding:8px 18px; }
+  .meeting-layout .transcript-paragraph .log-row .text, .transcript-progress { font-size:14px; }
   .live-utterance { flex-direction:column; gap:0; }
   .assistant-form { padding-bottom:max(12px, env(safe-area-inset-bottom)); }
 }
@@ -223,7 +222,10 @@ body { background:var(--surface-canvas); }
 
 /* Keep the divider over the panel edge so it does not consume a grid column. */
 #assistantResize { grid-column:2; grid-row:1; width:9px; margin-left:-5px; z-index:5; cursor:col-resize; touch-action:none; }
-#assistantResize:hover, #assistantResize:focus-visible { background:var(--meeting-accent); opacity:.45; }
+@media (hover: hover) and (pointer: fine) {
+  #assistantResize:hover { background:var(--meeting-accent); opacity:.45; }
+}
+#assistantResize:focus-visible { background:var(--meeting-accent); opacity:.45; }
 .meeting-layout.is-assistant-collapsed #assistantResize { display:none; }
 .settings-panel .setting-group:has(#diarizationEnabled), #diarizationConfigRow { display:none !important; }
 @media(max-width:1050px) { #assistantResize { display:none; } }
@@ -254,7 +256,10 @@ body { background:var(--surface-canvas); }
 #recordingInputPanel[hidden], #mediaImportPanel[hidden], #mediaImportCancel[hidden], #mediaImportProgress[hidden], #mediaLoginHint[hidden] { display:none !important; }
 .media-import-panel { flex:none; padding:12px 24px 16px; border-bottom:1px solid var(--meeting-line); }
 .media-dropzone { display:flex; align-items:center; gap:16px; width:100%; min-width:0; padding:20px; border:1px dashed var(--accent-300); border-radius:10px; background:var(--surface-muted); color:var(--meeting-ink); text-align:left; font:inherit; cursor:pointer; transition:background .15s, border-color .15s; }
-.media-dropzone:hover:not(:disabled), .media-dropzone.is-dragover { border-color:var(--meeting-accent); background:var(--accent-50); }
+@media (hover: hover) and (pointer: fine) {
+  .media-dropzone:hover:not(:disabled) { border-color:var(--meeting-accent); background:var(--accent-50); }
+}
+.media-dropzone.is-dragover { border-color:var(--meeting-accent); background:var(--accent-50); }
 .media-dropzone:disabled { cursor:default; opacity:.65; }
 .media-file-icon { display:grid; place-items:center; flex:none; width:44px; height:48px; color:var(--meeting-accent); background:var(--accent-50); border-radius:8px; }
 .media-file-copy { display:flex; flex-direction:column; gap:5px; min-width:0; flex:1; }
@@ -266,18 +271,29 @@ body { background:var(--surface-canvas); }
 .media-language { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--meeting-muted); white-space:nowrap; }
 .media-language select { min-height:36px; padding:6px 30px 6px 10px; border:1px solid var(--meeting-line); border-radius:6px; background:var(--meeting-paper); color:var(--meeting-ink); font:inherit; }
 #mediaImportStart { min-height:36px; padding:7px 16px; border:0; border-radius:6px; background:var(--meeting-accent); color:var(--meeting-action-ink); font-size:12px; }
-#mediaImportStart:hover:not(:disabled) { background:var(--accent-700); color:var(--meeting-action-ink); }
+@media (hover: hover) and (pointer: fine) {
+  #mediaImportStart:hover:not(:disabled) { background:var(--accent-700); color:var(--meeting-action-ink); }
+}
 #mediaImportStart:disabled { background:var(--meeting-line); color:var(--meeting-muted); cursor:default; opacity:1; }
 #mediaImportCancel { min-height:36px; font-size:12px; }
 #mediaImportProgress { width:140px; height:6px; accent-color:var(--meeting-accent); }
 .media-import-status, .media-login-hint { margin:10px 0 0; font-size:12px; line-height:1.7; color:var(--meeting-muted); overflow-wrap:anywhere; }
 .media-login-hint { color:var(--meeting-accent); }
+.media-import-preview { flex:none; max-height:180px; overflow:auto; padding:12px 28px; background:var(--accent-50); overflow-wrap:anywhere; }
+.media-import-preview[hidden] { display:none !important; }
+.media-preview-label { margin:0 0 8px; font-size:11px; color:var(--meeting-muted); }
+.media-preview-row { margin:8px 0; font-size:14px; line-height:1.7; white-space:pre-wrap; }
+.media-preview-time { display:block; color:var(--meeting-muted); font-size:11px; }
+@media (max-width:700px) { .media-import-preview { max-height:120px; padding:10px 18px; } }
 .settings-panel .record-btn, .meeting-layout .assistant-form .btn-action { background:var(--meeting-accent); color:var(--meeting-action-ink); }
 .settings-panel .record-btn.is-recording { background:#ad3c4a; color:#fff; }
 html[data-theme="dark"] .settings-panel .record-btn { background:var(--meeting-accent); color:var(--meeting-action-ink); }
 html[data-theme="dark"] .settings-panel .record-btn.is-recording { background:#ad3c4a; color:#fff; }
 .meeting-layout .btn-action.btn-primary, .meeting-layout .assistant-form .btn-action { background:var(--meeting-accent); color:var(--meeting-action-ink); }
-.meeting-layout .btn-action.btn-primary:hover:not(:disabled), .meeting-layout .assistant-form .btn-action:hover:not(:disabled) { background:var(--accent-700); color:var(--meeting-action-ink); }
+@media (hover: hover) and (pointer: fine) {
+  .meeting-layout .btn-action.btn-primary:hover:not(:disabled),
+  .meeting-layout .assistant-form .btn-action:hover:not(:disabled) { background:var(--accent-700); color:var(--meeting-action-ink); }
+}
 .workspace-main:has(#mediaImportPanel:not([hidden])) .meeting-options label:has(#meetingCaptureEnabled) { display:none; }
 .settings-panel .setting-label { font-size:11px; }
 .settings-panel .select-wrapper select { min-height:36px; font-size:13px; border-radius:6px; }
@@ -312,10 +328,10 @@ html[data-theme="dark"] .settings-panel .record-btn.is-recording { background:#a
   .meeting-options { padding:8px 12px; font-size:11px; }
   .meeting-tabs { gap:16px; }
   .meeting-tabs button { font-size:12px; }
-  .meeting-layout .downloads-bar { flex-direction:row; align-items:center; gap:8px; padding:8px 12px; }
+  .meeting-layout .downloads-bar { gap:8px; padding:8px 12px; }
   .meeting-layout .downloads-label { display:none; }
-  .meeting-layout .save-controls { flex-wrap:nowrap; gap:6px; }
-  .meeting-layout .save-title-input { flex:1; min-width:0; width:0; padding:8px; font-size:12px; }
+  .meeting-layout .save-controls { gap:6px; }
+  .meeting-layout .save-title-input { padding:8px; font-size:12px; }
   .meeting-layout .save-state-badge { font-size:10px; padding:3px; white-space:nowrap; }
   .meeting-layout #saveBtn { min-width:48px; padding:6px 8px; }
   .meeting-layout .export-menu-trigger { padding:6px 8px; font-size:11px; }
@@ -324,6 +340,34 @@ html[data-theme="dark"] .settings-panel .record-btn.is-recording { background:#a
   .meeting-layout .panel-actions { gap:4px; }
   .meeting-layout .panel-actions .btn-secondary { padding:5px 7px; font-size:11px; }
   .capture-heading { display:none; }
+}
+
+/* Enlarge the real hit box on touch devices, including hybrid computers. */
+@media (any-pointer: coarse) {
+  .header-actions-group .header-action-btn,
+  .header-actions-group .theme-toggle-btn,
+  .settings-panel .select-wrapper select,
+  .settings-panel .settings-inline-detail-btn,
+  .meeting-layout .btn-secondary,
+  .meeting-layout .btn-action,
+  .meeting-layout .assistant-form .btn-action,
+  .capture-modes button,
+  .media-language select,
+  #mediaImportStart,
+  #mediaImportCancel,
+  .meeting-options label,
+  .history-item-delete,
+  .log-audio-link,
+  .assistant-suggestions button,
+  .chapter-index-link,
+  .meeting-citation,
+  .meeting-tabs button {
+    min-block-size: 44px;
+    min-inline-size: 44px;
+  }
+
+  .meeting-tabs { min-block-size: 44px; }
+  .meeting-options label { padding-block: 8px; }
 }
 @media (max-height:620px) {
   .capture-heading p, .media-formats { display:none; }

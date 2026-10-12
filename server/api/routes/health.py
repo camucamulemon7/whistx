@@ -51,7 +51,7 @@ async def _readiness_response() -> JSONResponse:
             },
         )
     response = await health_service.health(resources=runtime.resources)
-    provider_required = bool(settings.openai_api_key)
+    provider_required = bool(settings.openai_api_key) or settings.asr_backend == "speech_cpp"
     provider_ready = runtime.resources.transcriber_factory is not None
     payload = json.loads(response.body)
     payload.update(

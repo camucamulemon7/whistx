@@ -149,6 +149,23 @@ class RegressionTests(unittest.TestCase):
 
         handler.assert_called_once()
 
+    def test_updated_ui_assets_revalidate_including_nested_modules(self) -> None:
+        client = TestClient(application_core.create_app())
+        index = client.get('/')
+        self.assertIn('/assets/asr-v1/main.js', index.text)
+        for path in ('/', '/admin.html', '/assets/asr-v1/main.js',
+                     '/assets/asr-v1/src/controllers/media-import.js',
+                     '/assets/asr-v1/src/audio/capture-worklet.js',
+                     '/assets/asr-v1/meeting.css'):
+            with self.subTest(path=path):
+                response = client.get(path)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers['cache-control'], 'no-cache')
+                cached = client.get(path, headers={'if-none-match': response.headers['etag']})
+                self.assertEqual(cached.status_code, 304)
+                self.assertEqual(cached.headers['cache-control'], 'no-cache')
+        self.assertNotIn('cache-control', client.get('/api/health/live').headers)
+
 
     def test_ws_transcribe_rejects_cross_origin_before_authentication(self) -> None:
         app = FastAPI()
