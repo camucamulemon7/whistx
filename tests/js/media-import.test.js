@@ -29,6 +29,7 @@ test('file preview does not replace prior results; cancellation, retry and succe
     children = []; textContent = ''; hidden = true; value = 'ja'; disabled = false; dataset = {};
     listeners = {}; classList = { add() {}, remove() {} }; files = [];
     addEventListener(type, callback) { this.listeners[type] = callback; }
+    removeEventListener(type, callback) { if (this.listeners[type] === callback) delete this.listeners[type]; }
     setAttribute() {} removeAttribute() {} append(...children) { this.children.push(...children); }
     replaceChildren() { this.children = []; }
     click() { return this.listeners.click?.(); }
@@ -36,7 +37,7 @@ test('file preview does not replace prior results; cancellation, retry and succe
   const nodes = new Map();
   const node = selector => { if (!nodes.has(selector)) nodes.set(selector, new Element()); return nodes.get(selector); };
   const oldDocument = globalThis.document, oldFetch = globalThis.fetch;
-  globalThis.document = { querySelector: node, querySelectorAll: () => [], addEventListener() {}, createElement: () => new Element() };
+  globalThis.document = { querySelector: node, querySelectorAll: () => [], addEventListener() {}, removeEventListener() {}, createElement: () => new Element() };
   let stream, requests = 0, commits = 0;
   globalThis.fetch = async (_, options) => {
     requests++;
@@ -55,7 +56,7 @@ test('file preview does not replace prior results; cancellation, retry and succe
     commitNewRecordingWorkspace() { commits++; state.segments = []; }, addLogLine(text) { state.segments.push({ text }); }, markWorkspaceDirty: noop, showToast: noop,
     meetingWorkspace: { busy: false, setView: noop, refresh: noop } };
   try {
-    createMediaImportController(deps);
+    createMediaImportController(deps).mount();
     node('#mediaFileInput').files = [{ name: 'synthetic.wav', size: 128 }]; node('#mediaFileInput').listeners.change();
     let operation = node('#mediaImportStart').click(); await settle();
     emit({ type: 'segment', seq: 0, text: '途中の結果', tsStart: 0, tsEnd: 1000 }); await settle();

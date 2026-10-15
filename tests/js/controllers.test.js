@@ -64,14 +64,17 @@ test("recording controller resets session handles without discarding transcript 
 });
 
 test("all feature controller constructors are inert until the app wires events", async () => {
-  const names = ["ai", "auth", "capabilities", "glossary", "history", "layout", "media-capture", "recording", "screenshot-viewer", "settings", "telemetry", "transcript", "transcription", "workspace"];
+  const { readdir } = await import("node:fs/promises");
+  const names = (await readdir(new URL("../../web/src/controllers/", import.meta.url))).filter(name => name.endsWith(".js"));
   const unavailableDependencies = new Proxy({}, { get() { throw new Error("construction accessed application state or DOM"); } });
   for (const name of names) {
-    const module = await import(`../../web/src/controllers/${name}.js`);
-    const factory = Object.values(module)[0];
-    const controller = factory(unavailableDependencies);
-    assert.ok(Object.keys(controller).length > 0, name);
-    assert.ok(Object.values(controller).every(action => typeof action === "function"), name);
+    const module = await import(`../../web/src/controllers/${name}`);
+    for (const [factoryName, factory] of Object.entries(module)) {
+      if (!/^create.*Controller$/.test(factoryName)) continue;
+      const controller = factory(unavailableDependencies);
+      assert.ok(Object.keys(controller).length > 0, name);
+      assert.ok(Object.values(controller).every(action => typeof action === "function"), name);
+    }
   }
 });
 
