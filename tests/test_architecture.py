@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import os
 import unittest
 from collections import Counter
@@ -65,6 +66,19 @@ def _imports_runtime(tree: ast.AST) -> bool:
 
 
 class ArchitectureTests(unittest.TestCase):
+    def test_internal_relative_import_targets_exist_including_lazy_imports(self) -> None:
+        missing = []
+        for path in SERVER.rglob('*.py'):
+            package = '.'.join(path.relative_to(ROOT).with_suffix('').parts[:-1])
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.ImportFrom) or not node.level or not node.module:
+                    continue
+                name = importlib.util.resolve_name('.' * node.level + node.module, package)
+                target = ROOT.joinpath(*name.split('.'))
+                if not target.with_suffix('.py').exists() and not (target / '__init__.py').exists():
+                    missing.append((str(path.relative_to(ROOT)), node.lineno, name))
+        self.assertEqual(missing, [])
+
     def test_included_websocket_routes_dispatch_origin_rejection(self) -> None:
         from server.core.config import settings
         client = TestClient(app)

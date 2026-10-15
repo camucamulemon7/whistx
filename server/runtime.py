@@ -4,10 +4,8 @@ import asyncio
 import logging
 from typing import Callable
 
-from fastapi import WebSocket
-
 from .core.runtime_resources import RuntimeResources
-from .transcription import coordinator
+from .core.blocking import blocking_work_pool
 from .services import oidc_flow, runtime_cleanup
 from .asr import SessionTranscriber
 from .audio_pipeline import AudioPreprocessor
@@ -24,16 +22,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-resources = RuntimeResources()
-
-
 CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
 
 
-async def on_startup() -> None:
+async def on_startup(resources: RuntimeResources) -> None:
+    try:
+        await _start_resources(resources)
+    except BaseException:
+        await on_shutdown(resources)
+        raise
 
+
+async def _start_resources(resources: RuntimeResources) -> None:
     _validate_runtime_configuration()
-    runtime_cleanup.run_cleanup_once("startup")
+    await blocking_work_pool.run("artifact", runtime_cleanup.run_cleanup_once, "startup")
     resources.cleanup_task = asyncio.create_task(_periodic_cleanup_loop())
     resources.event_loop_monitor_task = asyncio.create_task(_event_loop_lag_monitor())
     logger.info(
@@ -64,7 +66,7 @@ async def on_startup() -> None:
     if settings.langfuse_enabled and settings.langfuse_capture_content:
         logger.warning("Langfuse content capture is enabled: transcription, prompts, glossary, and model output may be sent to the configured telemetry provider; see docs/privacy.md")
 
-    resources.transcriber_factory = _build_transcriber_factory() if (settings.openai_api_key or settings.asr_backend == "speech_cpp") else None
+    resources.transcriber_factory = _build_transcriber_factory(resources) if (settings.openai_api_key or settings.asr_backend == "speech_cpp") else None
     resources.audio_preprocessor = AudioPreprocessor(
         ffmpeg_bin=settings.ffmpeg_bin,
         sample_rate=settings.asr_preprocess_sample_rate,
@@ -137,27 +139,38 @@ async def on_startup() -> None:
     )
 
 
-async def on_shutdown() -> None:
-    for task in (resources.cleanup_task, resources.event_loop_monitor_task):
-        if task is None:
-            continue
+async def on_shutdown(resources: RuntimeResources) -> None:
+    tasks = [task for task in (resources.cleanup_task, resources.event_loop_monitor_task) if task is not None]
+    for task in tasks:
         task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-    resources.cleanup_task = None
-    resources.event_loop_monitor_task = None
-    if resources.observer is not None:
-        resources.observer.flush()
-        resources.observer.shutdown()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    resources.cleanup_task = resources.event_loop_monitor_task = None
+    await blocking_work_pool.drain()
+    closed = set()
+    for name in ("proofreader", "summarizer"):
+        client = getattr(resources, name)
+        setattr(resources, name, None)
+        if client is not None and id(client) not in closed:
+            closed.add(id(client))
+            try:
+                await asyncio.to_thread(client.close)
+            except Exception:
+                logger.warning("runtime client close failed: resource=%s", name, exc_info=True)
+    observer, resources.observer = resources.observer, None
+    if observer is not None:
+        for action in (observer.flush, observer.shutdown):
+            try:
+                await asyncio.to_thread(action)
+            except Exception:
+                logger.warning("runtime observer cleanup failed", exc_info=True)
+    resources.transcriber_factory = resources.audio_preprocessor = resources.diarizer = None
 
 
 async def _periodic_cleanup_loop() -> None:
     try:
         while True:
             await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
-            await asyncio.to_thread(runtime_cleanup.run_cleanup_once, "periodic cleanup")
+            await blocking_work_pool.run("artifact", runtime_cleanup.run_cleanup_once, "periodic cleanup")
     except asyncio.CancelledError:
         raise
 
@@ -192,7 +205,7 @@ def _validate_runtime_configuration() -> None:
         )
 
 
-def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
+def _build_transcriber_factory(resources: RuntimeResources) -> Callable[[], SessionTranscriber]:
     if settings.asr_backend == "speech_cpp":
         from .speech_cpp_asr import SpeechCppBatchTranscriber
         return lambda: SpeechCppBatchTranscriber(api_key=settings.openai_api_key, base_url=settings.openai_base_url, model=settings.asr_model)
@@ -215,7 +228,3 @@ def _build_transcriber_factory() -> Callable[[], SessionTranscriber]:
 def _use_realtime_asr(model: str) -> bool:
     lowered = (model or "").strip().lower()
     return "voxtral" in lowered and "realtime" in lowered
-
-
-async def ws_transcribe(ws: WebSocket) -> None:
-    await coordinator.ws_transcribe(ws, resources=resources)

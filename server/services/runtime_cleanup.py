@@ -5,11 +5,12 @@ from ..core.config import settings
 from ..db import db_session
 from ..repositories import session_repository
 from .history_service import cleanup_expired_runtime_data
+from . import artifact_deletion, artifact_reconciliation
 
 logger = logging.getLogger(__name__)
 
 
-def run_cleanup_once(reason: str) -> None:
+def run_cleanup_once(reason: str) -> bool:
     try:
         with db_session() as db:
             cleanup_expired_runtime_data(db)
@@ -32,12 +33,12 @@ def run_cleanup_once(reason: str) -> None:
                     deleted_sessions,
                     oldest_expired_at.isoformat() if oldest_expired_at else None,
                 )
-        from .services.artifact_deletion import process_deletions
-        from .services.artifact_reconciliation import scan
         with db_session() as db:
-            process_deletions(db, settings.history_dir)
-            scan(db, settings.history_dir)
+            artifact_deletion.process_deletions(db, settings.history_dir)
+            artifact_reconciliation.scan(db, settings.history_dir)
+        return True
     except Exception:
         logger.warning(
             "scheduled cleanup failed during %s", reason, exc_info=True
         )
+        return False

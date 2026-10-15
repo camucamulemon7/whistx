@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Request
+from starlette.requests import HTTPConnection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -84,7 +85,7 @@ def _login_retry_after_seconds_for_keys(keys: tuple[str, str]) -> int | None:
     return max(retry_after_values)
 
 
-def get_optional_user_from_request(request: Request, db: Session) -> User | None:
+def get_optional_user_from_request(request: HTTPConnection, db: Session) -> User | None:
     session_id = request.cookies.get(auth.SESSION_COOKIE_NAME)
     return auth.get_user_by_session_id(db, session_id)
 

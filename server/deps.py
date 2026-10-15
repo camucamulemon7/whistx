@@ -2,10 +2,16 @@ from __future__ import annotations
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+from starlette.requests import HTTPConnection
 
 from .db import get_db
 from .models import User
+from .core.runtime_resources import RuntimeResources
 from .services.auth_service import get_optional_user_from_request
+
+
+def get_runtime_resources(connection: HTTPConnection) -> RuntimeResources:
+    return connection.app.state.runtime_resources
 
 
 def get_current_user(

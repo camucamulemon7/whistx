@@ -28,6 +28,21 @@ const messages = {
   meeting_model_busy: '文字起こしが混み合っています。少し待って再試行してください。',
 };
 export function createMediaImportController(deps) {
+  let mounted = null;
+  return {
+    mount() { if (!mounted) mounted = mountMediaImport(deps); },
+    sync() { mounted?.sync(); },
+    dispose() { const previous = mounted; mounted = null; previous?.dispose(); },
+  };
+}
+
+function mountMediaImport(deps) {
+  const listeners = [];
+  let disposed = false, activeController = null, uploadTimer = null;
+  function on(target, type, handler) {
+    target.addEventListener(type, handler);
+    listeners.push(() => target.removeEventListener(type, handler));
+  }
   const $ = selector => document.querySelector(selector);
   const panel = $('#mediaImportPanel'), recordingPanel = $('#recordingInputPanel');
   const input = $('#mediaFileInput'), drop = $('#mediaDropzone');
@@ -67,8 +82,8 @@ export function createMediaImportController(deps) {
     sync();
   }
   tabs.forEach(tab => {
-    tab.addEventListener('click', () => setMode(tab.dataset.captureMode));
-    tab.addEventListener('keydown', event => {
+    on(tab, 'click', () => setMode(tab.dataset.captureMode));
+    on(tab, 'keydown', event => {
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
       event.preventDefault();
       const target = tabs[event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : 1 - tabs.indexOf(tab)];
@@ -84,33 +99,33 @@ export function createMediaImportController(deps) {
     status.textContent = '音声の言語を確認して、文字起こしを開始してください。';
     progress.hidden = true; drop.classList.add('has-file'); sync();
   }
-  input.addEventListener('change', () => { if (input.files[0]) choose(input.files[0]); input.value = ''; });
-  drop.addEventListener('click', () => { if (!input.disabled) input.click(); });
-  drop.addEventListener('dragover', event => { event.preventDefault(); if (!input.disabled) drop.classList.add('is-dragover'); });
-  drop.addEventListener('dragleave', () => drop.classList.remove('is-dragover'));
-  drop.addEventListener('drop', event => {
+  on(input, 'change', () => { if (input.files[0]) choose(input.files[0]); input.value = ''; });
+  on(drop, 'click', () => { if (!input.disabled) input.click(); });
+  on(drop, 'dragover', event => { event.preventDefault(); if (!input.disabled) drop.classList.add('is-dragover'); });
+  on(drop, 'dragleave', () => drop.classList.remove('is-dragover'));
+  on(drop, 'drop', event => {
     event.preventDefault(); drop.classList.remove('is-dragover');
     if (!input.disabled && event.dataTransfer?.files[0]) choose(event.dataTransfer.files[0]);
   });
   // Dropping outside the target must not navigate away from a recording.
-  document.addEventListener('dragover', event => {
+  on(document, 'dragover', event => {
     if (event.dataTransfer?.types.includes('Files')) event.preventDefault();
   });
-  document.addEventListener('drop', event => {
+  on(document, 'drop', event => {
     if (!event.dataTransfer?.files.length || event.defaultPrevented) return;
     event.preventDefault();
     if (!input.disabled) { setMode('file'); choose(event.dataTransfer.files[0]); }
   });
-  cancel.addEventListener('click', () => deps.state.mediaImportController?.abort());
-  button.addEventListener('click', async () => {
+  on(cancel, 'click', () => deps.state.mediaImportController?.abort());
+  on(button, 'click', async () => {
     if (button.disabled || !file || deps.isRecordingInteractionLocked() || deps.state.summaryInFlight || deps.state.proofreadInFlight) return;
     if (!deps.confirmWorkspaceDiscard('ファイルの文字起こし結果に置き換え')) return;
-    const controller = new AbortController(); deps.state.mediaImportController = controller;
+    const controller = new AbortController(); activeController = controller; deps.state.mediaImportController = controller;
     preview.reset();
     deps.updateSaveControls(); deps.setSessionSettingsLocked(); deps.updateDownloadLinks(); deps.renderHistoryList(); deps.syncUnloadProtection();
     status.textContent = 'ファイルを送信しています…'; progress.hidden = false; progress.removeAttribute('value');
     const uploadBegan = Date.now();
-    const uploadTimer = setInterval(() => {
+    uploadTimer = setInterval(() => {
       status.textContent = `ファイルを送信しています… · ${Math.floor((Date.now() - uploadBegan) / 1000)}秒経過`;
     }, 1000);
     let result = null;
@@ -122,7 +137,7 @@ export function createMediaImportController(deps) {
       clearInterval(uploadTimer);
       if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error || error.detail || 'import_failed'); }
       await readSseJsonStream(response, event => {
-        if (controller.signal.aborted) return;
+        if (disposed || controller.signal.aborted) return;
         if (event.type === 'error') throw new Error(event.error);
         if (event.type === 'status') {
           status.textContent = event.message;
@@ -134,7 +149,7 @@ export function createMediaImportController(deps) {
         }
         if (event.type === 'done') result = event;
       });
-      if (!result || controller.signal.aborted) throw new Error('import_interrupted');
+      if (disposed || !result || controller.signal.aborted) throw new Error('import_interrupted');
       deps.commitNewRecordingWorkspace(); deps.state.liveCapture?.dispose(); deps.state.liveCapture = null;
       deps.state.runtimeSessionId = result.sessionId; deps.state.runtimeSessionToken = ''; deps.state.runtimeSessionFinalized = true;
       deps.state.recordingAudioSource = 'file'; deps.saveTitleInputEl.value = result.title;
@@ -144,16 +159,33 @@ export function createMediaImportController(deps) {
       progress.value = 100; status.textContent = '完了しました。履歴への保存・議事録の作成・書き出しができます。';
       deps.showToast('ファイルの文字起こしが完了しました', 'success');
     } catch (error) {
+      if (disposed) return;
       status.textContent = controller.signal.aborted ? 'キャンセルしました。表示中の結果はそのまま残ります。'
         : messages[error.message] || '取り込みに失敗しました。表示中の結果はそのまま残ります。再試行してください。';
       result = null; controller.abort();
       progress.hidden = true;
     } finally {
-      clearInterval(uploadTimer); preview.reset();
-      deps.state.mediaImportController = null; deps.startBtn.disabled = deps.runtimeUi.appLocked || !deps.state.asrAvailable;
-      deps.updateSaveControls(); deps.setSessionSettingsLocked(); deps.updateDownloadLinks(); deps.renderHistoryList(); deps.syncUnloadProtection();
-      if (result && !controller.signal.aborted) deps.meetingWorkspace.refresh({ transcriptChanged: true });
+      clearInterval(uploadTimer); uploadTimer = null;
+      if (!disposed) {
+        preview.reset(); activeController = null;
+        if (deps.state.mediaImportController === controller) deps.state.mediaImportController = null;
+        deps.startBtn.disabled = deps.runtimeUi.appLocked || !deps.state.asrAvailable;
+        deps.updateSaveControls(); deps.setSessionSettingsLocked(); deps.updateDownloadLinks(); deps.renderHistoryList(); deps.syncUnloadProtection();
+        if (result && !controller.signal.aborted) deps.meetingWorkspace.refresh({ transcriptChanged: true });
+      }
     }
   });
-  sync(); return { sync };
+  sync();
+  return { sync, dispose() {
+    disposed = true;
+    listeners.splice(0).forEach(remove => remove());
+    clearInterval(uploadTimer); uploadTimer = null;
+    activeController?.abort('disposed');
+    if (activeController && deps.state.mediaImportController === activeController) {
+      deps.state.mediaImportController = null;
+      deps.startBtn.disabled = deps.runtimeUi.appLocked || !deps.state.asrAvailable;
+      deps.updateSaveControls(); deps.setSessionSettingsLocked(); deps.updateDownloadLinks(); deps.renderHistoryList(); deps.syncUnloadProtection();
+    }
+    preview.reset(); file = null;
+  } };
 }

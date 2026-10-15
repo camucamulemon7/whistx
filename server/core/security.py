@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from fastapi import Request
+from starlette.requests import HTTPConnection
 from fastapi.responses import Response
 
 from .config import settings
@@ -61,7 +62,7 @@ def digest_guest_artifact_grant(grant_id: str) -> str:
     ).hexdigest()
 
 
-def read_guest_artifact_grant(request: Request) -> str | None:
+def read_guest_artifact_grant(request: HTTPConnection) -> str | None:
     payload = unsigned_payload(request.cookies.get(GUEST_ARTIFACT_COOKIE_NAME))
     if not isinstance(payload, dict):
         return None
@@ -148,7 +149,7 @@ def external_url_for(request: Request, route_name: str, /, **path_params: Any) -
     return str(url.replace(scheme=_request_external_scheme(request), netloc=_request_external_host(request)))
 
 
-def client_ip(request: Request) -> str:
+def client_ip(request: HTTPConnection) -> str:
     if _proxy_is_trusted(request):
         forwarded = _first_proxy_value(request.headers.get("x-forwarded-for"))
         if forwarded:
@@ -159,7 +160,7 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client and request.client.host else "unknown"
 
 
-def origin_is_allowed(request: Request) -> bool:
+def origin_is_allowed(request: HTTPConnection) -> bool:
     origin = (request.headers.get("origin") or "").strip()
     if not origin:
         return True
@@ -228,7 +229,7 @@ def clear_session_cookie(*, response: Response, request: Request, cookie_name: s
     )
 
 
-def _request_external_scheme(request: Request) -> str:
+def _request_external_scheme(request: HTTPConnection) -> str:
     if _proxy_is_trusted(request):
         x_forwarded_proto = _first_proxy_value(request.headers.get("x-forwarded-proto"))
         if x_forwarded_proto:
@@ -240,7 +241,7 @@ def _request_external_scheme(request: Request) -> str:
     return request.url.scheme
 
 
-def _request_external_host(request: Request) -> str:
+def _request_external_host(request: HTTPConnection) -> str:
     if _proxy_is_trusted(request):
         x_forwarded_host = _first_proxy_value(request.headers.get("x-forwarded-host"))
         if x_forwarded_host:
@@ -255,7 +256,7 @@ def _request_external_host(request: Request) -> str:
     return next((item for item in settings.app_allowed_hosts if item != "*"), request.url.netloc)
 
 
-def _proxy_is_trusted(request: Request) -> bool:
+def _proxy_is_trusted(request: HTTPConnection) -> bool:
     if not settings.app_trust_proxy_headers or not settings.app_trusted_proxy_ips:
         return False
     peer = request.client.host if request.client and request.client.host else ""

@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from ..core.blocking import blocking_work_pool
 from ..core.config import settings
 from ..core.public_errors import public_error
-from ..langfuse_observer import LangfuseObserver
+from ..langfuse_observer import Observer
 from ..schemas import ProofreadRequest, SummarizeRequest
 from ..summarizer import OpenAISummarizer
 from ..transcription.messages import as_str as _as_str
@@ -19,7 +19,7 @@ from .glossary_service import apply_shared_glossary_replacements, load_shared_gl
 logger = logging.getLogger(__name__)
 
 
-async def summarize(payload: SummarizeRequest, *, summarizer: OpenAISummarizer | None, observer: LangfuseObserver | None = None) -> JSONResponse:
+async def summarize(payload: SummarizeRequest, *, summarizer: OpenAISummarizer | None, observer: Observer | None = None) -> JSONResponse:
     if summarizer is None:
         return JSONResponse(
             status_code=503,
@@ -92,7 +92,7 @@ async def summarize(payload: SummarizeRequest, *, summarizer: OpenAISummarizer |
 
 
 
-async def proofread(payload: ProofreadRequest, *, proofreader: OpenAISummarizer | None, observer: LangfuseObserver | None = None) -> JSONResponse:
+async def proofread(payload: ProofreadRequest, *, proofreader: OpenAISummarizer | None, observer: Observer | None = None) -> JSONResponse:
     if proofreader is None:
         return JSONResponse(
             status_code=503,
@@ -159,7 +159,7 @@ async def proofread(payload: ProofreadRequest, *, proofreader: OpenAISummarizer 
 
 
 
-async def proofread_stream(payload: ProofreadRequest, *, proofreader: OpenAISummarizer | None, observer: LangfuseObserver | None = None) -> Response:
+async def proofread_stream(payload: ProofreadRequest, *, proofreader: OpenAISummarizer | None, observer: Observer | None = None) -> Response:
     if proofreader is None:
         return JSONResponse(
             status_code=503,

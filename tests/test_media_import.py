@@ -112,7 +112,7 @@ class MediaImportTests(unittest.TestCase):
     def test_completed_import_can_be_manually_refined(self):
         result = self.run_import(pcm(.3))
         snapshot = load_meeting(user_id=71, runtime_session_id=result['sessionId'])
-        model = SimpleNamespace(transcribe_chunk=lambda *a, **kw: SimpleNamespace(text='再認識しました。'), client=SimpleNamespace(close=lambda: None))
+        model = SimpleNamespace(transcribe_chunk=lambda *a, **kw: SimpleNamespace(text='再認識しました。'), client=SimpleNamespace(close=lambda: None), close=lambda: None)
         events = list(meeting_refinement.refine_events(snapshot, cancelled=self.cancelled,
             transcriber_factory=lambda **kw: model))
         self.assertEqual(events[-1]['type'], 'done')

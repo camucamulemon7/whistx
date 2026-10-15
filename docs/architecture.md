@@ -8,7 +8,7 @@
 Browser
   ├─ HTTP ───────> api/routes ──> services ──> repositories ──> database
   │                                  └────────> artifact storage ──> filesystem
-  └─ WebSocket ─> api/ws ──────> runtime ────> transcription/*
+  └─ WebSocket ─> api/ws ──────────────────> transcription/*
                                              ├─> audio_pipeline
                                              ├─> openai_whisper
                                              ├─> transcript_store
@@ -41,7 +41,8 @@ main.js
 | ASGI app | `server/core/application.create_app()` | `server/app.py` はインスタンス公開だけ |
 | HTTP routes | `server/api/routes/` | runtimeにはデコレータを置かない |
 | WebSocket入口 | `server/api/ws/transcribe.py` | 認証・guest制限を所有 |
-| Live session | `server/transcription/session.py` | runtimeは生成・終了を調停 |
+| Live session | `server/transcription/session.py` | coordinatorは接続ごとの生成・終了を調停 |
+| 長寿命resource | `app.state.runtime_resources` | runtimeがlifespanで生成・破棄、routeが明示的に渡す |
 | chunk protocol | `server/transcription/messages.py` | client側は `web/src/transcription/websocket.js` |
 | ASR worker | `server/transcription/worker.py` | 依存は `WorkerDependencies` で明示 |
 | 要約・校正処理 | `services/summary_service.py` | routeがruntimeのmodel/observerを明示引数で渡す。request schemaは`schemas.py` |
@@ -58,7 +59,11 @@ main.js
 
 `server.app:app` が唯一の公開エントリーポイントである。`create_app()` はmiddleware、router、static mountを一度だけ登録する。startup/shutdownはFastAPI lifespanからのみ実行する。`runtime.py` は外部クライアントと長寿命リソースの構築・破棄を担当するが、FastAPI appやrouteを生成しない。
 
-プロセス内の可変状態は現在、ASR/LLM client、active WebSocket、cleanup task、OIDC discovery cache、rate-limit bucketに限る。LiveSessionの状態は接続ごとのdataclassへ閉じ、ASR workerの依存は明示的な`WorkerDependencies`で渡す。複数worker間で共有すべき制限は将来外部storeへ移す必要がある。
+`create_app()` ごとに新しい `RuntimeResources` を所有する。HTTP routeは `get_runtime_resources`、WebSocket routeは接続先appのstateから取得する。LLM client、observer、active WebSocket、定期task、OIDC discovery cacheを別appと共有しない。startup途中の失敗でも生成済みtaskをcancel/awaitし、workerのdrain後にclientとobserverを解放する。ASR adapterとLLM adapterの `close()` が内部HTTP clientを閉じ、呼び出し側は `.client` を直接操作しない。接続ごとのASR adapterはsession/media workerが所有する。
+
+設定、DB engine、`BlockingWorkPool` は引き続きプロセス単位である。poolは待機中のcancel/queue timeoutでは同期関数を実行せず、実行開始後はcancelを受けても実thread終了までpermitと呼び出し元の資源を保持する。`drain()` は待機中・実行中の両方を待つ。shutdownは新しい要求の受付終了後にdrainし、共有clientを閉じる。同期処理自体の終了時刻はprovider timeoutに依存する。
+
+LiveSessionの状態は接続ごとのdataclassへ閉じ、ASR workerの依存は明示的な`WorkerDependencies`で渡す。WebSocket認証はDB sessionの開始からcommit/closeまで同一worker threadで行い、event loopにはuser IDとactive状態だけを返す。
 
 ## 履歴とartifactの整合性境界
 
@@ -70,6 +75,8 @@ main.js
 
 DBは一覧・検索・認可・正規化segmentのsource of truth、filesystemはダウンロード可能なbyte artifactのsource of truthである。どちらか片方だけを「履歴全体のsource of truth」とは扱わない。
 
+定期削除はretentionと期限切れsessionのDB変更を先にcommitし、次のtransactionでartifact削除outboxと整合性scanを実行する。commit前の失敗ではDB変更をrollbackし、filesystemを削除しない。filesystem削除の失敗はoutboxの再試行情報に残り、以降のcleanupで再実行する。予期しないcleanup失敗はreason付きwarningと戻り値で観測できる。
+
 ## 維持・統合・削除
 
 | 判定 | モジュール | 理由 |
@@ -79,7 +86,7 @@ DBは一覧・検索・認可・正規化segmentのsource of truth、filesystem�
 | 維持 | `api/routes`, `api/ws` | framework境界 |
 | 維持 | `services`, `repositories` | 業務処理と永続化の明確な境界 |
 | 維持 | `transcription/*` | session/protocol/workerのテスト可能な境界 |
-| 維持 | `runtime.py` | 長寿命resourceとリアルタイムフローのcomposition root |
+| 維持 | `runtime.py` | 長寿命resourceのcomposition root |
 | 削除済み | `legacy_app.py` | 重複app・重複routeを持つ移行集約層 |
 | 削除済み | `server/config.py` | `core/config`への薄い互換export |
 | 削除済み | `server.app`の互換関数/export | ASGI entrypointの責務外 |
@@ -112,7 +119,7 @@ DBは一覧・検索・認可・正規化segmentのsource of truth、filesystem�
 - Live/Qwen capture: `transcription/live.py` and `qwen_live.py`; resources come from the WebSocket route.
 - Cleanup: `services/runtime_cleanup.py`; outbox processing starts after the retention transaction commits.
 - Capabilities: `services/health_service.py`, used by the readiness route.
-- Resource construction/lifecycle: `runtime.py`; its WebSocket function injects resources into the coordinator.
+- Resource construction/lifecycle: `runtime.py`; HTTP/WebSocket routes obtain resources from their app and pass them to services/coordinators.
 
 `core/runtime_resources.RuntimeResources` owns clients, active sockets and lifecycle tasks.
 The composition root exposes the resource object in `app.state.runtime_resources` and passes it
@@ -132,8 +139,20 @@ transcription, transcript, history, auth, AI, layout, settings, glossary,
 capabilities, telemetry and workspace protection. Cross-feature callbacks resolve
 through the composition context so they observe current resources and state.
 Controllers do not import the app and constructors do not register events or read
-DOM/state; the app wires listeners once after all controllers exist. The module
-entry's line budget and inert constructors are regression-tested.
+DOM/state. The app wires listeners once after all controllers exist. Controllers
+that own event wiring expose explicit `mount()` / `dispose()` methods: media import
+mount is idempotent, dispose removes listeners/timers and aborts its request, and
+remount starts a fresh lifetime. Late responses cannot change a newer operation.
+All exported controller factories are discovered automatically for the inert
+constructor test; the module entry's line budget is also regression-tested.
+
+Recording, media capture, history, transcript and media import receive bounded
+interfaces defined in `controllers/dependencies.js`. Only listed callbacks and
+state fields are exposed; adding an undeclared field is rejected. Getters resolve
+the current app context and store, preserving cross-feature callbacks and state
+replacement. A feature's imported state helpers use this same declared interface.
+These boundaries limit top-level access; nested objects such as history remain
+shared with the single app store.
 
 `ui/notifications.js` owns banner dismissal and toast rendering.
 `ui/modals.js` owns stack order, focus restoration and body scroll locking.
@@ -152,5 +171,5 @@ No cascade layers or new design rules are introduced.
 Issue #72's prerequisite is satisfied: closed Issue #82 identifies Claude's
 completed refresh, commit `d50bac6` is included by merged PR #83 and is an ancestor
 of main. PR #84 and later UI changes are also integrated. This separation retains
-the existing state schema and UI behavior; narrower per-feature state interfaces
-can be developed later without changing the composition entry.
+the existing state schema and UI behavior. Per-feature interfaces are applied
+incrementally without replacing the app store or changing capture protocols.

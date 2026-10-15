@@ -202,10 +202,10 @@ class RegressionTests(unittest.TestCase):
     def test_create_app_uses_lifespan_startup_and_shutdown(self) -> None:
         events: list[str] = []
 
-        async def fake_startup() -> None:
+        async def fake_startup(resources) -> None:
             events.append('startup')
 
-        async def fake_shutdown() -> None:
+        async def fake_shutdown(resources) -> None:
             events.append('shutdown')
 
         with patch.object(application_core.runtime, 'on_startup', side_effect=fake_startup):

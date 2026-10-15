@@ -220,6 +220,9 @@ class LangfuseObserver:
         return payload
 
 
+Observer = LangfuseObserver | _NoopObserver
+
+
 def make_langfuse_observer(
     *,
     public_key: str,
@@ -229,7 +232,7 @@ def make_langfuse_observer(
     release: str | None,
     enabled: bool,
     capture_content: bool = False,
-) -> LangfuseObserver | _NoopObserver:
+) -> Observer:
     observer = LangfuseObserver(
         public_key=public_key,
         secret_key=secret_key,

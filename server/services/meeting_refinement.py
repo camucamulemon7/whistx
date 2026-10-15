@@ -109,4 +109,4 @@ def refine_events(snapshot, *, cancelled, transcriber_factory=None, allow_reques
             write_json_atomic(metadata_path, metadata)
             yield {'type': 'done', 'records': finals, 'model': settings.asr_model, 'message': '音声から再認識しました。原文は保存されています。'}
         finally:
-            model.client.close()
+            model.close()

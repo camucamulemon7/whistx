@@ -209,6 +209,8 @@ class RefinementTests(unittest.TestCase):
             audio.write_bytes(pcm_wav(b'\x01\0'*16000))
             snapshot = MeetingSnapshot('runtime:test', path, path.with_suffix('.meeting.json'), [], [], 'r1',2000,True)
             class Transcriber:
+                def close(self):
+                    self.client.close()
                 calls = 0
                 client = SimpleNamespace(close=lambda: None)
                 def __init__(self, **kwargs):
@@ -256,7 +258,7 @@ class LiveResumeTests(unittest.IsolatedAsyncioTestCase):
                     return getattr(settings, key)
 
             ws = SimpleNamespace(state=SimpleNamespace(authenticated_user_id=123, is_guest=False), cookies={})
-            model = SimpleNamespace(client=SimpleNamespace(close=lambda: None))
+            model = SimpleNamespace(client=SimpleNamespace(close=lambda: None), close=lambda: None)
             with patch('server.transcription.live.settings', Config()), \
                  patch.object(LiveMeeting, 'create_transcriber', return_value=model):
                 live = LiveMeeting(ws, dict(tracks=['mic'], language='ja'))
@@ -285,6 +287,8 @@ class LiveResumeTests(unittest.IsolatedAsyncioTestCase):
             def close(self):
                 pass
         class Transcriber:
+            def close(self):
+                self.client.close()
             client = Client()
             def __init__(self, **kwargs):
                 pass
@@ -347,6 +351,8 @@ class MeetingApiTests(unittest.TestCase):
         from server.api.routes.summary import router
         from server.deps import get_current_user
         app = FastAPI()
+        from server.core.runtime_resources import RuntimeResources
+        app.state.runtime_resources = RuntimeResources()
         app.include_router(router)
         with TestClient(app) as client:
             for path in ('insights', 'recap', 'ask', 'refine', 'translate'):
@@ -358,7 +364,7 @@ class MeetingApiTests(unittest.TestCase):
                 self.assertEqual(client.post('/api/meeting/'+path, json=payload).status_code, 401)
             app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=123)
             model = SimpleNamespace(model='fixture', stream_meeting=lambda messages: iter(['公開日は未定です。[S1]']))
-            with patch('server.api.routes.summary._meeting_source', AsyncMock(return_value=self.snapshot)), patch('server.api.routes.summary._allow_costly_request', return_value=True), patch('server.api.routes.summary.runtime.resources.summarizer', model):
+            with patch('server.api.routes.summary._meeting_source', AsyncMock(return_value=self.snapshot)), patch('server.api.routes.summary._allow_costly_request', return_value=True), patch.object(app.state.runtime_resources, 'summarizer', model):
                 response = client.post('/api/meeting/ask', json=dict(runtimeSessionId='test', question='公開日は？'))
                 self.assertEqual(response.status_code, 200)
                 self.assertIn('text/event-stream', response.headers['content-type'])

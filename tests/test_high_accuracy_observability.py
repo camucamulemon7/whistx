@@ -24,13 +24,15 @@ class ObservationTests(unittest.TestCase):
         from server.deps import get_current_user
 
         app = FastAPI()
+        from server.core.runtime_resources import RuntimeResources
+        app.state.runtime_resources = RuntimeResources()
         app.include_router(router)
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=123)
         observer, _ = recording_observer()
         with TestClient(app) as client, \
                 patch('server.api.routes.summary._meeting_source', AsyncMock(return_value=SimpleNamespace(finalized=True))), \
                 patch('server.api.routes.summary._allow_costly_request', return_value=True), \
-                patch('server.api.routes.summary.runtime.resources.observer', observer), \
+                patch.object(app.state.runtime_resources, 'observer', observer), \
                 patch('server.api.routes.summary.refine_events', return_value=iter([{'type': 'done'}])) as refine:
             self.assertEqual(client.post('/api/meeting/refine', json={'runtimeSessionId': 'synthetic'}).status_code, 200)
             self.assertIs(refine.call_args.kwargs['observer'], observer)
@@ -130,7 +132,7 @@ class RefinementObservationTests(unittest.TestCase):
                 config = SimpleNamespace(asr_backend=backend, openai_api_key='synthetic-key',
                     openai_base_url='http://synthetic.invalid', asr_model='synthetic-model', debug_chunks_dir=root)
                 model = SimpleNamespace(transcribe_chunk=lambda *a, **kw: SimpleNamespace(text='合成の結果'),
-                                        client=SimpleNamespace(close=lambda: None))
+                                        client=SimpleNamespace(close=lambda: None), close=lambda: None)
                 observer, calls = recording_observer()
                 with patch('server.services.meeting_refinement.settings', config), \
                         patch('server.services.meeting_refinement.resolve_debug_audio_path', return_value=audio), \
