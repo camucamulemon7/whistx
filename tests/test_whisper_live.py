@@ -198,7 +198,6 @@ class WhisperDualLaneTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(all(r['language'] == 'ja' and r['temperature'] == 0 for r in rt.requests + hq.requests))
                 self.assertEqual(factories[0].call_args.kwargs['model'], factories[1].call_args.kwargs['model'])
                 self.assertEqual(hq.options['timeout'], config.asr_high_accuracy_timeout_seconds)
-                self.assertEqual(live.data['asrRequests'], len(rt.requests) + len(hq.requests))
                 with patch('server.services.meeting_source.settings', config), patch('server.services.meeting_source.runtime_access_allowed', return_value=True):
                     snapshot = load_meeting(user_id=123, runtime_session_id=live.session_id)
                 self.assertFalse(snapshot.finalized)
@@ -211,6 +210,9 @@ class WhisperDualLaneTests(unittest.IsolatedAsyncioTestCase):
                 live.stopping = True
                 await asyncio.wait_for(worker, 10)
                 self.assertTrue(live.data['finalized'])
+                # Budget is reserved before a worker starts the HTTP call.
+                # Compare totals after both lanes drain, not during an RT request.
+                self.assertEqual(live.data['asrRequests'], len(rt.requests) + len(hq.requests))
                 rows = read_jsonl_records(live.store.jsonl_path)
                 self.assertEqual([r['endSample'] for r in rows], [30 * RATE, 40 * RATE])
                 self.assertTrue(all(r['quality'] == 'high_accuracy' for r in rows))
