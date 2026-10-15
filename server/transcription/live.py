@@ -40,6 +40,8 @@ MAX_MEETING_SAMPLES = 4 * 60 * 60 * SAMPLE_RATE
 
 class LiveMeeting:
     update_samples = UPDATE_SAMPLES
+    # Only adapters using the same conservative PCM gate may reuse its result.
+    reuse_pcm_bounds = False
 
     def __init__(self, ws: WebSocket, payload: dict, *, resources=None):
         self.resources = resources
@@ -300,7 +302,8 @@ class LiveMeeting:
         context = " ".join(str(row.get("text") or "") for row in self.records[-6:] if row.get("type") == "final")[-300:]
         prompt = (self.data["vocabulary"][:250] + " " + self.data["prompt"][:200] + " " + context).strip()
         result = await blocking_work_pool.run("asr", self.transcriber.transcribe_chunk, pcm_wav(pcm), mime_type="audio/wav",
-                                             language=self.data["language"] or None, prompt=prompt or None, temperature=0.0)
+                                             language=self.data["language"] or None, prompt=prompt or None, temperature=0.0,
+                                             pcm_bounds=bounds if self.reuse_pcm_bounds else None)
         text = _sanitize_transcript_text(result.text, language=self.data["language"]).strip()
         previous = state["hypothesis"]
         stable = agreed_prefix(previous, text)
