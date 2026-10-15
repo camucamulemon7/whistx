@@ -45,8 +45,9 @@ class OpenAIWhisperTranscriber:
         prompt: str | None,
         temperature: float,
         trace_context: dict[str, str] | None = None,
+        pcm_bounds: tuple[int, int] | None = None,
     ) -> ASRChunkResult:
-        audio_bytes, audio_offset_ms, silence_detected = prepare_whisper_wav(audio_bytes, mime_type)
+        audio_bytes, audio_offset_ms, silence_detected = prepare_whisper_wav(audio_bytes, mime_type, bounds_hint=pcm_bounds)
         if silence_detected:
             return ASRChunkResult(text='', start_ms=None, end_ms=None, silence_detected=True)
         language = None if not language or language.strip().lower() == "auto" else language.strip().lower()

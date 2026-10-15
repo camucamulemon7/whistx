@@ -93,6 +93,21 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
         limit = min(start + self.data['rtWindowSamples'], (start // hq_size + 1) * hq_size)
         sent = start
         text = ''
+        checked_end = None
+        checked_pcm = b''
+        checked_bounds = None
+
+        async def captured_audio(end):
+            nonlocal checked_end, checked_pcm, checked_bounds
+            # Deltas often arrive in a burst for the same PCM prefix. Cache
+            # both speech and silence only until that prefix grows; a short
+            # acknowledgement after silence must trigger a fresh gate.
+            if checked_end != end:
+                pcm = await blocking_work_pool.run('artifact', self._read_audio, track, start, end)
+                bounds = await blocking_work_pool.run('media', speech_bounds, pcm)
+                checked_end, checked_pcm, checked_bounds = end, pcm, bounds
+            return checked_pcm, checked_bounds
+
         await self._request_budget()
         self.pending_rt.add(track)
         try:
@@ -104,9 +119,9 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
                 if self.disconnected:
                     return
                 sent = min(state['received'], limit)
-                pcm = await blocking_work_pool.run('artifact', self._read_audio, track, start, sent)
-                if await blocking_work_pool.run('media', speech_bounds, pcm) is not None:
-                    audio, _, _ = await blocking_work_pool.run('media', prepare_pcm_wav, pcm_wav(pcm), 'audio/wav')
+                pcm, bounds = await captured_audio(sent)
+                if bounds is not None:
+                    audio, _, _ = await blocking_work_pool.run('media', prepare_pcm_wav, pcm_wav(pcm), 'audio/wav', bounds_hint=bounds)
                     async with httpx.AsyncClient(headers={'Authorization': 'Bearer ' + settings.openai_api_key},
                                                  timeout=settings.asr_api_timeout_seconds) as client:
                         endpoint, options = self._batch_request(audio, mime_type='audio/wav', model=settings.asr_model,
@@ -122,13 +137,14 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
                             event = await stream.receive()
                             if event.get('type') == 'transcription.delta':
                                 text += event.get('delta', '')
-                                captured = await blocking_work_pool.run('artifact', self._read_audio, track, start, sent)
-                                if await blocking_work_pool.run('media', speech_bounds, captured) is None:
+                                captured_end = sent
+                                _, bounds = await captured_audio(captured_end)
+                                if bounds is None:
                                     text = ''
                                     continue
                                 await self.send(dict(type='partial', track=track, segmentId=f'{track}-rt-{start}',
                                     text=clean_qwen_text(text, final=False), stableText='', quality='realtime',
-                                    tsStart=start * 1000 // SAMPLE_RATE, tsEnd=sent * 1000 // SAMPLE_RATE))
+                                    tsStart=start * 1000 // SAMPLE_RATE, tsEnd=captured_end * 1000 // SAMPLE_RATE))
                             elif event.get('type') == 'transcription.done':
                                 text = event.get('text', text)
                     receiver = asyncio.create_task(receive())
@@ -154,12 +170,12 @@ class QwenLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
                         if not receiver.done():
                             receiver.cancel()
                         await asyncio.gather(receiver, return_exceptions=True)
-            pcm = await blocking_work_pool.run('artifact', self._read_audio, track, start, sent)
+            pcm, bounds = await captured_audio(sent)
             text = clean_qwen_text(text)
             silence_samples = settings.asr_high_accuracy_silence_ms * SAMPLE_RATE // 1000
             quiet_tail = len(pcm) >= silence_samples * 2 and await blocking_work_pool.run(
                 'media', speech_bounds, pcm[-silence_samples * 2:]) is None
-            if await blocking_work_pool.run('media', speech_bounds, pcm) is None:
+            if bounds is None:
                 text = ''
             async with self.state_lock:
                 record = None

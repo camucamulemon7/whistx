@@ -23,6 +23,7 @@ class WhisperLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
     realtime_failure_detail = '音声は保存されています。Whisperの接続と停止処理を再試行してください。'
     hq_lock_name = '.whisper-hq.lock'
     retain_failed_hq = True
+    reuse_pcm_bounds = True
 
     @property
     def lane_settings(self):

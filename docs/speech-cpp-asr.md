@@ -40,6 +40,34 @@ Run `scripts/verify_speech_cpp.py --help` from the repository root. It creates a
 
 Mock tests cover HTTP status/timeout failures, native and LiteLLM stop headers, pure format conversion, common URL/model/key selection, cancellation with retained source, retired-secret masking and existing Whisper behavior. Real-model tests and simulated model-limit tests are reported separately. Physical microphone capture, production PostgreSQL and future OpenAI Realtime relay are not covered by this synthetic workflow.
 
+### Reusing the live PCM gate
+
+The Whisper and speech.cpp live lanes pass the already computed conservative speech bounds to their HTTP adapter for the exact same PCM WAV. Trimming and timestamp offsets stay identical; ordinary direct calls and HQ still run their gate, and other formats retain their existing handling. The base legacy live lane does not reuse its different energy gate. Qwen/vLLM additionally caches its PCM read and gate within each RT window until the sent sample offset changes, including silent results. Partial events retain the timestamp of the PCM snapshot actually checked. New audio, another track or another window cannot inherit the result.
+
+Run the bounded comparison with an existing ASR key exported in the environment and at least five seconds of synthetic 16 kHz mono PCM16 speech:
+
+```sh
+ASR_BASE_URL=http://127.0.0.1:4000/v1 ASR_MODEL=Qwen3-ASR-1.7B-native \
+  .venv/bin/python scripts/bench_live_pcm_gate.py \
+  --audio synthetic-ja.wav --repeats 3 --output artifacts/realtime/speech-cpp-gate.json
+```
+
+This compares duplicate gating (`before`) with reused bounds (`after`) through the real adapter at fixed 1.25/2.5/3.75/5-second sample boundaries. It alternates execution order, excludes one warmup per profile, and records HTTP completion headers, upload hashes, retained PCM and final text. Application quota writes are stubbed; gateway limits remain in effect. It does not replay microphone timing or exercise HQ, browser rendering or concurrent sessions.
+
+On 2026-10-15, Python 3.12.15/macOS arm64 through the local LiteLLM native alias, the median totals over three measured five-second windows were:
+
+| Metric per five-second window | Duplicate gate | Reused bounds |
+|---|---:|---:|
+| Gate calls | 8 | 4 |
+| Gate processing time | 111.8 ms | 67.6 ms |
+| Four complete adapter decodes, including ASR | 955.8 ms | 990.0 ms |
+
+All 32 HTTP calls including warmups returned 200 with `stop=complete`, identical uploaded WAV hashes and final text, and preserved source PCM. Gate work decreased by about 40%; the variable upstream timings did **not** establish an overall latency improvement. A separate isolated `verify_speech_cpp.py` run passed authenticated live capture, HQ, MP4 import and manual refinement with 14 successful upstream calls. It emitted an existing startup-cleanup import warning (`server.services.services`); this verification does not establish cleanup correctness. Synthetic speech is not a representative meeting accuracy benchmark.
+
+`tests/test_realtime_performance.py` also checks Qwen token bursts: 64 deltas for one unchanged one-second PCM prefix need two reads (forwarding and gate) and two gate calls (prefix and quiet tail), down from 66 each in the previous path, while preserving every partial event. Other cases cover silence followed by a short acknowledgement, track/window isolation, concurrent audio growth, unchanged speech.cpp uploads and Whisper timestamp offsets.
+
+Further validation is tracked in [#105: upstream streaming](https://github.com/camucamulemon7/whistx/issues/105), [#106: RT/HQ contention](https://github.com/camucamulemon7/whistx/issues/106), [#107: persistence and wakeup latency](https://github.com/camucamulemon7/whistx/issues/107), and [#108: end-to-end measurement](https://github.com/camucamulemon7/whistx/issues/108).
+
 ## Recording display and cadence
 
 Recording uses the main transcript below the status controls. The separate green interim card, its HTML container, background/padding CSS and old renderer remain removed. The HTTP recognizer's LocalAgreement-2 `stableText` now extends a lightweight text node within the lower paragraph immediately. Volatile hypotheses are omitted; repeated updates and regressing agreed prefixes do not erase/retype visible progress. No typewriter queue or text timer is added. Final records replace the provisional span with the complete authoritative result. Earlier HQ replacement preserves current progress; ready/reconnect and successful finalization clear temporary spans.
