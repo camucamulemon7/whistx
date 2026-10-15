@@ -20,13 +20,13 @@ class RuntimeCompositionTests(unittest.IsolatedAsyncioTestCase):
                 return getattr(original, name)
         resources = RuntimeResources()
         observer, audio, model, diarizer = Mock(), Mock(), Mock(), Mock()
-        with patch.object(runtime, 'resources', resources), patch.object(runtime, 'settings', Config()), \
+        with patch.object(runtime, 'settings', Config()), \
              patch.object(runtime.runtime_cleanup, 'run_cleanup_once') as cleanup, \
              patch.object(runtime, 'make_langfuse_observer', return_value=observer), \
              patch.object(runtime, 'AudioPreprocessor', return_value=audio), \
              patch.object(runtime, 'OpenAISummarizer', return_value=model), \
              patch.object(runtime, 'PyannoteSpeakerDiarizer', return_value=diarizer):
-            await runtime.on_startup()
+            await runtime.on_startup(resources)
             tasks = (resources.cleanup_task, resources.event_loop_monitor_task)
             try:
                 self.assertIs(resources.audio_preprocessor, audio)
@@ -34,11 +34,11 @@ class RuntimeCompositionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(resources.proofreader, model)
                 self.assertIs(resources.diarizer, diarizer)
                 self.assertIsNotNone(resources.transcriber_factory)
-                self.assertIs(create_app().state.runtime_resources, resources)
+                self.assertIsNot(create_app().state.runtime_resources, resources)
                 cleanup.assert_called_once_with('startup')
                 diarizer.preflight.assert_called_once()
             finally:
-                await runtime.on_shutdown()
+                await runtime.on_shutdown(resources)
         self.assertTrue(all(task.done() for task in tasks))
         self.assertIsNone(resources.cleanup_task)
         self.assertIsNone(resources.event_loop_monitor_task)

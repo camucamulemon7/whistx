@@ -8,7 +8,7 @@ from typing import Any
 
 from openai import BadRequestError, OpenAI
 from .core.logging import emit_container_log
-from .langfuse_observer import LangfuseObserver
+from .langfuse_observer import Observer
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,9 @@ class ProofreadResult:
 
 
 class OpenAISummarizer:
+    def close(self) -> None:
+        self.client.close()
+
     def __init__(
         self,
         *,
@@ -44,7 +47,7 @@ class OpenAISummarizer:
         proofread_system_prompt: str = "",
         proofread_prompt_template: str = "",
         timeout_seconds: float = 60.0,
-        observer: LangfuseObserver | None = None,
+        observer: Observer | None = None,
     ):
         if not api_key:
             raise RuntimeError("SUMMARY_API_KEY (or ASR_API_KEY / OPENAI_API_KEY) is not set")

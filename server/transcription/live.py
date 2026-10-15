@@ -138,7 +138,7 @@ class LiveMeeting:
 
     def close(self):
         if self.transcriber is not None:
-            self.transcriber.client.close()
+            self.transcriber.close()
         if self.lock:
             self.lock.close()
 

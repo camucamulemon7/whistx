@@ -286,11 +286,10 @@ class SpeechCppReadinessTests(unittest.IsolatedAsyncioTestCase):
         from server.api.routes import health
         for configured in (True, False):
             with patch.object(health, 'settings', SimpleNamespace(openai_api_key='', asr_backend='speech_cpp')), \
-                    patch.object(health.runtime, 'resources', SimpleNamespace(transcriber_factory=object() if configured else None)), \
                     patch.object(health, 'schema_revision_status', return_value=SimpleNamespace(
                         ready=True, current_revisions=('synthetic',), expected_revisions=('synthetic',))), \
                     patch.object(health.health_service, 'health', new=AsyncMock(return_value=JSONResponse({}))):
-                result = await health._readiness_response()
+                result = await health._readiness_response(SimpleNamespace(transcriber_factory=object() if configured else None))
                 payload = json.loads(result.body)
                 self.assertTrue(payload['asr']['required'])
                 self.assertEqual(payload['asr']['ready'], configured)

@@ -12,7 +12,7 @@ from openai import BadRequestError, APIConnectionError, APIStatusError, APITimeo
 from .asr import ASRChunkResult
 from .core.config import settings
 from .core.logging import emit_container_log
-from .langfuse_observer import LangfuseObserver
+from .langfuse_observer import Observer
 from .whisper_audio import prepare_whisper_wav
 
 
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class OpenAIWhisperTranscriber:
-    def __init__(self, *, api_key: str, base_url: str | None, model: str, observer: LangfuseObserver | None = None):
+    def __init__(self, *, api_key: str, base_url: str | None, model: str, observer: Observer | None = None):
         if not api_key:
             raise RuntimeError("ASR_API_KEY (or OPENAI_API_KEY) is not set")
 
@@ -221,7 +221,7 @@ class OpenAIWhisperTranscriber:
         )
 
     def close(self) -> None:
-        return None
+        self.client.close()
 
 
 

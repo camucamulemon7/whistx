@@ -175,6 +175,8 @@ class RegressionTests(unittest.TestCase):
 
     def test_summary_route_allows_authenticated_user(self) -> None:
         app = FastAPI()
+        from server.core.runtime_resources import RuntimeResources
+        app.state.runtime_resources = RuntimeResources()
         app.include_router(summary_routes.router)
         app.dependency_overrides[get_current_user] = lambda: User(
             id=1,

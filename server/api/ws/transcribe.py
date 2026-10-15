@@ -4,7 +4,7 @@ import asyncio
 
 from fastapi import APIRouter, WebSocket
 
-from ... import runtime
+from ...transcription import coordinator
 from ...core.config import settings
 from ...core.security import (
     client_ip,
@@ -31,6 +31,13 @@ async def _close_safely(ws: WebSocket, code: int, reason: str) -> None:
         pass
 
 
+def _authenticate(ws: WebSocket) -> tuple[int, bool] | None:
+    # The Session and all ORM access stay on the same worker thread.
+    with db_session() as db:
+        user = get_optional_user_from_request(ws, db)
+        return (user.id, user.is_active) if user is not None else None
+
+
 @router.websocket(settings.ws_path + "/live")
 @router.websocket(settings.ws_path)
 async def ws_transcribe(ws: WebSocket) -> None:
@@ -38,23 +45,23 @@ async def ws_transcribe(ws: WebSocket) -> None:
         await _close_safely(ws, 4403, "origin_not_allowed")
         return
 
-    with db_session() as db:
-        user = get_optional_user_from_request(ws, db)
-    if user is not None and not user.is_active:
+    identity = await asyncio.to_thread(_authenticate, ws)
+    if identity is not None and not identity[1]:
         await _close_safely(ws, 4403, "inactive_user")
         return
-    if user is not None:
+    if identity is not None:
+        user_id = identity[0]
         lease_id = await asyncio.to_thread(
             quota_repository.acquire_connection_lease,
-            subject=f"user:{user.id}",
+            subject=f"user:{user_id}",
             is_guest=False,
             ttl_seconds=24 * 60 * 60,
         )
         if lease_id is None:
             await _close_safely(ws, 4429, "connection_limit")
             return
-        ws.state.authenticated_user_id = user.id
-        ws.state.rate_limit_subject = f"user:{user.id}"
+        ws.state.authenticated_user_id = user_id
+        ws.state.rate_limit_subject = f"user:{user_id}"
         try:
             await _run_transcription(ws)
         finally:
@@ -96,6 +103,6 @@ async def ws_transcribe(ws: WebSocket) -> None:
 
 async def _run_transcription(ws: WebSocket) -> None:
     if ws.url.path == getattr(settings, "ws_path", "/ws/transcribe") + "/live":
-        await live_transcribe(ws, resources=runtime.resources)
+        await live_transcribe(ws, resources=ws.app.state.runtime_resources)
     else:
-        await runtime.ws_transcribe(ws)
+        await coordinator.ws_transcribe(ws, resources=ws.app.state.runtime_resources)

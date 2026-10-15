@@ -25,6 +25,7 @@ from server.api.routes import summary as summary_routes
 from server.api.ws import transcribe as ws_routes
 from server.core import application as application_core
 from server.core import security
+from server.core.runtime_resources import RuntimeResources
 from server.core import rate_limit
 from server.repositories import quota_repository, session_repository
 from server.services import (
@@ -119,6 +120,7 @@ class RegressionTests(unittest.TestCase):
 
     def test_ws_transcribe_rejects_unauthenticated_connection(self) -> None:
         app = FastAPI()
+        app.state.runtime_resources = RuntimeResources()
         app.include_router(ws_routes.router)
         client = TestClient(app)
 
@@ -132,17 +134,18 @@ class RegressionTests(unittest.TestCase):
 
     def test_ws_transcribe_allows_authenticated_active_user(self) -> None:
         app = FastAPI()
+        app.state.runtime_resources = RuntimeResources()
         app.include_router(ws_routes.router)
         client = TestClient(app)
         user = SimpleNamespace(id=42, is_active=True)
 
-        async def accept_and_close(ws):
+        async def accept_and_close(ws, **kwargs):
             await ws.accept()
             await ws.close()
 
         with (
             patch.object(ws_routes, 'get_optional_user_from_request', return_value=user),
-            patch.object(ws_routes.runtime, 'ws_transcribe', side_effect=accept_and_close) as handler,
+            patch.object(ws_routes.coordinator, 'ws_transcribe', side_effect=accept_and_close) as handler,
         ):
             with client.websocket_connect('/ws/transcribe'):
                 pass
@@ -169,6 +172,7 @@ class RegressionTests(unittest.TestCase):
 
     def test_ws_transcribe_rejects_cross_origin_before_authentication(self) -> None:
         app = FastAPI()
+        app.state.runtime_resources = RuntimeResources()
         app.include_router(ws_routes.router)
         client = TestClient(app)
 
@@ -186,6 +190,7 @@ class RegressionTests(unittest.TestCase):
 
     def test_ws_transcribe_allows_bounded_guest_when_enabled(self) -> None:
         app = FastAPI()
+        app.state.runtime_resources = RuntimeResources()
         app.include_router(ws_routes.router)
         client = TestClient(app)
         guest_settings = SimpleNamespace(
@@ -195,7 +200,7 @@ class RegressionTests(unittest.TestCase):
             guest_ws_max_duration_seconds=30,
         )
 
-        async def accept_and_close(ws):
+        async def accept_and_close(ws, **kwargs):
             self.assertTrue(ws.state.is_guest)
             await ws.accept()
             await ws.close()
@@ -204,7 +209,7 @@ class RegressionTests(unittest.TestCase):
             patch.object(ws_routes, 'settings', guest_settings),
             patch.object(ws_routes, 'get_optional_user_from_request', return_value=None),
             patch.object(ws_routes, 'read_guest_artifact_grant', return_value='guest-grant'),
-            patch.object(ws_routes.runtime, 'ws_transcribe', side_effect=accept_and_close) as handler,
+            patch.object(ws_routes.coordinator, 'ws_transcribe', side_effect=accept_and_close) as handler,
         ):
             with client.websocket_connect('/ws/transcribe'):
                 pass
@@ -214,6 +219,7 @@ class RegressionTests(unittest.TestCase):
 
     def test_ws_transcribe_rejects_inactive_user(self) -> None:
         app = FastAPI()
+        app.state.runtime_resources = RuntimeResources()
         app.include_router(ws_routes.router)
         client = TestClient(app)
         user = SimpleNamespace(id=42, is_active=False)
@@ -291,7 +297,6 @@ class RegressionTests(unittest.TestCase):
 
 
     def test_keycloak_login_respects_forwarded_https_headers(self) -> None:
-        from server.core.runtime_resources import RuntimeResources
         app = FastAPI()
         app.state.runtime_resources = RuntimeResources()
         app.include_router(auth_routes.router)

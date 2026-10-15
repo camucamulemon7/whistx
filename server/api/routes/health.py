@@ -4,10 +4,11 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
-from ... import runtime
+from ...deps import get_runtime_resources
+from ...core.runtime_resources import RuntimeResources
 from ...services import health_service
 from ...core.config import settings
 from ...core.logging import emit_container_log
@@ -23,17 +24,17 @@ def liveness() -> JSONResponse:
 
 
 @router.get("/api/health/ready")
-async def readiness() -> JSONResponse:
-    return await _readiness_response()
+async def readiness(resources: RuntimeResources = Depends(get_runtime_resources)) -> JSONResponse:
+    return await _readiness_response(resources)
 
 
 @router.get("/api/health")
-async def health() -> JSONResponse:
+async def health(resources: RuntimeResources = Depends(get_runtime_resources)) -> JSONResponse:
     """Backward-compatible readiness endpoint."""
-    return await _readiness_response()
+    return await _readiness_response(resources)
 
 
-async def _readiness_response() -> JSONResponse:
+async def _readiness_response(resources: RuntimeResources) -> JSONResponse:
     emit_container_log(__name__, "debug", "readiness requested")
     logger.debug("readiness requested")
     schema = await asyncio.to_thread(schema_revision_status)
@@ -50,9 +51,9 @@ async def _readiness_response() -> JSONResponse:
                 },
             },
         )
-    response = await health_service.health(resources=runtime.resources)
+    response = await health_service.health(resources=resources)
     provider_required = bool(settings.openai_api_key) or settings.asr_backend == "speech_cpp"
-    provider_ready = runtime.resources.transcriber_factory is not None
+    provider_ready = resources.transcriber_factory is not None
     payload = json.loads(response.body)
     payload.update(
         {

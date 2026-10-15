@@ -87,7 +87,7 @@ class WhisperLiveMeeting(HighAccuracyMeetingMixin, LiveMeeting):
 
     def close(self):
         if self.hq_transcriber is not None:
-            self.hq_transcriber.client.close()
+            self.hq_transcriber.close()
         super().close()
 
     def _window_end(self, start):

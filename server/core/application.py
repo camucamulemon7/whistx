@@ -18,6 +18,7 @@ from .config import settings
 from .logging import configure_application_logging, emit_container_log
 from .security import origin_is_allowed
 from .public_errors import correlation_id, public_error
+from .runtime_resources import RuntimeResources
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class RevalidatingStaticFiles(StaticFiles):
 def create_app() -> FastAPI:
     configure_application_logging(settings.app_log_level)
     app = FastAPI(title="whistx", version="2.0.0", lifespan=_app_lifespan)
-    app.state.runtime_resources = runtime.resources
+    app.state.runtime_resources = RuntimeResources()
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.app_allowed_hosts))
 
     @app.middleware("http")
@@ -130,9 +131,10 @@ def create_app() -> FastAPI:
 
 
 @asynccontextmanager
-async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    await runtime.on_startup()
+async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    resources = app.state.runtime_resources
+    await runtime.on_startup(resources)
     try:
         yield
     finally:
-        await runtime.on_shutdown()
+        await runtime.on_shutdown(resources)
